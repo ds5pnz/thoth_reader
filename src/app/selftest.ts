@@ -6,7 +6,7 @@ import { call } from '../ipc/client';
 import type { ImportCandidate } from '../ipc/generated/ImportCandidate';
 import type { ImportResult } from '../ipc/generated/ImportResult';
 
-type Hooks = { open: (id: string) => void; close: () => void; anchor: () => unknown };
+type Hooks = { open: (id: string) => void; close: () => void; anchor: () => unknown; reloadSettings: () => Promise<void> };
 declare global {
   interface Window { __thoth?: Partial<Hooks> }
 }
@@ -51,8 +51,11 @@ function epubFrameText(): number {
 }
 
 export async function runSelftest() {
-  const cands = await call<ImportCandidate[]>('debug_selftest_files').catch(() => []);
+  const cfg = await call<{ candidates: ImportCandidate[]; provider: string | null; model: string | null; slowMs: number | null }>('debug_selftest_files').catch(() => ({ candidates: [], provider: null, model: null, slowMs: null }));
+  WAIT = cfg.slowMs ?? 30000;
+  const cands = cfg.candidates;
   if (!cands.length) return;
+  if (cfg.provider) await setupProvider(cfg.provider, cfg.model);
   await log('info', `selftest start: ${cands.length} files`);
   await sleep(500);
   for (const [i, c] of cands.entries()) {
@@ -117,9 +120,69 @@ export async function runSelftest() {
       res.afterParallel = { rows: rows(), anchor: window.__thoth?.anchor?.() };
     }
     res.dangerBadges = document.querySelectorAll('.badge.danger').length;
+    if (cfg.provider && !isPdf) await translationChecks(res, r.documentId);
     await log('result', res);
     window.__thoth?.close?.();
     await sleep(800);
   }
   await log('info', 'selftest done');
+}
+
+let WAIT = 30000;
+
+async function setupProvider(endpoint: string, model: string | null) {
+  try {
+    const p = await call<{ id: string }>('provider_save', { providerId: null, kind: 'openai_compatible', label: 'selftest mock', endpoint, accountNamespace: 'selftest', allowPrivateHttp: false, enabled: true });
+    const probe = await call<{ ok: boolean; models: { id: string }[]; capabilities: Record<string, unknown> | null; warnings: string[] }>('provider_probe', { providerId: p.id });
+    await log('result', { stage: 'provider', probeOk: probe.ok, models: probe.models.map((m) => m.id), caps: probe.capabilities, warnings: probe.warnings });
+    const prof = await call<{ id: string }>('profile_create', { providerId: p.id, modelId: model ?? probe.models[0]?.id ?? 'mock-ko', sourceLanguage: 'en', targetLanguage: 'ko', temperature: 0.2, seed: null, maxOutputTokens: null, contextLimit: 8192, modelDigest: null });
+    await call('settings_patch', { key: 'activeProfileId', value: prof.id, expectedVersion: null });
+    await window.__thoth?.reloadSettings?.();
+  } catch (e) {
+    await log('result', { stage: 'provider', error: String((e as Error).message) });
+  }
+}
+
+function translated() { return [...document.querySelectorAll('.tcell-text')].filter((x) => (x.textContent ?? '').trim().length > 0).length; }
+
+async function translationChecks(res: Record<string, unknown>, documentId: string) {
+  const t0 = performance.now();
+  res.firstTranslationMs = await waitFor(() => translated() > 0, WAIT);
+  // Scroll into body text: visible blocks must be requested first (P1).
+  const scroller = document.querySelector<HTMLElement>('.reflow');
+  const before = translated();
+  if (scroller) { scroller.scrollTop = 4000; scroller.dispatchEvent(new Event('scroll')); }
+  res.afterScrollTranslatedMs = await waitFor(() => translated() >= before + 3, WAIT);
+  res.translatedCells = translated();
+  res.translateWindowMs = Math.round(performance.now() - t0);
+  // Manual edit on the first translated cell: double-click, type, Cmd+Enter.
+  res.samples = [...document.querySelectorAll<HTMLElement>('.brow')].filter((r) => r.querySelector('.tcell-text')).slice(0, 2).map((r) => ({ src: (r.querySelector('.src')?.textContent ?? '').slice(0, 90), ko: (r.querySelector('.tcell-text')?.textContent ?? '').slice(0, 90) }));
+  res.failedCells = document.querySelectorAll('.tcell .badge.danger').length;
+  const cell = [...document.querySelectorAll<HTMLElement>('.tcell-text')].find((x) => (x.textContent ?? '').trim().length > 0);
+  if (cell) {
+    cell.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+    const ta = await (async () => { await waitFor(() => !!document.querySelector('.tcell.editing textarea'), 3000); return document.querySelector<HTMLTextAreaElement>('.tcell.editing textarea'); })();
+    if (ta) {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+      setter.call(ta, '수동으로 고친 번역');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', metaKey: true, bubbles: true }));
+      res.manualSavedMs = await waitFor(() => [...document.querySelectorAll('.tcell .badge')].some((b) => b.textContent === '수동 수정'), 5000);
+    }
+  }
+  // Close and reopen: cached revisions + manual pin must come back without new requests.
+  await sleep(900); // position save debounce (500ms)
+  const anchorBefore = window.__thoth?.anchor?.() as { blockId?: string } | null;
+  res.anchorBeforeClose = anchorBefore?.blockId?.slice(0, 8) ?? null;
+  window.__thoth?.close?.();
+  await sleep(600);
+  await log('mark', 'reopen-begin');
+  const t1 = performance.now();
+  window.__thoth?.open?.(documentId);
+  res.reopenTranslatedMs = await waitFor(() => translated() > 0, 10000);
+  await sleep(1500);
+  res.reopenAnchor = ((window.__thoth?.anchor?.() as { blockId?: string } | null)?.blockId ?? '').slice(0, 8);
+  res.reopenManualKept = [...document.querySelectorAll('.tcell-text')].some((x) => x.textContent === '수동으로 고친 번역');
+  res.reopenWindowMs = Math.round(performance.now() - t1);
+  await log('mark', 'reopen-end');
 }

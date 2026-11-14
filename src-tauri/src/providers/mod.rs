@@ -606,7 +606,16 @@ pub fn build_provider(
     cfg: &ProviderConfig,
     secrets: Arc<dyn SecretStore>,
 ) -> Result<Arc<dyn Provider>, AppError> {
-    build_provider_with_timeouts(cfg, secrets, cfg.kind.default_timeouts())
+    build_provider_with_timeouts(cfg, secrets, effective_timeouts(cfg))
+}
+
+/// Local model servers (any loopback endpoint) get the cold-load-tolerant local timeouts
+/// (first byte 120s, total 300s) even when they speak the OpenAI-compatible protocol.
+pub fn effective_timeouts(cfg: &ProviderConfig) -> Timeouts {
+    let loopback = crate::security::endpoint::normalize_endpoint(&cfg.endpoint, cfg.allow_private_http)
+        .map(|e| e.is_loopback)
+        .unwrap_or(false);
+    if loopback { Timeouts::OLLAMA } else { cfg.kind.default_timeouts() }
 }
 
 pub fn build_provider_with_timeouts(
@@ -749,5 +758,20 @@ mod tests {
         let back: ProviderCapabilities = serde_json::from_value(v).unwrap();
         assert_eq!(back, c);
         assert_eq!(serde_json::to_value(ProviderKind::OpenaiCompatible).unwrap(), "openai_compatible");
+    }
+}
+
+#[cfg(test)]
+mod timeout_policy_tests {
+    use super::*;
+    #[test]
+    fn loopback_openai_compatible_uses_local_timeouts() {
+        let mut cfg = ProviderConfig {
+            id: "p".into(), kind: ProviderKind::OpenaiCompatible, endpoint: "http://localhost:1235/v1".into(),
+            account_namespace: "n".into(), keychain_ref: None, allow_private_http: false, concurrency: 1, capabilities: None,
+        };
+        assert_eq!(effective_timeouts(&cfg), Timeouts::OLLAMA);
+        cfg.endpoint = "https://api.example.com/v1".into();
+        assert_eq!(effective_timeouts(&cfg), Timeouts::REMOTE);
     }
 }

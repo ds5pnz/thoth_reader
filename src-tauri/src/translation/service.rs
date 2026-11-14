@@ -383,7 +383,8 @@ impl TranslationService {
         if prio != Priority::P0 {
             let (ov, _) = translations::preference_get(&self.db.reader, &b.id).await?;
             let eff = TranslationPolicy::effective(b.translation_policy, b.quality.level, ov.as_deref().and_then(TranslationPolicy::parse));
-            if eff != TranslationPolicy::Auto || b.source_text.trim().is_empty() {
+            // Text without any letters (ornaments, numbers, punctuation) is never auto-sent.
+            if eff != TranslationPolicy::Auto || !b.source_text.chars().any(|c| c.is_alphabetic()) {
                 return Ok(Demand::Skipped("auto translation not allowed"));
             }
             if !extraction::is_leaf(&self.db.reader, &b.id).await? {

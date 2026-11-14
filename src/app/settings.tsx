@@ -40,6 +40,9 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     }
   }, []);
   useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => {
+    if (import.meta.env.DEV) window.__thoth = { ...(window.__thoth ?? {}), reloadSettings: reload };
+  }, [reload]);
   const settings = useMemo(() => {
     const s: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(raw)) s[k] = v.value;

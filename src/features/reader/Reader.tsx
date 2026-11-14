@@ -42,6 +42,8 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const positionVersion = useRef(0);
   const saveTimer = useRef<number | null>(null);
   const restored = useRef(false);
+  const blocksRef = useRef(model.blocks);
+  blocksRef.current = model.blocks;
   const session = model.session;
   const isPdf = session?.format === 'pdf';
   const targetLanguage = useMemo(() => settings.defaultTargetLanguage ?? 'ko', [settings.defaultTargetLanguage]);
@@ -87,7 +89,14 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     else if (showOriginalEpub) a = epubRef.current?.getAnchor() ?? null;
     else a = reflowRef.current?.getAnchor() ?? null;
     if (!a) return null;
-    return { schemaVersion: 1, documentId: s.documentId, extractionId: s.extractionId, blockId: a.blockId, sourceOffsetU16: 0, withinBlockRatio: Math.min(1, Math.max(0, a.ratio)), location: null };
+    // Keep the block's source location so restore can find the section (and, if the
+    // extraction changes, fall back to CFI / PDF coordinates per spec §3.3).
+    let location: ReaderAnchor['location'] = null;
+    for (const bs of blocksRef.current.values()) {
+      const hit = bs.find((b) => b.id === a!.blockId);
+      if (hit) { location = hit.location; break; }
+    }
+    return { schemaVersion: 1, documentId: s.documentId, extractionId: s.extractionId, blockId: a.blockId, sourceOffsetU16: 0, withinBlockRatio: Math.min(1, Math.max(0, a.ratio)), location };
   }, [sessionRef, showPdfOriginal, showOriginalEpub]);
 
   useEffect(() => {
@@ -122,17 +131,30 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       .catch(() => {});
   }, [sessionRef, autoActive]);
 
-  // Restore saved position once the first sections exist.
+  // Restore saved position once the first sections exist: load the anchor's section,
+  // then retry until its rows are rendered (React commits after loadSection resolves).
   useEffect(() => {
     if (restored.current || !session?.position || model.sections.length === 0) return;
     const a = session.position;
-    if (!a.blockId || a.extractionId !== session.extractionId) { restored.current = true; return; }
+    restored.current = true;
+    if (!a.blockId || a.extractionId !== session.extractionId) return;
+    const loc = a.location;
+    const want = loc?.kind === 'epub' ? loc.spineIndex : loc?.kind === 'pdf' ? loc.pageIndex : null;
+    const target = want == null ? null : model.sections.find((sec) => {
+      const l = sec.locator as { spineIndex?: number; pageIndex?: number };
+      return Number(l.spineIndex ?? l.pageIndex ?? sec.ordinal) === want;
+    });
     void (async () => {
-      for (const sec of model.sections) {
+      const candidates = target ? [target] : model.sections;
+      for (const sec of candidates) {
         await loadSection(sec.id);
-        if (reflowRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || pdfRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || epubRef.current?.scrollToBlock(a.blockId!)) break;
+        for (let i = 0; i < 30; i++) {
+          if (reflowRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || pdfRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || epubRef.current?.scrollToBlock(a.blockId!)) return;
+          await new Promise((r) => setTimeout(r, 100));
+          if (!blocksRef.current.has(sec.id)) continue;
+          if (!blocksRef.current.get(sec.id)!.some((b) => b.id === a.blockId)) break;
+        }
       }
-      restored.current = true;
     })();
   }, [session, model.sections, loadSection]);
 
@@ -165,9 +187,24 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     void set('readingMode', m);
   });
 
+  // Any unmount (route change, window reload) must close the session: cancel its jobs,
+  // revoke the asset token and save the final position (spec §7.3).
+  const closedRef = useRef(false);
+  const anchorFnRef = useRef(currentAnchor);
+  anchorFnRef.current = currentAnchor;
+  const viewRef = useRef({ mode, pdfView });
+  viewRef.current = { mode, pdfView };
+  useEffect(() => () => {
+    const s = sessionRef.current;
+    if (closedRef.current || !s) return;
+    closedRef.current = true;
+    void call('document_close', { sessionId: s.sessionId, generation: s.generation, finalAnchor: anchorFnRef.current(), view: viewRef.current }).catch(() => {});
+  }, [sessionRef]);
+
   const close = async () => {
     const doClose = async () => {
       const s = sessionRef.current;
+      closedRef.current = true;
       if (s) await call('document_close', { sessionId: s.sessionId, generation: s.generation, finalAnchor: currentAnchor(), view: { mode, pdfView } }).catch(() => {});
       onClose();
     };

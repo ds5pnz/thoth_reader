@@ -278,9 +278,12 @@ async fn save_provider(core: &AppCore, args: ProviderSaveArgs) -> AppResult<tran
                 core.translation.secrets.store(&r, sec)?;
                 kref = Some(r);
             }
+            // A loopback OpenAI-compatible server (LM Studio, llama.cpp, vLLM on this Mac) is a
+            // local model like Ollama: default to one request at a time.
+            let default_conc = if ep.is_loopback { 1 } else { kind.default_concurrency() };
             let caps = serde_json::json!({
                 "allowPrivateHttp": args.allow_private_http.unwrap_or(false),
-                "concurrency": args.concurrency.unwrap_or(kind.default_concurrency()).clamp(1, 4),
+                "concurrency": args.concurrency.unwrap_or(default_conc).clamp(1, 4),
             });
             let row = translations::ProviderRow {
                 id: id.clone(),
