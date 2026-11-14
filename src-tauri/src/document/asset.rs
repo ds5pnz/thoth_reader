@@ -120,6 +120,64 @@ fn serve_file(path: &Path, mime: &str, method: &str, range: Option<&str>, extra:
     AssetResponse { status, headers, body }
 }
 
+/// Library-scoped access that does not need a reader session.
+#[derive(Default)]
+pub struct LibraryAssets {
+    /// Short-lived tokens that let the library render a PDF's first page as a thumbnail.
+    thumb_tokens: std::sync::Mutex<std::collections::HashMap<String, (std::path::PathBuf, std::time::Instant)>>,
+}
+
+impl LibraryAssets {
+    const TTL: std::time::Duration = std::time::Duration::from_secs(120);
+    pub fn issue(&self, file: std::path::PathBuf) -> String {
+        let token = format!("{}{}", crate::domain::new_uuid().replace('-', ""), crate::domain::new_uuid().replace('-', ""));
+        let mut m = self.thumb_tokens.lock().unwrap();
+        m.retain(|_, (_, at)| at.elapsed() < Self::TTL);
+        m.insert(token.clone(), (file, std::time::Instant::now()));
+        token
+    }
+    fn file_for(&self, token: &str) -> Option<std::path::PathBuf> {
+        let m = self.thumb_tokens.lock().unwrap();
+        m.get(token).filter(|(_, at)| at.elapsed() < Self::TTL).map(|(p, _)| p.clone())
+    }
+    pub fn revoke(&self, token: &str) {
+        self.thumb_tokens.lock().unwrap().remove(token);
+    }
+}
+
+/// `path` is the URL path (e.g. "/<token>/epub/x/0.xhtml"), `origin` the request Origin.
+/// Session routes need the session asset token; `/cover/<documentId>` serves the app-made
+/// library thumbnail; a library thumbnail token gives read access to one PDF for 2 minutes.
+pub fn handle_with_library(sessions: &SessionManager, lib: &LibraryAssets, paths: &super::paths::AppPaths, method: &str, path: &str, range: Option<&str>, origin: Option<&str>, allowed_origins: &[&str]) -> AssetResponse {
+    if method != "GET" && method != "HEAD" {
+        return AssetResponse::err(405);
+    }
+    let trimmed = path.trim_start_matches('/');
+    let mut extra: Vec<(&'static str, String)> = Vec::new();
+    if let Some(o) = origin {
+        if allowed_origins.contains(&o) {
+            extra.push(("Access-Control-Allow-Origin", o.to_string()));
+            extra.push(("Access-Control-Expose-Headers", "Content-Range, Content-Length, Accept-Ranges".into()));
+            extra.push(("Vary", "Origin".into()));
+        }
+    }
+    if let Some(id) = trimmed.strip_prefix("cover/") {
+        return match paths.cover_file(id).and_then(|p| mime_for(&p.to_string_lossy()).map(|m| (p, m))) {
+            Some((p, mime)) if mime.starts_with("image/") && mime != "image/svg+xml" => serve_file(&p, mime, method, None, &extra),
+            _ => AssetResponse::err(404),
+        };
+    }
+    let mut parts = trimmed.splitn(2, '/');
+    if let (Some(token), Some("pdf")) = (parts.next(), parts.next()) {
+        if token.len() == 64 && token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            if let Some(file) = lib.file_for(token) {
+                return serve_file(&file, "application/pdf", method, range, &extra);
+            }
+        }
+    }
+    handle(sessions, method, path, range, origin, allowed_origins)
+}
+
 /// `path` is the URL path (e.g. "/<token>/epub/x/0.xhtml"), `origin` the request Origin.
 pub fn handle(sessions: &SessionManager, method: &str, path: &str, range: Option<&str>, origin: Option<&str>, allowed_origins: &[&str]) -> AssetResponse {
     if method != "GET" && method != "HEAD" {
@@ -226,5 +284,31 @@ mod tests {
         assert_eq!(handle(&m, "GET", &format!("/{t}/epub/x/0.exe"), None, None, &[]).status, 403);
         // wrong kind for the session format
         assert_eq!(handle(&m, "GET", &format!("/{t}/pdf"), None, None, &[]).status, 404);
+    }
+
+    #[test]
+    fn cover_route_and_thumbnail_tokens() {
+        let d = tempfile::tempdir().unwrap();
+        let paths = crate::document::paths::AppPaths::new(d.path().join("app")).unwrap();
+        let m = SessionManager::default();
+        let lib = LibraryAssets::default();
+        let id = crate::domain::new_uuid();
+        std::fs::write(paths.covers.join(format!("{id}.jpg")), b"\xff\xd8\xffcover").unwrap();
+        let ok = handle_with_library(&m, &lib, &paths, "GET", &format!("/cover/{id}"), None, None, &[]);
+        assert_eq!(ok.status, 200);
+        assert!(ok.headers.iter().any(|(k, v)| *k == "Content-Type" && v == "image/jpeg"));
+        // unknown id, traversal and non-id names never resolve
+        assert_eq!(handle_with_library(&m, &lib, &paths, "GET", &format!("/cover/{}", crate::domain::new_uuid()), None, None, &[]).status, 404);
+        assert_eq!(handle_with_library(&m, &lib, &paths, "GET", "/cover/../database/thoth.sqlite", None, None, &[]).status, 404);
+        // one PDF, by token only
+        let pdf = d.path().join("a.pdf");
+        std::fs::write(&pdf, b"%PDF-1.7 0123456789").unwrap();
+        let t = lib.issue(pdf);
+        let r = handle_with_library(&m, &lib, &paths, "GET", &format!("/{t}/pdf"), Some("bytes=0-4"), None, &[]);
+        assert_eq!(r.status, 206);
+        assert_eq!(r.body, b"%PDF-");
+        assert_eq!(handle_with_library(&m, &lib, &paths, "GET", &format!("/{}/pdf", "0".repeat(64)), None, None, &[]).status, 403);
+        lib.revoke(&t);
+        assert_eq!(handle_with_library(&m, &lib, &paths, "GET", &format!("/{t}/pdf"), None, None, &[]).status, 403);
     }
 }

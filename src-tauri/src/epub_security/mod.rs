@@ -117,6 +117,16 @@ pub struct SafePackage {
     pub resources: Vec<SafeResource>,
     /// Sorted, de-duplicated restriction codes (`code` or `code:detail`).
     pub restrictions: Vec<String>,
+    /// Bibliographic metadata for the library (plain text, length-limited).
+    #[serde(default)]
+    pub authors: Vec<String>,
+    #[serde(default)]
+    pub publisher: Option<String>,
+    #[serde(default)]
+    pub published: Option<String>,
+    /// `safe_href` of the sanitized cover image, when the package declares one.
+    #[serde(default)]
+    pub cover: Option<String>,
 }
 
 /// `canonicalRevision` = sha256(canonical JSON of sanitizer version, epub.js version, rules).

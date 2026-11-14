@@ -25,6 +25,7 @@ futures-util = "0.3"
 bytes = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+base64 = "0.22"
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio", "sqlite", "migrate", "json", "macros"] }
 libsqlite3-sys = { version = "=0.37.0", features = ["bundled"] }
 sha2 = "0.10"

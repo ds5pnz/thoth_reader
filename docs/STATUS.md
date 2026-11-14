@@ -109,3 +109,11 @@ cd src-tauri && THOTH_CORPUS=/path/to/books cargo test --release --lib epub_corp
 ```bash
 THOTH_SELFTEST_PROVIDER=http://localhost:1235/v1 THOTH_SELFTEST_MODEL=<model> scripts/selftest.sh /tmp/thoth.log /tmp/thoth-data book.epub book.pdf
 ```
+
+## 서재 화면 (표지 · 메타데이터 · 정렬)
+
+- EPUB: 가져올 때 안전 패키지를 만들면서 `dc:creator` / `dc:publisher` / `dc:date`와 표지(EPUB2 `meta name="cover"`, EPUB3 `cover-image`, 없으면 첫 본문 이미지)를 수집한다. 이전에 가져온 EPUB은 앱 시작 시 한 번 백필한다.
+- PDF: 서재에서 1쪽을 한 번 렌더링해 420px JPEG 표지로 저장하고 Info의 Title/Author를 읽는다(리더 세션을 열지 않으며, 2분짜리 단일 파일 읽기 토큰 사용). 암호화·손상 PDF는 일반 표지.
+- 표지는 `covers/<documentId>.<ext>`에 저장되고 `thoth-doc://localhost/cover/<documentId>`로만 제공된다(매직 바이트 검사, 20 MiB 상한, 문서 삭제 시 함께 삭제).
+- 정렬: 최근 읽은 순(읽지 않은 책은 최근 가져온 순으로 뒤에) / 제목 순(가나다 → ABC, 숫자 자연 정렬). 선택은 유지된다.
+- 자가 검증(`THOTH_SELFTEST_SCENARIO=library`, EPUB 8 + PDF 8): 표지 이미지 16/16, 깨진 이미지 0, 저자 표시 15/16, 표지 비율 2:3 16/16, 제목 정렬·최근 정렬 확인.

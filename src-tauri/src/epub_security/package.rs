@@ -292,10 +292,24 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
     let mut title = String::new();
     let mut language: Option<String> = None;
     let mut fixed_layout = false;
+    let mut authors: Vec<String> = Vec::new();
+    let mut publisher: Option<String> = None;
+    let mut published: Option<String> = None;
+    let mut cover_id: Option<String> = None;
     if let Some(md) = metadata {
         if let Some(t) = md.find(&|e| e.name == "title") {
             title = collapse_ws(&t.text_content(), 512);
         }
+        let mut creators = Vec::new();
+        find_all(md, "creator", &mut creators);
+        for c in creators.iter().take(8) {
+            let a = collapse_ws(&c.text_content(), 200);
+            if !a.is_empty() && !authors.contains(&a) {
+                authors.push(a);
+            }
+        }
+        publisher = md.find(&|e| e.name == "publisher").map(|e| collapse_ws(&e.text_content(), 200)).filter(|s| !s.is_empty());
+        published = md.find(&|e| e.name == "date").map(|e| collapse_ws(&e.text_content(), 40)).filter(|s| !s.is_empty());
         if let Some(l) = md.find(&|e| e.name == "language") {
             let l = collapse_ws(&l.text_content(), 35);
             if !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
@@ -310,6 +324,9 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
             }
             if m.attr_local("name") == Some("fixed-layout") && m.attr_local("content") == Some("true") {
                 fixed_layout = true;
+            }
+            if m.attr_local("name") == Some("cover") {
+                cover_id = m.attr_local("content").map(str::to_string); // EPUB 2 cover reference
             }
         }
     }
@@ -595,7 +612,20 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
 
     let mut resources = std::mem::take(&mut b.resources);
     resources.sort_by(|a, c| a.safe_href.cmp(&c.safe_href));
+    // Cover: EPUB 3 `cover-image` manifest property, else the EPUB 2 <meta name="cover">.
+    let cover_item = items
+        .iter()
+        .find(|i| i.properties.iter().any(|p| p == "cover-image"))
+        .or_else(|| cover_id.as_deref().and_then(|id| by_id.get(id)).map(|&i| &items[i]));
+    let cover = cover_item.and_then(|i| {
+        let rid = super::resource_id(&i.path, &b.rev);
+        resources.iter().find(|r| r.resource_id == rid && r.mime.starts_with("image/") && r.mime != "image/svg+xml").map(|r| r.safe_href.clone())
+    });
     Ok(SafePackage {
+        authors,
+        publisher,
+        published,
+        cover,
         title,
         language,
         canonical_revision: b.rev.clone(),

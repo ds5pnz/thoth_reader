@@ -6,7 +6,8 @@ import { call } from '../ipc/client';
 import type { ImportCandidate } from '../ipc/generated/ImportCandidate';
 import type { ImportResult } from '../ipc/generated/ImportResult';
 
-type Hooks = { open: (id: string) => void; close: () => void; anchor: () => unknown; anchorError: () => number | null; reloadSettings: () => Promise<void> };
+type Hooks = {
+  reloadLibrary: () => Promise<void>; open: (id: string) => void; close: () => void; anchor: () => unknown; anchorError: () => number | null; reloadSettings: () => Promise<void> };
 declare global {
   interface Window { __thoth?: Partial<Hooks> }
 }
@@ -63,6 +64,11 @@ export async function runSelftest() {
   if (cfg.provider) await setupProvider(cfg.provider, cfg.model);
   await log('info', `selftest start: ${cands.length} files`);
   await sleep(500);
+  if (cfg.scenario === 'library') {
+    await libraryCheck(cands.length);
+    await log('info', 'selftest done');
+    return;
+  }
   const only = (cfg.only ?? '').split(',').filter(Boolean).map(Number);
   for (const [i, c] of cands.entries()) {
     if (only.length && !only.includes(i + 1)) continue;
@@ -619,4 +625,69 @@ async function structureCheck(res: Record<string, unknown>) {
     boldKept: withBold.filter((x) => x.trStrong > 0).length,
     rawTagsLeft: all.filter((x) => x.rawTags).length,
   };
+}
+
+/** Library shelf: covers, metadata and both sort orders. Statistics only — no book text. */
+async function libraryCheck(n: number) {
+  const ids: string[] = [];
+  const formats: string[] = [];
+  for (let i = 0; i < n; i++) {
+    try {
+      const fresh = await call<{ candidates: ImportCandidate[] }>('debug_selftest_files');
+      const r = await call<ImportResult>('document_import', { importToken: fresh.candidates[i]?.importToken ?? '' });
+      if (!ids.includes(r.documentId)) { ids.push(r.documentId); formats.push(r.format); }
+    } catch (e) {
+      await log('result', { label: `doc-${i + 1}`, stage: 'import', error: String((e as Error).message) });
+    }
+  }
+  const t0 = performance.now();
+  await window.__thoth?.reloadLibrary?.();
+  const books = () => [...document.querySelectorAll<HTMLElement>('.shelf .book')];
+  const settled = () => books().length === ids.length && books().every((b) => {
+    const img = b.querySelector<HTMLImageElement>('.cover-img');
+    return img ? img.complete && img.naturalWidth > 0 : false;
+  });
+  // PDF covers render one at a time; give them a while, then report whatever is there.
+  const settledMs = await waitFor(settled, 240000);
+  const stat = (fmt: string) => {
+    const bs = books().filter((b) => b.dataset.format === fmt);
+    return {
+      books: bs.length,
+      imageCovers: bs.filter((b) => { const i = b.querySelector<HTMLImageElement>('.cover-img'); return !!i && i.naturalWidth > 0; }).length,
+      genericCovers: bs.filter((b) => b.querySelector('.cover-generic')).length,
+      withAuthor: bs.filter((b) => b.querySelector('.book-author')).length,
+      withImprint: bs.filter((b) => b.querySelector('.book-imprint')).length,
+    };
+  };
+  const covers = books().map((b) => b.querySelector<HTMLElement>('.cover')!.getBoundingClientRect());
+  const titles = () => books().map((b) => b.querySelector('.book-title')?.textContent ?? '');
+  const res: Record<string, unknown> = {
+    label: 'library', imported: ids.length, epubImported: formats.filter((f) => f === 'epub').length, settledMs, waitedMs: Math.round(performance.now() - t0),
+    epub: stat('epub'), pdf: stat('pdf'),
+    coverRatioOk: covers.filter((r) => Math.abs(r.width / r.height - 2 / 3) < 0.01).length,
+    columns: new Set(covers.map((r) => Math.round(r.left))).size,
+    horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth + 1,
+    brokenImages: books().filter((b) => { const i = b.querySelector<HTMLImageElement>('.cover-img'); return !!i && i.complete && i.naturalWidth === 0; }).length,
+  };
+  // Title order
+  clickButton('제목 순');
+  await sleep(300);
+  const c = new Intl.Collator(['ko', 'en'], { numeric: true, sensitivity: 'base' });
+  const t = titles();
+  res.titleSorted = t.every((x, i) => i === 0 || c.compare(t[i - 1] ?? '', x) <= 0);
+  res.titleSortPersisted = localStorage.getItem('thoth.librarySort') === 'title';
+  // Recent order: read the last listed book, come back, it must lead the shelf.
+  const lastTitle = t[t.length - 1];
+  const target = books()[books().length - 1]?.querySelector<HTMLButtonElement>('.book-open');
+  target?.click();
+  await waitFor(() => rows() > 0 || canvases() > 0 || epubFrameText() > 0 || !!document.querySelector('.reader-error'), 30000);
+  await sleep(1000);
+  window.__thoth?.close?.();
+  await waitFor(() => books().length === ids.length, 15000);
+  clickButton('최근 읽은 순');
+  await sleep(400);
+  res.recentFirstIsLastRead = titles()[0] === lastTitle;
+  res.readLabels = books().filter((b) => /읽음$/.test(b.querySelector('.book-read')?.textContent ?? '')).length;
+  res.newFlags = document.querySelectorAll('.cover-flag.new').length;
+  await log('result', res);
 }

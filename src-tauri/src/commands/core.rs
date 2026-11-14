@@ -20,6 +20,9 @@ pub struct AppCore {
     pub imports: ImportRegistry,
     pub translation: Arc<crate::translation::service::TranslationService>,
     pub allowed_origins: Vec<&'static str>,
+    pub library_assets: crate::document::asset::LibraryAssets,
+    /// Serializes EPUB safe-package builds (import, backfill and open may race).
+    pub epub_prepare: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]

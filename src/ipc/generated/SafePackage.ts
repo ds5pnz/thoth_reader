@@ -7,4 +7,12 @@ export type SafePackage = { title: string, language: string | null, canonicalRev
 /**
  * Sorted, de-duplicated restriction codes (`code` or `code:detail`).
  */
-restrictions: Array<string>, };
+restrictions: Array<string>, 
+/**
+ * Bibliographic metadata for the library (plain text, length-limited).
+ */
+authors: Array<string>, publisher: string | null, published: string | null, 
+/**
+ * `safe_href` of the sanitized cover image, when the package declares one.
+ */
+cover: string | null, };

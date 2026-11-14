@@ -9,6 +9,8 @@ pub struct AppPaths {
     pub derived: PathBuf,
     pub database: PathBuf,
     pub backups: PathBuf,
+    /// Library thumbnails (cover images), one file per document id.
+    pub covers: PathBuf,
 }
 
 impl AppPaths {
@@ -18,9 +20,10 @@ impl AppPaths {
             derived: root.join("derived"),
             database: root.join("database"),
             backups: root.join("backups"),
+            covers: root.join("covers"),
             root,
         };
-        for d in [&p.root, &p.documents, &p.derived, &p.database, &p.backups] {
+        for d in [&p.root, &p.documents, &p.derived, &p.database, &p.backups, &p.covers] {
             std::fs::create_dir_all(d)?;
         }
         Ok(p)
@@ -35,6 +38,13 @@ impl AppPaths {
             return None;
         }
         Some(self.root.join(rp))
+    }
+    /// Existing cover file for a document, if any (jpg/png/webp/gif).
+    pub fn cover_file(&self, document_id: &str) -> Option<PathBuf> {
+        if !crate::domain::is_valid_id(document_id) {
+            return None;
+        }
+        ["jpg", "png", "webp", "gif"].iter().map(|e| self.covers.join(format!("{document_id}.{e}"))).find(|p| p.is_file())
     }
     pub fn derived_dir(&self, extraction_id: &str) -> PathBuf {
         self.derived.join(extraction_id)

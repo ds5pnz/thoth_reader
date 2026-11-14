@@ -82,7 +82,15 @@ pub async fn document_import(core: Core<'_>, meta: CommandMeta, args: DocumentIm
     let w = with_receipt(&core, &meta, "document_import", json_of(&args), || async move {
         let path = core2.imports.take(&args.import_token).ok_or_else(|| AppError::invalid("가져오기 토큰이 만료되었습니다. 파일을 다시 선택해 주세요."))?;
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-        import::import_path(&core2.db, &core2.paths, path, name).await
+        let r = import::import_path(&core2.db, &core2.paths, path, name).await?;
+        if r.format == "epub" && !r.deduplicated {
+            // Sanitize now so the library can show the cover and metadata right away.
+            let (c, id) = (core2.clone(), r.document_id.clone());
+            tokio::spawn(async move {
+                let _ = crate::document::epub::prepare_package(&c, &id).await;
+            });
+        }
+        Ok(r)
     })
     .await;
     Ok(w)
@@ -219,6 +227,92 @@ pub async fn document_delete(core: Core<'_>, meta: CommandMeta, args: DocumentDe
         Ok(serde_json::json!({"deleted": true}))
     })
     .await)
+}
+
+// ------------------------------------------------------------------ library covers
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LibraryThumbBeginArgs {
+    pub document_id: String,
+}
+
+/// Lets the library render page 1 of one PDF as its cover: a 2-minute read token for that
+/// file only. No reader session is opened and `lastOpenedAt` does not change.
+#[tauri::command]
+pub async fn library_thumb_begin(core: Core<'_>, meta: CommandMeta, args: LibraryThumbBeginArgs) -> Result<Wire, ()> {
+    let r = async {
+        check_id(&args.document_id, "documentId")?;
+        let doc = documents::get(&core.db.reader, &args.document_id).await?.ok_or_else(|| AppError::not_found("문서"))?;
+        if doc.format != "pdf" {
+            return Err(AppError::invalid("PDF 문서만 표지를 만들 수 있습니다."));
+        }
+        let managed = core.paths.resolve(&doc.managed_path).filter(|p| p.is_file()).ok_or_else(|| AppError::not_found("문서 원본 사본"))?;
+        Ok(serde_json::json!({"token": core.library_assets.issue(managed)}))
+    }
+    .await;
+    Ok(respond(&meta, r))
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct LibraryCoverSetArgs {
+    pub document_id: String,
+    pub token: String,
+    /// JPEG/PNG/WebP thumbnail rendered by the library, base64; absent when rendering failed.
+    pub image_base64: Option<String>,
+    pub title: Option<String>,
+    pub authors: Option<Vec<String>>,
+}
+
+fn clean_meta_text(s: &str, max: usize) -> Option<String> {
+    let t: String = s.chars().filter(|c| !c.is_control()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+    let t: String = t.chars().take(max).collect();
+    (!t.is_empty()).then_some(t)
+}
+
+#[tauri::command]
+pub async fn library_cover_set(core: Core<'_>, meta: CommandMeta, args: LibraryCoverSetArgs) -> Result<Wire, ()> {
+    use base64::Engine;
+    let r = async {
+        check_id(&args.document_id, "documentId")?;
+        core.db.ensure_writable()?;
+        if args.token.len() > 64 {
+            return Err(AppError::invalid("token이 올바르지 않습니다."));
+        }
+        core.library_assets.revoke(&args.token);
+        let doc = documents::get(&core.db.reader, &args.document_id).await?.ok_or_else(|| AppError::not_found("문서"))?;
+        if doc.format != "pdf" {
+            return Err(AppError::invalid("PDF 문서만 표지를 만들 수 있습니다."));
+        }
+        let mut has_cover = false;
+        if let Some(b64) = args.image_base64.as_deref() {
+            if b64.len() > 2_800_000 {
+                return Err(AppError::invalid("표지 이미지가 너무 큽니다."));
+            }
+            let bytes = base64::engine::general_purpose::STANDARD.decode(b64).map_err(|_| AppError::invalid("표지 이미지 형식이 올바르지 않습니다."))?;
+            has_cover = crate::document::epub::store_cover(&core.paths, &doc.id, &bytes);
+            if !has_cover {
+                return Err(AppError::invalid("표지 이미지 형식이 올바르지 않습니다."));
+            }
+        }
+        let authors: Vec<String> = args.authors.unwrap_or_default().iter().filter_map(|a| clean_meta_text(a, 200)).take(8).collect();
+        let mut patch = serde_json::json!({
+            "authors": authors,
+            "hasCover": has_cover,
+            "coverVersion": crate::domain::now_ms(),
+            "libraryMeta": crate::document::epub::LIBRARY_META_VERSION,
+        });
+        if let Some(t) = args.title.as_deref().and_then(|t| clean_meta_text(t, 300)) {
+            patch["pdfTitle"] = serde_json::json!(t);
+        }
+        documents::merge_metadata(&core.db.writer, &doc.id, &patch).await?;
+        Ok(serde_json::json!({"hasCover": has_cover}))
+    }
+    .await;
+    Ok(respond(&meta, r))
 }
 
 // ------------------------------------------------------------------ sections & blocks

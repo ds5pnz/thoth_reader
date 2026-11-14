@@ -307,6 +307,7 @@ pub async fn delete_document(db: &Db, paths: &AppPaths, document_id: &str) -> Ap
     misc::delete_document_rows(&db.writer, document_id).await?;
     misc::fileop_set_state(&db.writer, &op, "db_committed").await?;
     remove_document_files(paths, &manifest);
+    crate::document::epub::remove_cover(paths, document_id);
     misc::fileop_set_state(&db.writer, &op, "complete").await?;
     Ok(())
 }

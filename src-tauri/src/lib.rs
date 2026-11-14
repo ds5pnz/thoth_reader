@@ -45,6 +45,8 @@ macro_rules! app_handlers {
             commands::document::document_open,
             commands::document::document_close,
             commands::document::document_delete,
+            commands::document::library_thumb_begin,
+            commands::document::library_cover_set,
             commands::document::sections_list,
             commands::document::blocks_get,
             commands::document::extraction_begin,
@@ -117,7 +119,7 @@ pub fn run() {
                 let method = request.method().as_str().to_string();
                 let range = request.headers().get("range").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
                 let origin = request.headers().get("origin").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-                let resp = document::asset::handle(&core.sessions, &method, request.uri().path(), range.as_deref(), origin.as_deref(), &core.allowed_origins);
+                let resp = document::asset::handle_with_library(&core.sessions, &core.library_assets, &core.paths, &method, request.uri().path(), range.as_deref(), origin.as_deref(), &core.allowed_origins);
                 let mut b = tauri::http::Response::builder().status(resp.status);
                 for (k, v) in resp.headers {
                     b = b.header(k, v);
@@ -147,8 +149,11 @@ pub fn run() {
                 imports: Default::default(),
                 translation,
                 allowed_origins: allowed_origins(),
+                library_assets: Default::default(),
+                epub_prepare: Default::default(),
             });
             app.manage(core.clone());
+            tauri::async_runtime::spawn(document::epub::backfill_library(core.clone()));
 
             #[allow(unused_mut)]
             let mut wb = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()));

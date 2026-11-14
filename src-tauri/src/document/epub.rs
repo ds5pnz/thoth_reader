@@ -18,7 +18,105 @@ fn versions_json() -> serde_json::Value {
     })
 }
 
-pub async fn ensure_extraction(core: Arc<AppCore>, s: Arc<Session>, doc: documents::DocumentRow) -> AppResult<()> {
+/// Version of the library metadata/cover harvest; bump to re-harvest existing documents.
+pub const LIBRARY_META_VERSION: i64 = 1;
+const MAX_COVER_BYTES: u64 = 20 * 1024 * 1024;
+
+pub struct Prepared {
+    pub extraction_id: String,
+    pub derived: std::path::PathBuf,
+    pub state: String,
+}
+
+fn sniff_image_ext(head: &[u8]) -> Option<&'static str> {
+    if head.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else if head.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if head.starts_with(b"GIF87a") || head.starts_with(b"GIF89a") {
+        Some("gif")
+    } else if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        Some("webp")
+    } else {
+        None
+    }
+}
+
+/// Store `bytes` as the library cover of `document_id` (type decided by magic bytes only).
+pub fn store_cover(paths: &crate::document::paths::AppPaths, document_id: &str, bytes: &[u8]) -> bool {
+    if !crate::domain::is_valid_id(document_id) || bytes.len() as u64 > MAX_COVER_BYTES {
+        return false;
+    }
+    let Some(ext) = sniff_image_ext(bytes) else { return false };
+    remove_cover(paths, document_id);
+    let tmp = paths.covers.join(format!(".tmp-{}", new_uuid()));
+    let ok = std::fs::write(&tmp, bytes).is_ok() && std::fs::rename(&tmp, paths.covers.join(format!("{document_id}.{ext}"))).is_ok();
+    if !ok {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    ok
+}
+
+pub fn remove_cover(paths: &crate::document::paths::AppPaths, document_id: &str) {
+    while let Some(p) = paths.cover_file(document_id) {
+        if std::fs::remove_file(p).is_err() {
+            break;
+        }
+    }
+}
+
+/// The declared cover, else the first raster image referenced by the first spine documents.
+fn find_cover(root: &std::path::Path, pkg: &epub_security::SafePackage) -> Option<Vec<u8>> {
+    let read = |href: &str| -> Option<Vec<u8>> {
+        let p = crate::document::paths::safe_join(root, href)?;
+        let len = std::fs::metadata(&p).ok()?.len();
+        if len == 0 || len > MAX_COVER_BYTES {
+            return None;
+        }
+        let b = std::fs::read(p).ok()?;
+        sniff_image_ext(&b).map(|_| b)
+    };
+    if let Some(b) = pkg.cover.as_deref().and_then(read) {
+        return Some(b);
+    }
+    for it in pkg.spine.iter().take(3) {
+        let Some(p) = crate::document::paths::safe_join(root, &it.safe_href) else { continue };
+        let Ok(x) = std::fs::read_to_string(p) else { continue };
+        // Sanitized documents reference resources as `r/<id>.<ext>` (possibly behind `../`).
+        let mut rest = x.as_str();
+        while let Some(i) = rest.find("r/") {
+            let tail = &rest[i..];
+            let end = tail.find(|c: char| c == '"' || c == '\'' || c == ')' || c == '#' || c == '?' || c.is_whitespace() || c == '<').unwrap_or(tail.len());
+            let href = &tail[..end];
+            if pkg.resources.iter().any(|r| r.safe_href == href && r.mime.starts_with("image/")) {
+                if let Some(b) = read(href) {
+                    return Some(b);
+                }
+            }
+            rest = &rest[i + 2..];
+        }
+    }
+    None
+}
+
+fn library_meta(pkg: &epub_security::SafePackage, has_cover: bool) -> serde_json::Value {
+    serde_json::json!({
+        "authors": pkg.authors,
+        "publisher": pkg.publisher,
+        "published": pkg.published,
+        "hasCover": has_cover,
+        "coverVersion": crate::domain::now_ms(),
+        "libraryMeta": LIBRARY_META_VERSION,
+    })
+}
+
+/// Validate + sanitize the EPUB into `derived/<extractionId>` (once), and harvest library
+/// metadata and the cover (once per `LIBRARY_META_VERSION`). Safe to call from import, from
+/// the startup backfill and from `document_open`; builds are serialized.
+pub async fn prepare_package(core: &Arc<AppCore>, doc_id: &str) -> AppResult<Prepared> {
+    let _guard = core.epub_prepare.lock().await;
+    let doc = documents::get(&core.db.reader, doc_id).await?.ok_or_else(|| AppError::not_found("문서"))?;
+    let managed = core.paths.resolve(&doc.managed_path).ok_or_else(|| AppError::internal("문서 경로 오류"))?;
     let versions = versions_json();
     let config = serde_json::json!({});
     let ex_id = derive_extraction_id(&doc.id, &versions, &config);
@@ -26,60 +124,102 @@ pub async fn ensure_extraction(core: Arc<AppCore>, s: Arc<Session>, doc: documen
     let derived = core.paths.derived_dir(&ex_id);
     let state = extraction::ensure_extraction(&core.db.writer, &ex_id, &doc.id, &config_hash, &versions).await?;
     let package_ready = derived.join("package.opf").exists();
+    let meta_ready = doc.metadata.get("libraryMeta").and_then(|v| v.as_i64()) == Some(LIBRARY_META_VERSION);
+    let prepared = Prepared { extraction_id: ex_id.clone(), derived: derived.clone(), state };
+    if package_ready && meta_ready {
+        return Ok(prepared);
+    }
 
-    if !package_ready {
-        core.db.ensure_writable()?;
-        let staging = core.paths.derived.join(format!(".staging-{}", new_uuid()));
-        let src = s.managed_file.clone();
-        let st2 = staging.clone();
-        let built = tokio::task::spawn_blocking(move || {
-            std::fs::create_dir_all(&st2)?;
-            epub_security::build_safe_package(&src, &st2, &EpubLimits::default())
-        })
-        .await
-        .map_err(|_| AppError::internal("EPUB 처리 작업이 중단되었습니다."))?;
-        let pkg = match built {
-            Ok(p) => p,
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&staging);
-                extraction::set_extraction_state(&core.db.writer, &ex_id, "failed").await?;
-                documents::set_state(&core.db.writer, &doc.id, "failed").await?;
-                documents::merge_metadata(&core.db.writer, &doc.id, &serde_json::json!({"error": e.code.as_str()})).await?;
-                return Err(e);
+    core.db.ensure_writable()?;
+    let staging = core.paths.derived.join(format!(".staging-{}", new_uuid()));
+    let st2 = staging.clone();
+    let built = tokio::task::spawn_blocking(move || {
+        std::fs::create_dir_all(&st2)?;
+        let pkg = epub_security::build_safe_package(&managed, &st2, &EpubLimits::default())?;
+        let cover = find_cover(&st2, &pkg);
+        Ok::<_, AppError>((pkg, cover))
+    })
+    .await
+    .map_err(|_| AppError::internal("EPUB 처리 작업이 중단되었습니다."))?;
+    let (pkg, cover) = match built {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&staging);
+            if package_ready {
+                // Only the metadata harvest failed; do not retry on every start.
+                documents::merge_metadata(&core.db.writer, &doc.id, &serde_json::json!({"libraryMeta": LIBRARY_META_VERSION})).await?;
+                return Ok(prepared);
             }
-        };
-        if derived.exists() {
-            let _ = std::fs::remove_dir_all(&derived);
+            extraction::set_extraction_state(&core.db.writer, &ex_id, "failed").await?;
+            documents::set_state(&core.db.writer, &doc.id, "failed").await?;
+            documents::merge_metadata(&core.db.writer, &doc.id, &serde_json::json!({"error": e.code.as_str(), "libraryMeta": LIBRARY_META_VERSION})).await?;
+            return Err(e);
         }
-        std::fs::rename(&staging, &derived)?;
-        let resources: serde_json::Map<String, serde_json::Value> =
-            pkg.resources.iter().map(|r| (r.resource_id.clone(), serde_json::json!(r.safe_href))).collect();
-        let mut meta = serde_json::json!({
-            "title": pkg.title,
-            "toc": pkg.toc,
-            "resources": resources,
-            "restrictions": pkg.restrictions,
-            "canonicalRevision": pkg.canonical_revision,
-        });
-        if doc.metadata.get("sourceLanguage").is_none() {
-            if let Some(l) = pkg.language.as_deref().map(|l| l.trim()).filter(|l| crate::commands::core::check_lang(l).is_ok()) {
-                meta["sourceLanguage"] = serde_json::json!(l);
-            }
-        }
-        documents::merge_metadata(&core.db.writer, &doc.id, &meta).await?;
-        for it in &pkg.spine {
-            let loc = format!("spine:{}:{}", it.index, it.safe_href);
-            let sid = derive_section_id(&ex_id, it.index, &loc);
-            extraction::ensure_section(
-                &core.db.writer,
-                &sid,
-                &ex_id,
-                it.index,
-                &serde_json::json!({"kind": "epub", "spineIndex": it.index, "href": it.safe_href, "idref": it.idref, "linear": it.linear}),
-            )
-            .await?;
+    };
+    let has_cover = match cover {
+        Some(b) => store_cover(&core.paths, &doc.id, &b),
+        None => false,
+    };
+    documents::merge_metadata(&core.db.writer, &doc.id, &library_meta(&pkg, has_cover)).await?;
+    if package_ready {
+        let _ = std::fs::remove_dir_all(&staging);
+        return Ok(prepared);
+    }
+    if derived.exists() {
+        let _ = std::fs::remove_dir_all(&derived);
+    }
+    std::fs::rename(&staging, &derived)?;
+    let resources: serde_json::Map<String, serde_json::Value> =
+        pkg.resources.iter().map(|r| (r.resource_id.clone(), serde_json::json!(r.safe_href))).collect();
+    let mut meta = serde_json::json!({
+        "title": pkg.title,
+        "toc": pkg.toc,
+        "resources": resources,
+        "restrictions": pkg.restrictions,
+        "canonicalRevision": pkg.canonical_revision,
+    });
+    if doc.metadata.get("sourceLanguage").is_none() {
+        if let Some(l) = pkg.language.as_deref().map(|l| l.trim()).filter(|l| crate::commands::core::check_lang(l).is_ok()) {
+            meta["sourceLanguage"] = serde_json::json!(l);
         }
     }
+    documents::merge_metadata(&core.db.writer, &doc.id, &meta).await?;
+    for it in &pkg.spine {
+        let loc = format!("spine:{}:{}", it.index, it.safe_href);
+        let sid = derive_section_id(&ex_id, it.index, &loc);
+        extraction::ensure_section(
+            &core.db.writer,
+            &sid,
+            &ex_id,
+            it.index,
+            &serde_json::json!({"kind": "epub", "spineIndex": it.index, "href": it.safe_href, "idref": it.idref, "linear": it.linear}),
+        )
+        .await?;
+    }
+    Ok(prepared)
+}
+
+/// Harvest covers/metadata for EPUBs imported before this existed (or just imported).
+pub async fn backfill_library(core: Arc<AppCore>) {
+    let mut cursor: Option<String> = None;
+    loop {
+        let Ok((docs, next)) = documents::list(&core.db.reader, cursor.as_deref(), 100).await else { return };
+        for d in docs.iter().filter(|d| d.format == "epub" && d.state != "failed" && d.state != "importing") {
+            if d.metadata.get("libraryMeta").and_then(|v| v.as_i64()) != Some(LIBRARY_META_VERSION) {
+                if let Err(e) = prepare_package(&core, &d.id).await {
+                    tracing::warn!(target: "epub", "library metadata harvest failed: {:?}", e.code);
+                }
+            }
+        }
+        match next {
+            Some(n) => cursor = Some(n),
+            None => return,
+        }
+    }
+}
+
+pub async fn ensure_extraction(core: Arc<AppCore>, s: Arc<Session>, doc: documents::DocumentRow) -> AppResult<()> {
+    let Prepared { extraction_id: ex_id, derived, state } = prepare_package(&core, &doc.id).await?;
 
     let doc_state = if state == "ready" { "ready" } else if state == "partial" { "partial" } else { "indexing" };
     extraction::activate(&core.db.writer, &doc.id, &ex_id, doc_state).await?;
