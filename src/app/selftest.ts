@@ -6,7 +6,7 @@ import { call } from '../ipc/client';
 import type { ImportCandidate } from '../ipc/generated/ImportCandidate';
 import type { ImportResult } from '../ipc/generated/ImportResult';
 
-type Hooks = {
+type Hooks = { session: () => { sessionId: string; metadata?: Record<string, unknown> } | null;
   reloadLibrary: () => Promise<void>; open: (id: string) => void; close: () => void; anchor: () => unknown; anchorError: () => number | null; reloadSettings: () => Promise<void> };
 declare global {
   interface Window { __thoth?: Partial<Hooks> }
@@ -101,6 +101,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'audit') await layoutAudit(res, i);
       if (cfg.scenario === 'quiet') await quietCheck(res);
       if (cfg.scenario === 'structure') await structureCheck(res);
+      if (cfg.scenario === 'features') await featuresCheck(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -690,4 +691,59 @@ async function libraryCheck(n: number) {
   res.readLabels = books().filter((b) => /읽음$/.test(b.querySelector('.book-read')?.textContent ?? '')).length;
   res.newFlags = document.querySelectorAll('.cover-flag.new').length;
   await log('result', res);
+}
+
+/** PDF outline TOC, coloured runs and page-break pairs on a real book. Counts only. */
+async function featuresCheck(res: Record<string, unknown>) {
+  const sid = () => window.__thoth?.session?.()?.sessionId;
+  type Sec = { id: string; ordinal: number; state: string };
+  const sections = async () => (sid() ? await call<Sec[]>('sections_list', { sessionId: sid() }).catch(() => [] as Sec[]) : []);
+  // let the extractor publish a good part of the book
+  const want = 80;
+  for (let i = 0; i < 120; i++) {
+    const s = await sections();
+    if (s.length && s.filter((x) => x.state === 'ready' || x.state === 'failed').length >= Math.min(want, s.length)) break;
+    await sleep(1000);
+  }
+  const secs = (await sections()).filter((x) => x.state === 'ready').sort((a, b) => Number(a.ordinal) - Number(b.ordinal)).slice(0, want);
+  let blocks = 0; let coloured = 0; let colourNodes = 0; let continues = 0;
+  const colours = new Set<string>();
+  let colourPage = -1; let continuesPage = -1;
+  type Node = { t: string; v?: string; c?: Node[] };
+  const walk = (ns: Node[]): number => ns.reduce((n, x) => n + (x.t === 'color' ? (colours.add(String(x.v)), 1) : 0) + (x.c ? walk(x.c) : 0), 0);
+  for (const s of secs) {
+    const page = await call<{ blocks: { content: Node[]; roles: string[] }[] }>('blocks_get', { sessionId: sid(), sectionId: s.id, cursor: null, limit: 1000 }).catch(() => ({ blocks: [] }));
+    for (const b of page.blocks) {
+      blocks++;
+      const n = walk(b.content ?? []);
+      if (n) { coloured++; colourNodes += n; if (colourPage < 0) colourPage = Number(s.ordinal); }
+      if (b.roles?.includes('continues_on_next_page')) { continues++; if (continuesPage < 0 && Number(s.ordinal) > 2) continuesPage = Number(s.ordinal); }
+    }
+  }
+  const toc = (window.__thoth?.session?.()?.metadata?.toc as unknown[] | undefined) ?? [];
+  res.features = {
+    readySections: secs.length, blocks, colouredBlocks: coloured, colourNodes, colours: colours.size, continuesBlocks: continues,
+    tocTopLevel: toc.length, tocDom: document.querySelectorAll('.toc .toc-item').length, tocPageLabels: document.querySelectorAll('.toc .toc-page').length,
+  };
+  // side-by-side on the first page with coloured text, then on a page-break pair
+  clickButton('병렬');
+  await waitFor(() => canvases() > 0, 20000);
+  const pane = document.querySelector<HTMLElement>('.pdf-pages');
+  const visit = async (i: number) => {
+    const n = document.querySelector<HTMLElement>(`.pdf-page[data-page="${i}"]`);
+    if (!pane || !n) return null;
+    pane.scrollTop += n.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8;
+    userScroll(pane);
+    await waitFor(() => document.querySelectorAll('.tp-text').length > 0, WAIT);
+    await sleep(2500);
+    const texts = [...document.querySelectorAll<HTMLElement>('.tp-text')].map((x) => x.textContent ?? '');
+    return {
+      overlays: texts.length,
+      inkSpans: document.querySelectorAll('.tp-text .ink').length,
+      rawTags: texts.filter((x) => /<\/?[bic]>|<pb/i.test(x)).length,
+      failed: document.querySelectorAll('.tcell .badge.danger, .tp-text.failed').length,
+    };
+  };
+  if (colourPage >= 0) (res.features as Record<string, unknown>).colourPage = await visit(colourPage);
+  if (continuesPage >= 0) (res.features as Record<string, unknown>).continuesPage = await visit(continuesPage);
 }

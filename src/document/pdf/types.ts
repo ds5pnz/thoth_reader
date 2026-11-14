@@ -12,6 +12,8 @@ export interface PdfTextItemLike {
   height: number;
   fontName: string;
   hasEOL: boolean;
+  /** Fill colour the item was painted with (`#rrggbb`), when it could be determined. */
+  color?: string | null;
 }
 
 /** PDF.js `TextStyle` (+ optional real font facts resolved from `commonObjs`). */

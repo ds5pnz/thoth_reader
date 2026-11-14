@@ -492,6 +492,68 @@ pub async fn context_blocks(pool: &SqlitePool, b: &Block) -> AppResult<(Option<B
     Ok((prev.map(|r| block_from_row(&r)).transpose()?, heading.map(|r| block_from_row(&r)).transpose()?))
 }
 
+const NON_BODY_ROLES: [&str; 4] = ["running_header", "running_footer", "page_number", "footnote"];
+pub const ROLE_CONTINUES: &str = "continues_on_next_page";
+
+fn is_body(b: &Block) -> bool {
+    !b.roles.iter().any(|r| NON_BODY_ROLES.contains(&r.as_str()))
+}
+
+fn flows(b: &Block) -> bool {
+    matches!(b.kind, crate::domain::BlockKind::Paragraph | crate::domain::BlockKind::ListItem) && b.translation_policy == crate::domain::TranslationPolicy::Auto
+}
+
+/// Which half of a sentence split by a page break `b` is, and the block holding the other
+/// half: `(true, next)` when `b` ends its page mid-sentence and the next page starts with
+/// flowing text, `(false, prev)` for the block that receives such a continuation.
+pub async fn page_break_partner(pool: &SqlitePool, b: &Block) -> AppResult<Option<(bool, Block)>> {
+    if !matches!(b.location, crate::domain::SourceLocation::Pdf { .. }) || !flows(b) || !is_body(b) {
+        return Ok(None);
+    }
+    let first = b.roles.iter().any(|r| r == ROLE_CONTINUES);
+    // The receiving block is the first body block of its page: only look near the top.
+    if !first && b.ordinal > 8 {
+        return Ok(None);
+    }
+    let Some(ordinal): Option<i64> = sqlx::query_scalar("select ordinal from sections where id = ?").bind(&b.section_id).fetch_optional(pool).await? else { return Ok(None) };
+    let edge = |section: String, asc: bool| async move {
+        let rows = sqlx::query(if asc { "select * from blocks where section_id = ? order by ordinal asc limit 12" } else { "select * from blocks where section_id = ? order by ordinal desc limit 12" })
+            .bind(section)
+            .fetch_all(pool)
+            .await?;
+        for r in &rows {
+            let x = block_from_row(r)?;
+            if is_body(&x) {
+                return Ok::<_, AppError>(Some(x));
+            }
+        }
+        Ok(None)
+    };
+    if first {
+        // `b` must really be the last body block of its page.
+        if edge(b.section_id.clone(), false).await?.map(|x| x.id) != Some(b.id.clone()) {
+            return Ok(None);
+        }
+        let next: Option<String> = sqlx::query_scalar("select id from sections where extraction_id = ? and ordinal = ? and state = 'ready'")
+            .bind(&b.extraction_id)
+            .bind(ordinal + 1)
+            .fetch_optional(pool)
+            .await?;
+        let Some(next) = next else { return Ok(None) };
+        return Ok(edge(next, true).await?.filter(flows).map(|x| (true, x)));
+    }
+    if edge(b.section_id.clone(), true).await?.map(|x| x.id) != Some(b.id.clone()) || ordinal == 0 {
+        return Ok(None);
+    }
+    let prev: Option<String> = sqlx::query_scalar("select id from sections where extraction_id = ? and ordinal = ? and state = 'ready'")
+        .bind(&b.extraction_id)
+        .bind(ordinal - 1)
+        .fetch_optional(pool)
+        .await?;
+    let Some(prev) = prev else { return Ok(None) };
+    Ok(edge(prev, false).await?.filter(|x| flows(x) && x.roles.iter().any(|r| r == ROLE_CONTINUES)).map(|x| (false, x)))
+}
+
 /// Next N translatable leaves after `b` in reading order, crossing sections (for prefetch).
 pub async fn next_blocks(pool: &SqlitePool, b: &Block, n: u32) -> AppResult<Vec<Block>> {
     let rows = sqlx::query(

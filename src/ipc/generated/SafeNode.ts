@@ -3,4 +3,4 @@
 /**
  * Allow-listed inline content AST (spec §3.2). Never arbitrary HTML.
  */
-export type SafeNode = { "t": "text", v: string, } | { "t": "emphasis", c: Array<SafeNode>, } | { "t": "strong", c: Array<SafeNode>, } | { "t": "inline_code", v: string, } | { "t": "link", href: string, c: Array<SafeNode>, } | { "t": "break" } | { "t": "image_ref", resourceId: string, alt: string, } | { "t": "math_ref", resourceId: string, alt: string, } | { "t": "table_cell", header: boolean, c: Array<SafeNode>, };
+export type SafeNode = { "t": "text", v: string, } | { "t": "emphasis", c: Array<SafeNode>, } | { "t": "strong", c: Array<SafeNode>, } | { "t": "color", v: string, c: Array<SafeNode>, } | { "t": "inline_code", v: string, } | { "t": "link", href: string, c: Array<SafeNode>, } | { "t": "break" } | { "t": "image_ref", resourceId: string, alt: string, } | { "t": "math_ref", resourceId: string, alt: string, } | { "t": "table_cell", header: boolean, c: Array<SafeNode>, };

@@ -16,15 +16,17 @@ export function renderMarked(text: string, marks: readonly Mark[] | undefined): 
     const piece = text.slice(a, b);
     const bold = valid.some((m) => m.kind === 'b' && m.startU16 <= a && m.endU16 >= b);
     const italic = valid.some((m) => m.kind === 'i' && m.startU16 <= a && m.endU16 >= b);
+    const ink = valid.find((m) => m.kind.startsWith('c:') && m.startU16 <= a && m.endU16 >= b)?.kind.slice(2);
+    const color = ink && /^#[0-9a-f]{6}$/.test(ink) ? ink : undefined;
     let node: ReactNode = piece;
     if (italic) node = <em>{node}</em>;
     if (bold) node = <strong>{node}</strong>;
-    out.push(bold || italic ? <span key={a}>{node}</span> : piece);
+    out.push(bold || italic || color ? <span key={a} className={color ? 'ink' : undefined} style={color ? { color } : undefined}>{node}</span> : piece);
   }
   return out;
 }
 
 /** Streaming previews may show raw emphasis tags before the final text is parsed. */
 export function stripInlineTags(s: string): string {
-  return s.replace(/<\/?[bi]>/gi, '');
+  return s.replace(/<\/?[bic]>/gi, '').replace(/\s*<pb\s*\/?>\s*/gi, ' ');
 }

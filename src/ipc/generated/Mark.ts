@@ -2,6 +2,6 @@
 
 export type Mark = { startU16: number, endU16: number, 
 /**
- * "b" (bold) or "i" (italic)
+ * "b" (bold), "i" (italic) or "c:#rrggbb" (coloured text)
  */
 kind: string, };

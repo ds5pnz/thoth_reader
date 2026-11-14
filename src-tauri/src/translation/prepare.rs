@@ -208,6 +208,51 @@ pub struct PreparedPart {
     pub end_u16: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairHalf {
+    First,
+    Second,
+}
+
+pub const PAGE_BREAK_TAG: &str = "<pb/>";
+/// Longer halves are translated on their own (the joined request would be split anyway).
+const PAIR_MAX_CHARS: usize = 4000;
+
+fn tagged_or_plain(b: &Block) -> (String, bool) {
+    match super::inline_marks::analyze(b) {
+        super::inline_marks::SourceMarks::Inline(t) => (t, true),
+        _ => (b.source_text.clone(), false),
+    }
+}
+
+/// The half of a `<pb/>`-joined translation that belongs to this block. A missing, repeated
+/// or edge-placed marker falls back to a cut at the source proportion, on a word boundary.
+pub fn split_pair(joined: &str, half: PairHalf, first_share: f32) -> String {
+    let norm = joined.replace("<pb />", PAGE_BREAK_TAG).replace("<pb>", PAGE_BREAK_TAG).replace("<PB/>", PAGE_BREAK_TAG).replace("</pb>", "");
+    let pieces: Vec<&str> = norm.split(PAGE_BREAK_TAG).collect();
+    let (a, b) = if pieces.len() == 2 && !pieces[0].trim().is_empty() && !pieces[1].trim().is_empty() {
+        (pieces[0].trim().to_string(), pieces[1].trim().to_string())
+    } else {
+        let whole = pieces.iter().map(|p| p.trim()).filter(|p| !p.is_empty()).collect::<Vec<_>>().join(" ");
+        let chars: Vec<(usize, char)> = whole.char_indices().collect();
+        if chars.len() < 2 {
+            return whole;
+        }
+        let want = ((chars.len() as f32 * first_share.clamp(0.05, 0.95)) as usize).clamp(1, chars.len() - 1);
+        // nearest whitespace within a short distance, else cut right there (CJK)
+        let cut = (0..=24usize)
+            .flat_map(|d| [want.saturating_sub(d), (want + d).min(chars.len() - 1)])
+            .find(|&i| i > 0 && chars[i].1.is_whitespace())
+            .unwrap_or(want);
+        let at = chars[cut].0;
+        (whole[..at].trim().to_string(), whole[at..].trim().to_string())
+    };
+    match half {
+        PairHalf::First => a,
+        PairHalf::Second => b,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PreparedJob {
     pub provider_id: String,
@@ -218,6 +263,11 @@ pub struct PreparedJob {
     /// Emphasis handling decided for this block (see `inline_marks`).
     pub has_inline_marks: bool,
     pub whole_mark: Option<char>,
+    /// Translated together with the other half of a sentence split by a page break:
+    /// which half this block is, and its share of the joined source (for the fallback split).
+    pub pair: Option<(PairHalf, f32)>,
+    /// What `<c>` means for this block (`#rrggbb`).
+    pub accent: Option<String>,
     pub block_id: String,
     pub cache_key: String,
     pub descriptor: serde_json::Value,
@@ -272,12 +322,31 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
         }
     };
     // Inline emphasis (bold/italic) travels as paired tags inside the text to translate.
-    let marks = super::inline_marks::analyze(b);
+    let (marks, accent) = super::inline_marks::analyze_full(b);
     let text_in: &str = match &marks {
         super::inline_marks::SourceMarks::Inline(m) => m.as_str(),
         _ => b.source_text.as_str(),
     };
-    let has_inline = matches!(marks, super::inline_marks::SourceMarks::Inline(_));
+    let mut has_inline = matches!(marks, super::inline_marks::SourceMarks::Inline(_));
+    // A sentence cut by a page break is translated together with its other half, so both
+    // sides read as one sentence; each block keeps only its own side of the result.
+    let mut pair: Option<(PairHalf, f32)> = None;
+    let joined_text;
+    let mut text_in = text_in;
+    if !text_in.contains("<pb") {
+        if let Some((is_first, other)) = extraction::page_break_partner(&db.reader, b).await? {
+            let (other_text, other_inline) = tagged_or_plain(&other);
+            let own_n = b.source_text.chars().count();
+            let other_n = other.source_text.chars().count();
+            if own_n <= PAIR_MAX_CHARS && other_n <= PAIR_MAX_CHARS && !other_text.contains("<pb") {
+                let (first, second, first_n) = if is_first { (text_in, other_text.as_str(), own_n) } else { (other_text.as_str(), text_in, other_n) };
+                joined_text = format!("{first} {PAGE_BREAK_TAG} {second}");
+                text_in = joined_text.as_str();
+                has_inline |= other_inline;
+                pair = Some((if is_first { PairHalf::First } else { PairHalf::Second }, first_n as f32 / (own_n + other_n).max(1) as f32));
+            }
+        }
+    }
     let spans = placeholder::detect_spans(text_in);
     let mut split = splitter::split_source(text_in, budget, &spans);
     if has_inline && split.len() > 1 {
@@ -305,6 +374,8 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
             placeholder_example: if protected.has_placeholders() { Some(protected.example_token()) } else { None },
             style: p.style,
             inline_tags: has_inline && (sp.text.contains("<b>") || sp.text.contains("<i>")),
+            page_break: pair.is_some(),
+            color_tags: sp.text.contains("<c>"),
         })?;
         let request = TranslationRequest {
             request_id: String::new(),
@@ -358,6 +429,8 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
         source_text: b.source_text.clone(),
         has_inline_marks: has_inline,
         whole_mark: match marks { super::inline_marks::SourceMarks::Whole(k) => Some(k), _ => None },
+        pair,
+        accent,
         block_id: b.id.clone(),
         cache_key: cache_key::cache_key(&descriptor),
         descriptor,
@@ -401,8 +474,30 @@ pub fn strip_leading_think(text: &str) -> Option<&str> {
 
 /// Final stored text + emphasis ranges for a completed job.
 pub fn finish_text(pj: &PreparedJob, joined: &str) -> (String, Vec<super::inline_marks::Mark>) {
+    let own;
+    let joined = match pj.pair {
+        Some((half, share)) => {
+            own = split_pair(joined, half, share);
+            own.as_str()
+        }
+        None => joined,
+    };
     if pj.has_inline_marks {
-        return super::inline_marks::extract(joined);
+        let (text, mut marks) = super::inline_marks::extract(joined);
+        // `<c>` is this block's accent colour; without one (the other half's tags) it is dropped.
+        marks.retain_mut(|m| {
+            if m.kind != "c" {
+                return true;
+            }
+            match &pj.accent {
+                Some(a) => {
+                    m.kind = format!("c:{a}");
+                    true
+                }
+                None => false,
+            }
+        });
+        return (text, marks);
     }
     match pj.whole_mark {
         Some(k) if !joined.is_empty() => (

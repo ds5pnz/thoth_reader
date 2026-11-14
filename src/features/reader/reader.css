@@ -15,6 +15,8 @@
 .toc { list-style: none; margin: 0; padding: 0; }
 .toc-item { width: 100%; text-align: left; border: 0; background: transparent; padding: 5px 8px; border-radius: 5px; cursor: pointer; display: flex; gap: 6px; align-items: center; }
 .toc-item:hover { background: var(--bg-elev); }
+.toc-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.toc-page { flex: none; color: var(--fg-faint); font-size: 12px; font-variant-numeric: tabular-nums; }
 .search form { display: flex; flex-direction: column; gap: 6px; }
 .search-scope { font-size: 11px; margin: 6px 0; }
 .hits { list-style: none; padding: 0; margin: 6px 0; }

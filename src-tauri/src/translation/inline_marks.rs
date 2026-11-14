@@ -19,7 +19,7 @@ use ts_rs::TS;
 pub struct Mark {
     pub start_u16: u32,
     pub end_u16: u32,
-    /// "b" (bold) or "i" (italic)
+    /// "b" (bold), "i" (italic) or "c:#rrggbb" (coloured text)
     pub kind: String,
 }
 
@@ -33,31 +33,38 @@ pub enum SourceMarks {
     Inline(String),
 }
 
-const TAGS: [&str; 4] = ["<b>", "</b>", "<i>", "</i>"];
+const TAGS: [&str; 6] = ["<b>", "</b>", "<i>", "</i>", "<c>", "</c>"];
 
 fn has_literal_tag(s: &str) -> bool {
     let l = s.to_ascii_lowercase();
     TAGS.iter().any(|t| l.contains(t))
 }
 
-/// style bits: 1 = bold, 2 = italic
-fn walk(nodes: &[SafeNode], style: u8, out: &mut Vec<(char, u8)>) -> bool {
+/// style bits: 1 = bold, 2 = italic, 4 = the block's accent colour (the first colour met;
+/// further colours are not carried).
+fn walk(nodes: &[SafeNode], style: u8, out: &mut Vec<(char, u8)>, accent: &mut Option<String>) -> bool {
     for n in nodes {
         match n {
             SafeNode::Text { v } => out.extend(v.chars().map(|c| (c, style))),
             SafeNode::InlineCode { v } => out.extend(v.chars().map(|c| (c, style))),
             SafeNode::Strong { c } => {
-                if !walk(c, style | 1, out) {
+                if !walk(c, style | 1, out, accent) {
                     return false;
                 }
             }
             SafeNode::Emphasis { c } => {
-                if !walk(c, style | 2, out) {
+                if !walk(c, style | 2, out, accent) {
+                    return false;
+                }
+            }
+            SafeNode::Color { v, c } => {
+                let on = crate::domain::is_hex_color(v) && *accent.get_or_insert_with(|| v.clone()) == *v;
+                if !walk(c, if on { style | 4 } else { style }, out, accent) {
                     return false;
                 }
             }
             SafeNode::Link { c, .. } => {
-                if !walk(c, style, out) {
+                if !walk(c, style, out, accent) {
                     return false;
                 }
             }
@@ -96,29 +103,39 @@ fn normalize(chars: &[(char, u8)]) -> Vec<(char, u8)> {
 
 /// Decide how (and whether) a block's emphasis can be carried through translation.
 pub fn analyze(b: &Block) -> SourceMarks {
+    analyze_full(b).0
+}
+
+/// [`analyze`] plus the colour that `<c>` stands for in this block, when it uses one.
+pub fn analyze_full(b: &Block) -> (SourceMarks, Option<String>) {
     if !matches!(b.kind, BlockKind::Paragraph | BlockKind::ListItem | BlockKind::Quote | BlockKind::Caption) {
-        return SourceMarks::None;
+        return (SourceMarks::None, None);
     }
     if has_literal_tag(&b.source_text) {
-        return SourceMarks::None; // the text itself talks about <b>/<i>: stay literal
+        return (SourceMarks::None, None); // the text itself talks about <b>/<i>: stay literal
     }
     let mut chars = Vec::new();
-    if !walk(&b.content, 0, &mut chars) {
-        return SourceMarks::None;
+    let mut accent = None;
+    if !walk(&b.content, 0, &mut chars, &mut accent) {
+        return (SourceMarks::None, None);
     }
     let norm = normalize(&chars);
     let plain: String = norm.iter().map(|(c, _)| *c).collect();
     if plain != b.source_text {
-        return SourceMarks::None; // cannot align styles with the hashed source text
+        return (SourceMarks::None, None); // cannot align styles with the hashed source text
     }
     let letters: Vec<u8> = norm.iter().filter(|(c, _)| !c.is_whitespace()).map(|(_, s)| *s).collect();
     if letters.is_empty() || letters.iter().all(|s| *s == 0) {
-        return SourceMarks::None;
+        return (SourceMarks::None, None);
     }
     if letters.iter().all(|s| *s == letters[0]) {
-        return SourceMarks::Whole(if letters[0] & 1 == 1 { 'b' } else { 'i' });
+        // Uniform: no tags needed. A block that is one colour throughout is not "highlighted".
+        return match letters[0] & 3 {
+            0 => (SourceMarks::None, None),
+            s => (SourceMarks::Whole(if s & 1 == 1 { 'b' } else { 'i' }), None),
+        };
     }
-    // Emit tags at style transitions (bold outside italic).
+    // Emit tags at style transitions (bold outside italic, colour innermost).
     let mut out = String::with_capacity(plain.len() + 32);
     let mut cur = 0u8;
     let close = |from: u8, to: u8, out: &mut String| {
@@ -152,20 +169,32 @@ pub fn analyze(b: &Block) -> SourceMarks {
     };
     for &(c, s) in &norm {
         if s != cur {
-            close(cur, s, &mut out);
-            open(cur, s, &mut out);
+            // Colour is the innermost pair: it closes before, and reopens after, any change
+            // to bold/italic, so every pair stays properly nested.
+            if cur & 4 == 4 && (s & 4 == 0 || s & 3 != cur & 3) {
+                out.push_str("</c>");
+            }
+            close(cur & 3, s & 3, &mut out);
+            open(cur & 3, s & 3, &mut out);
+            if s & 4 == 4 && (cur & 4 == 0 || s & 3 != cur & 3) {
+                out.push_str("<c>");
+            }
             cur = s;
         }
         out.push(c);
     }
-    close(cur, 0, &mut out);
-    SourceMarks::Inline(out)
+    if cur & 4 == 4 {
+        out.push_str("</c>");
+    }
+    close(cur & 3, 0, &mut out);
+    let uses_color = out.contains("<c>");
+    (SourceMarks::Inline(out), if uses_color { accent } else { None })
 }
 
 /// Remove the tag tokens (used when emphasis cannot be trusted).
 pub fn strip_tags(s: &str) -> String {
     let mut out = s.to_string();
-    for t in ["<b>", "</b>", "<i>", "</i>", "<B>", "</B>", "<I>", "</I>"] {
+    for t in ["<b>", "</b>", "<i>", "</i>", "<c>", "</c>", "<B>", "</B>", "<I>", "</I>", "<C>", "</C>"] {
         out = out.replace(t, "");
     }
     out
@@ -189,6 +218,10 @@ pub fn extract(text: &str) -> (String, Vec<Mark>) {
             Some((false, 'b', 4))
         } else if lower4.starts_with("</i>") {
             Some((false, 'i', 4))
+        } else if lower4.starts_with("<c>") {
+            Some((true, 'c', 3))
+        } else if lower4.starts_with("</c>") {
+            Some((false, 'c', 4))
         } else {
             None
         };
@@ -249,7 +282,9 @@ pub fn rebalance_parts(parts: &mut [String]) {
                 state.push('b');
             } else if l.starts_with("<i>") {
                 state.push('i');
-            } else if l.starts_with("</b>") || l.starts_with("</i>") {
+            } else if l.starts_with("<c>") {
+                state.push('c');
+            } else if l.starts_with("</b>") || l.starts_with("</i>") || l.starts_with("</c>") {
                 state.pop();
             }
             rest = &tail[1..];
@@ -352,5 +387,39 @@ mod tests {
         rebalance_parts(&mut parts);
         assert_eq!(parts[0], "a <b>bold starts.</b>");
         assert_eq!(parts[1], "<b>still bold</b> end.");
+    }
+
+    #[test]
+    fn coloured_words_travel_as_c_tags() {
+        let red = |c: Vec<SafeNode>| SafeNode::Color { v: "#b00000".into(), c };
+        let b = block(vec![t("See "), red(vec![t("Cloud Versus Self-Hosting")]), t(" for more.")], "See Cloud Versus Self-Hosting for more.", BlockKind::ListItem);
+        let (m, accent) = analyze_full(&b);
+        assert_eq!(m, SourceMarks::Inline("See <c>Cloud Versus Self-Hosting</c> for more.".into()));
+        assert_eq!(accent.as_deref(), Some("#b00000"));
+        // colour inside bold: colour is the innermost pair and pairs never cross
+        let b = block(vec![t("a "), SafeNode::Strong { c: vec![t("bold "), red(vec![t("red")])] }, t(" z")], "a bold red z", BlockKind::Paragraph);
+        assert_eq!(analyze_full(&b).0, SourceMarks::Inline("a <b>bold <c>red</c></b> z".into()));
+        let b = block(vec![red(vec![t("red "), SafeNode::Strong { c: vec![t("both")] }]), t(" z")], "red both z", BlockKind::Paragraph);
+        let (m, _) = analyze_full(&b);
+        assert_eq!(m, SourceMarks::Inline("<c>red </c><b><c>both</c></b> z".into()));
+        if let SourceMarks::Inline(tagged) = m {
+            let (plain, marks) = extract(&tagged);
+            assert_eq!(plain, "red both z");
+            assert!(marks.iter().any(|m| m.kind == "b" && (m.start_u16, m.end_u16) == (4, 8)));
+            assert_eq!(marks.iter().filter(|m| m.kind == "c").count(), 2);
+        }
+        // a second colour and malformed values are not carried; one-colour blocks are plain
+        let blue = SafeNode::Color { v: "#0000ff".into(), c: vec![t("blue")] };
+        let b = block(vec![t("x "), red(vec![t("red")]), t(" "), blue, t(" y")], "x red blue y", BlockKind::Paragraph);
+        assert_eq!(analyze_full(&b).0, SourceMarks::Inline("x <c>red</c> blue y".into()));
+        let bad = block(vec![t("x "), SafeNode::Color { v: "red;background:url(x)".into(), c: vec![t("y")] }], "x y", BlockKind::Paragraph);
+        assert_eq!(analyze_full(&bad), (SourceMarks::None, None));
+        let all = block(vec![red(vec![t("all red")])], "all red", BlockKind::Paragraph);
+        assert_eq!(analyze_full(&all), (SourceMarks::None, None));
+        // translated answer -> ranges; a lost closing tag drops the marks but keeps the text
+        let (plain, marks) = extract("자세한 내용은 <c>클라우드 대 자체 호스팅</c>을 보세요.");
+        assert_eq!(plain, "자세한 내용은 클라우드 대 자체 호스팅을 보세요.");
+        assert_eq!(marks, vec![Mark { start_u16: 8, end_u16: 21, kind: "c".into() }]);
+        assert_eq!(extract("앞 <c>뒤"), ("앞 뒤".to_string(), vec![]));
     }
 }

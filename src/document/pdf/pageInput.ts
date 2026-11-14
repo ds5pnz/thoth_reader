@@ -68,6 +68,86 @@ function asMatrix(v: unknown): Matrix | null {
 }
 
 /** Count image painting operators and compute unit-square placements under the CTM. */
+const TEXT_OPS = new Set([44, 45, 46, 47]); // showText, showSpacedText, nextLineShowText, nextLineSetSpacingShowText
+const OP_SET_FILL_RGB = 59;
+const OP_SET_FILL_OTHER = new Set([54, 55, 57, 61, 93]); // setFillColor(N), gray, CMYK, transparent
+
+export interface PaintedText { text: string; color: string | null }
+
+function hexColor(args: unknown): string | null {
+  const a = Array.isArray(args) ? args : [];
+  if (typeof a[0] === 'string' && /^#[0-9a-f]{6}$/i.test(a[0])) return a[0].toLowerCase();
+  if (a.length >= 3 && a.slice(0, 3).every((v) => typeof v === 'number' && Number.isFinite(v))) {
+    return '#' + (a.slice(0, 3) as number[]).map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+  }
+  return null;
+}
+
+/** Text painting operators in order, each with the fill colour in effect. */
+export function paintedText(fnArray: ArrayLike<number>, argsArray: ArrayLike<unknown>): PaintedText[] {
+  const out: PaintedText[] = [];
+  let color: string | null = '#000000';
+  const stack: (string | null)[] = [];
+  for (let i = 0; i < fnArray.length; i++) {
+    const fn = fnArray[i]!;
+    const args = argsArray[i] as unknown[] | null | undefined;
+    if (fn === PDF_OPS.save) stack.push(color);
+    else if (fn === PDF_OPS.restore) color = stack.length ? stack.pop()! : color;
+    else if (fn === OP_SET_FILL_RGB) color = hexColor(args);
+    else if (OP_SET_FILL_OTHER.has(fn)) color = null; // pattern / unknown space: do not guess
+    else if (TEXT_OPS.has(fn)) {
+      const glyphs = Array.isArray(args) ? (Array.isArray(args[0]) ? args[0] : Array.isArray(args[args.length - 1]) ? args[args.length - 1] : null) : null;
+      if (!Array.isArray(glyphs)) continue;
+      let text = '';
+      for (const g of glyphs as unknown[]) {
+        const u = (g as { unicode?: unknown } | null)?.unicode;
+        if (typeof u === 'string') text += u;
+      }
+      if (text) out.push({ text, color });
+    }
+  }
+  return out;
+}
+
+const INK = (s: string) => s.normalize('NFKC').replace(/\s+/gu, '');
+
+/**
+ * Give each text item the colour it was painted with by walking the painted glyphs and the
+ * extracted items in parallel (both are in content-stream order). When the two streams do
+ * not line up well enough the page gets no colours at all rather than wrong ones.
+ */
+export function assignItemColors(items: { str: string; color?: string | null }[], painted: readonly PaintedText[]): boolean {
+  const chars: string[] = [];
+  const cols: (string | null)[] = [];
+  for (const p of painted) for (const ch of INK(p.text)) { chars.push(ch); cols.push(p.color); }
+  let k = 0;
+  let matched = 0;
+  let total = 0;
+  const result: (string | null)[] = [];
+  for (const it of items) {
+    const votes = new Map<string, number>();
+    for (const ch of INK(it.str)) {
+      total++;
+      let j = k;
+      // resync within a short window (text extraction may drop or reorder a few glyphs)
+      while (j < chars.length && j < k + 48 && chars[j] !== ch) j++;
+      if (j < chars.length && chars[j] === ch) {
+        matched++;
+        const c = cols[j];
+        if (c) votes.set(c, (votes.get(c) ?? 0) + 1);
+        k = j + 1;
+      }
+    }
+    let best: string | null = null;
+    let n = 0;
+    for (const [c, v] of votes) if (v > n) { best = c; n = v; }
+    result.push(best);
+  }
+  if (total === 0 || matched / total < 0.9) return false;
+  items.forEach((it, i) => { it.color = result[i] ?? null; });
+  return true;
+}
+
 export function analyzeOperatorList(fnArray: ArrayLike<number>, argsArray: ArrayLike<unknown>): { imageCount: number; imageRects: PdfImageRect[]; invisibleText: boolean } {
   let invisibleText = false;
   let ctm: Matrix = IDENTITY;
@@ -137,10 +217,12 @@ export async function buildPageInput(page: PDFPageProxy, opts: PageInputOptions 
   let imageCount = 0;
   let imageRects: PdfImageRect[] = [];
   let invisibleText = false;
+  let painted: PaintedText[] = [];
   if (opts.operatorList !== false) {
     // The operator list also makes PDF.js resolve the page fonts into commonObjs.
     const ops = await page.getOperatorList();
     ({ imageCount, imageRects, invisibleText } = analyzeOperatorList(ops.fnArray, ops.argsArray));
+    painted = paintedText(ops.fnArray, ops.argsArray);
   }
   const tc = await page.getTextContent({ includeMarkedContent: false });
   const items: PdfTextItemLike[] = [];
@@ -156,6 +238,7 @@ export async function buildPageInput(page: PDFPageProxy, opts: PageInputOptions 
       hasEOL: it.hasEOL,
     });
   }
+  if (painted.length) assignItemColors(items, painted);
   const styles: Record<string, PdfTextStyleLike> = {};
   for (const [key, st] of Object.entries(tc.styles)) {
     let fontName: string | null = null;

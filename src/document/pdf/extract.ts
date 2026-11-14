@@ -273,12 +273,15 @@ function buildDraft(
   let raw = '';
   // Bold / italic runs in raw offsets (1 = bold, 2 = italic), used for inline emphasis.
   const styleRuns: { rawStart: number; rawEnd: number; s: number }[] = [];
+  // Fill colour per run, to find words set in another colour than the block's own.
+  const colorRuns: { rawStart: number; rawEnd: number; color: string }[] = [];
   const appendLine = (parts: Line['parts'], prefix: string) => {
     if (prefix) raw += prefix;
     for (const p of parts) {
       if (p.frag) {
         const st = (p.frag.style.bold ? 1 : 0) | (p.frag.style.italic ? 2 : 0);
         if (st) styleRuns.push({ rawStart: raw.length, rawEnd: raw.length + p.text.length, s: st });
+        if (p.frag.color && !p.frag.isSpace) colorRuns.push({ rawStart: raw.length, rawEnd: raw.length + p.text.length, color: p.frag.color });
         textNodes.push({ path: `item:${p.frag.itemIndex}`, rawStartU16: raw.length, rawLenU16: p.text.length, nodeOffsetU16: 0 });
         itemRanges.push({ itemIndex: p.frag.itemIndex, startU16: 0, endU16: p.frag.str.length });
       }
@@ -340,7 +343,7 @@ function buildDraft(
   if (norm.text.length === 0 && kind !== 'code') return null;
 
   if (kind === 'code') content.push({ t: 'inline_code', v: raw });
-  else if (!isTable) content.push(...styledContent(norm.text, norm.offsets, styleRuns, kind, layout.bodyBold));
+  else if (!isTable) content.push(...styledContent(norm.text, norm.offsets, styleRuns, kind, layout.bodyBold, accentRuns(colorRuns)));
 
   return {
     kind,
@@ -480,18 +483,48 @@ export async function extractPage(input: PdfPageInput, extractionId: string, dep
  * stays a plain text node when the style is implied (headings, or bold body text) and
  * becomes one strong/emphasis node otherwise.
  */
+const rgb = (hex: string): [number, number, number] => [parseInt(hex.slice(1, 3), 16), parseInt(hex.slice(3, 5), 16), parseInt(hex.slice(5, 7), 16)];
+
+/** Perceptible difference between two `#rrggbb` colours (near-black vs black is not one). */
+export function colorsDiffer(a: string, b: string): boolean {
+  const [r1, g1, b1] = rgb(a);
+  const [r2, g2, b2] = rgb(b);
+  return Math.hypot(r1 - r2, g1 - g2, b1 - b2) > 72;
+}
+
+/**
+ * Runs set in a colour other than the block's dominant one, as the single most used such
+ * colour (one accent per block keeps the translation tags simple). Empty when the block is
+ * one colour, or when the accent covers most of it.
+ */
+export function accentRuns(runs: readonly { rawStart: number; rawEnd: number; color: string }[]): { rawStart: number; rawEnd: number; color: string }[] {
+  if (runs.length < 2) return [];
+  const weight = new Map<string, number>();
+  let total = 0;
+  for (const r of runs) { const n = r.rawEnd - r.rawStart; weight.set(r.color, (weight.get(r.color) ?? 0) + n); total += n; }
+  const ranked = [...weight].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  const base = ranked[0]![0];
+  const accent = ranked.slice(1).find(([c]) => colorsDiffer(c, base));
+  if (!accent || accent[1] > total * 0.6) return [];
+  return runs.filter((r) => r.color === accent[0]);
+}
+
 export function styledContent(
   text: string,
   offsets: Parameters<typeof sourceToRawOffset>[0],
   runs: readonly { rawStart: number; rawEnd: number; s: number }[],
   kind: BlockKind,
   bodyBold: boolean,
+  colored: readonly { rawStart: number; rawEnd: number; color: string }[] = [],
 ): SafeNode[] {
   const plain: SafeNode[] = [{ t: 'text', v: text }];
-  if (runs.length === 0 || text.length === 0) return plain;
+  if ((runs.length === 0 && colored.length === 0) || text.length === 0) return plain;
+  const accent = colored[0]?.color ?? '';
   const styleAtRaw = (r: number) => {
-    for (const x of runs) if (r >= x.rawStart && r < x.rawEnd) return x.s;
-    return 0;
+    let v = 0;
+    for (const x of runs) if (r >= x.rawStart && r < x.rawEnd) { v = x.s; break; }
+    for (const x of colored) if (r >= x.rawStart && r < x.rawEnd) { v |= 4; break; }
+    return v;
   };
   const st: number[] = new Array<number>(text.length);
   for (let i = 0; i < text.length; i++) st[i] = styleAtRaw(sourceToRawOffset(offsets, i));
@@ -505,23 +538,24 @@ export function styledContent(
   const inked = st.filter((_, i) => !/\s/.test(text[i]!));
   if (inked.every((x) => x === 0)) return plain;
   if (inked.every((x) => x === inked[0])) {
-    const s0 = inked[0]!;
-    if (kind === 'heading' || ((s0 & 1) === 1 && bodyBold && (s0 & 2) === 0)) return plain;
-    return wrap(s0, text);
+    const s0 = inked[0]! & 3; // a block in one colour throughout is not highlighted
+    if (s0 === 0 || kind === 'heading' || ((s0 & 1) === 1 && bodyBold && (s0 & 2) === 0)) return plain;
+    return wrap(s0, text, accent);
   }
   const out: SafeNode[] = [];
   let start = 0;
   for (let i = 1; i <= text.length; i++) {
     if (i === text.length || st[i] !== st[start]) {
-      out.push(...wrap(st[start]!, text.slice(start, i)));
+      out.push(...wrap(st[start]!, text.slice(start, i), accent));
       start = i;
     }
   }
   return out;
 }
 
-function wrap(style: number, v: string): SafeNode[] {
+function wrap(style: number, v: string, accent = ''): SafeNode[] {
   let node: SafeNode = { t: 'text', v };
+  if (style & 4 && accent) node = { t: 'color', v: accent, c: [node] };
   if (style & 2) node = { t: 'emphasis', c: [node] };
   if (style & 1) node = { t: 'strong', c: [node] };
   return [node];

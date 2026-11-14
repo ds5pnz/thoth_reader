@@ -42,6 +42,8 @@ export interface Frag {
   top: number;
   bottom: number;
   style: StyleInfo;
+  /** Fill colour (`#rrggbb`) when known. */
+  color?: string | null;
   missing: number;
   hasEOL: boolean;
   vertical: boolean;
@@ -244,6 +246,7 @@ export function buildFragments(input: PdfPageInput): { frags: Frag[]; clipped: n
     const x1 = Math.max(fx, fx + adv);
     const frag: Frag = {
       itemIndex,
+      color: typeof it.color === 'string' ? it.color : null,
       str: it.str,
       isSpace: /^\s+$/.test(it.str),
       angle,

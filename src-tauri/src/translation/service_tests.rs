@@ -435,3 +435,90 @@ fn leading_think_block_is_stripped() {
     assert_eq!(strip_leading_think("번역 <think>x</think>"), None);
     assert_eq!(strip_leading_think("<think>never closed"), None);
 }
+
+#[test]
+fn page_break_pair_split() {
+    use super::prepare::{split_pair, PairHalf};
+    assert_eq!(split_pair("CPU가 한 번 틱하면 PPU는 <pb/> 세 번 더 틱합니다.", PairHalf::First, 0.5), "CPU가 한 번 틱하면 PPU는");
+    assert_eq!(split_pair("CPU가 한 번 틱하면 PPU는 <pb /> 세 번 더 틱합니다.", PairHalf::Second, 0.5), "세 번 더 틱합니다.");
+    // marker lost: cut near the source proportion, on a space; halves rejoin to the whole
+    let whole = "하나 둘 셋 넷 다섯 여섯 일곱 여덟";
+    let a = split_pair(whole, PairHalf::First, 0.5);
+    let b = split_pair(whole, PairHalf::Second, 0.5);
+    assert!(!a.is_empty() && !b.is_empty());
+    assert_eq!(format!("{a} {b}"), whole);
+    // marker at an edge or repeated is treated as lost
+    assert!(!split_pair("<pb/> 전부 뒤에 있습니다 정말로", PairHalf::First, 0.4).is_empty());
+    let twice = split_pair("앞 <pb/> 가운데 <pb/> 뒤", PairHalf::Second, 0.5);
+    assert!(!twice.contains("<pb"));
+    // no whitespace (CJK): still two non-empty halves
+    let c1 = split_pair("這是一個沒有空格的句子", PairHalf::First, 0.5);
+    let c2 = split_pair("這是一個沒有空格的句子", PairHalf::Second, 0.5);
+    assert_eq!(format!("{c1}{c2}"), "這是一個沒有空格的句子");
+}
+
+/// A sentence split by a PDF page break is sent once per half as the joined passage, and each
+/// block stores only its own side.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn page_break_halves_are_translated_together() {
+    let f = fixture(0, MockConfig::default()).await;
+    let ex = f.s.extraction().unwrap();
+    let mk = |sec: &str, page: u32, ord: u32, text: &str, roles: Vec<String>| {
+        let src = normalize_source_text(text, BlockKind::Paragraph);
+        Block {
+            id: derive_block_id(&ex, &format!("page:{page}"), &format!("b{ord}"), BlockKind::Paragraph, 0),
+            extraction_id: ex.clone(),
+            section_id: sec.to_string(),
+            parent_id: None,
+            ordinal: ord,
+            kind: BlockKind::Paragraph,
+            source_hash: sha256_hex_str(&src),
+            raw_text: text.to_string(),
+            source_text: src,
+            content: vec![],
+            location: SourceLocation::Pdf { page_index: page, view_box: vec![0.0, 0.0, 612.0, 792.0], rotation: 0, rects: vec![], item_ranges: vec![] },
+            quality: Quality { level: QualityLevel::High, reasons: vec![] },
+            translation_policy: TranslationPolicy::Auto,
+            mapping: BlockMapping::default(),
+            roles,
+        }
+    };
+    let s1 = derive_section_id(&ex, 1, "page:1");
+    let s2 = derive_section_id(&ex, 2, "page:2");
+    extraction::ensure_section(&f.db.writer, &s1, &ex, 1, &serde_json::json!({"kind": "pdf", "pageIndex": 1})).await.unwrap();
+    extraction::ensure_section(&f.db.writer, &s2, &ex, 2, &serde_json::json!({"kind": "pdf", "pageIndex": 2})).await.unwrap();
+    let a0 = mk(&s1, 1, 0, "A complete paragraph that ends here.", vec![]);
+    let a = mk(&s1, 1, 1, "CPU does another tick, PPU does", vec!["continues_on_next_page".into()]);
+    let foot = mk(&s1, 1, 2, "12", vec!["page_number".into()]);
+    let head = mk(&s2, 2, 0, "Chapter title", vec!["running_header".into()]);
+    let b = mk(&s2, 2, 1, "three more. And so on, for every cycle.", vec![]);
+    let b2 = mk(&s2, 2, 2, "An unrelated paragraph follows.", vec![]);
+    extraction::publish_section_direct(&f.db.writer, &ex, &s1, &[a0.clone(), a.clone(), foot]).await.unwrap();
+    extraction::publish_section_direct(&f.db.writer, &ex, &s2, &[head, b.clone(), b2.clone()]).await.unwrap();
+
+    use crate::storage::repo::extraction::page_break_partner;
+    assert_eq!(page_break_partner(&f.db.reader, &a).await.unwrap().map(|(first, o)| (first, o.id)), Some((true, b.id.clone())));
+    assert_eq!(page_break_partner(&f.db.reader, &b).await.unwrap().map(|(first, o)| (first, o.id)), Some((false, a.id.clone())));
+    assert!(page_break_partner(&f.db.reader, &a0).await.unwrap().is_none());
+    assert!(page_break_partner(&f.db.reader, &b2).await.unwrap().is_none());
+
+    let out = "{\"segments\":[{\"id\":\"s0\",\"text\":\"CPU가 한 번 더 틱하면 PPU는 <pb/> 세 번 더 틱합니다. 모든 사이클마다 그렇습니다.\"}]}";
+    f.mock.script([MockStep::Succeed { text: Some(out.into()) }, MockStep::Succeed { text: Some(out.into()) }]);
+    f.svc.request(&f.s, &a.id, false).await.unwrap();
+    f.svc.request(&f.s, &b.id, false).await.unwrap();
+    for _ in 0..300 {
+        if generated_text(&f.db, &a.id).await.is_some() && generated_text(&f.db, &b.id).await.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(generated_text(&f.db, &a.id).await.as_deref(), Some("CPU가 한 번 더 틱하면 PPU는"));
+    assert_eq!(generated_text(&f.db, &b.id).await.as_deref(), Some("세 번 더 틱합니다. 모든 사이클마다 그렇습니다."));
+    // both requests carried the joined passage with the marker
+    let sent = f.mock.requests();
+    assert_eq!(sent.len(), 2);
+    for r in &sent {
+        let body = serde_json::to_string(&r.messages).unwrap();
+        assert!(body.contains("PPU does <pb/> three more"), "{body}");
+    }
+}

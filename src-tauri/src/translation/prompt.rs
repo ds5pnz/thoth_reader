@@ -79,6 +79,15 @@ pub fn style_instruction(target_language: &str, style: TranslationStyle) -> &'st
 /// Added only for parts that carry inline emphasis. Deliberately not in
 /// `prompt_template_hash`: the exact system message is already hashed through
 /// `requestManifestHash`, so blocks without emphasis keep their cache keys.
+const COLOR_TAG_TEMPLATE: &str = "The text contains <c>…</c> tags around highlighted (coloured) words. Keep each pair in the \
+translation, around the words that correspond to the highlighted ones. Never add, drop or translate the tags themselves.";
+
+/// Not part of `prompt_template_hash`: it only appears in (and so only changes the cache key
+/// of) requests for a sentence that continues across a page break.
+const PAGE_BREAK_TEMPLATE: &str = "The text is one passage that a page break splits at the marker <pb/>. Translate the whole \
+passage as continuous, natural prose, and put <pb/> exactly once in the translation, at the point that corresponds to where \
+it stands in the source. Do not end the sentence at <pb/> unless the source does.";
+
 const INLINE_TAG_TEMPLATE: &str = "The text contains <b>…</b> (bold) and <i>…</i> (italic) tags. Keep every tag pair in the \
 translation, wrapped around the words that translate the tagged words. Keep the tags exactly as written, properly closed and \
 not overlapping; do not add tags that are not in the source.";
@@ -239,6 +248,10 @@ pub struct PromptInput {
     pub style: TranslationStyle,
     /// The segment text carries `<b>`/`<i>` emphasis tags that must survive translation.
     pub inline_tags: bool,
+    /// The text holds one `<pb/>` where a page break splits a sentence.
+    pub page_break: bool,
+    /// The text holds `<c>…</c>` pairs around coloured words.
+    pub color_tags: bool,
 }
 
 fn language_label(code: &str) -> String {
@@ -272,6 +285,14 @@ pub fn build_messages(input: &PromptInput) -> AppResult<Vec<ChatMessage>> {
     if input.inline_tags {
         system.push('\n');
         system.push_str(INLINE_TAG_TEMPLATE);
+    }
+    if input.color_tags {
+        system.push('\n');
+        system.push_str(COLOR_TAG_TEMPLATE);
+    }
+    if input.page_break {
+        system.push('\n');
+        system.push_str(PAGE_BREAK_TEMPLATE);
     }
     if let Some(ex) = &input.placeholder_example {
         system.push('\n');
@@ -351,6 +372,8 @@ mod tests {
             placeholder_example: Some("⟦P1⟧".into()),
             style: TranslationStyle::default(),
             inline_tags: false,
+            page_break: false,
+            color_tags: false,
         }
     }
 
@@ -444,6 +467,8 @@ mod style_tests {
             placeholder_example: None,
             style,
             inline_tags: false,
+            page_break: false,
+            color_tags: false,
         }
     }
 

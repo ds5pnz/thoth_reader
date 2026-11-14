@@ -144,6 +144,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     window.__thoth = {
       ...(window.__thoth ?? {}),
       anchor: () => currentAnchor(),
+      session: () => sessionRef.current,
       anchorError: () => {
         const a = currentAnchor();
         if (!a?.blockId) return null;

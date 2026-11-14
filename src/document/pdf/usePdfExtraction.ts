@@ -1,6 +1,7 @@
 // Drives progressive PDF extraction (spec §2.2): restore page and first pages first,
 // then the rest at low priority, in small batches; each page is staged in ≤100-block /
 // ≤1MiB batches and published atomically with extraction_finalize_section.
+import { readPdfOutline } from './outline';
 import { useEffect, useRef } from 'react';
 import { call } from '../../ipc/client';
 import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
@@ -12,7 +13,7 @@ import { PdfExtractClient } from './extractClient';
 import { canonicalJson } from '../../domain/canonicalJson';
 import type { PdfPageInput, RunningElementUpdate } from './types';
 
-export const PDF_EXTRACTOR_VERSION = 'pdf-extractor/2';
+export const PDF_EXTRACTOR_VERSION = 'pdf-extractor/3';
 const BATCH_PAGES = 6;
 const MAX_BATCH_BLOCKS = 100;
 const MAX_BATCH_BYTES = 900 * 1024;
@@ -88,6 +89,12 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
         if (cancelled) return;
         // Merge into the live session: its generation may have moved while the PDF opened.
         latest.current.onSession({ ...(latest.current.session ?? session), extractionId: begin.extractionId });
+        // The book's own table of contents, when it has one (the sidebar lists pages otherwise).
+        void readPdfOutline(doc).then((toc) => {
+          const cur = latest.current.session;
+          if (cancelled || !cur || toc.length === 0) return;
+          latest.current.onSession({ ...cur, metadata: { ...cur.metadata, toc } });
+        });
         await refreshSections();
         const pending = begin.sections.filter((s) => s.state !== 'ready' && s.state !== 'failed').map((s) => ({ id: s.id, page: Number(s.ordinal) }));
         // Restore page first, then pages after it, then the rest.

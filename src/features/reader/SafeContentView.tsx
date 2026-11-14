@@ -19,6 +19,7 @@ function renderNodes(nodes: SafeNode[], r: ContentResolvers, keyPrefix: string):
       case 'text': return n.v;
       case 'emphasis': return <em key={k}>{renderNodes(n.c, r, k + '.')}</em>;
       case 'strong': return <strong key={k}>{renderNodes(n.c, r, k + '.')}</strong>;
+      case 'color': return <span key={k} className="ink" style={/^#[0-9a-f]{6}$/.test(n.v) ? { color: n.v } : undefined}>{renderNodes(n.c, r, k + '.')}</span>;
       case 'inline_code': return <code key={k}>{n.v}</code>;
       case 'break': return <br key={k} />;
       case 'link': {

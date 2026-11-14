@@ -46,7 +46,10 @@ function Toc({ session, model, onSection }: { session: ReaderSessionDto; model: 
     <ul className="toc" role={depth === 0 ? 'tree' : 'group'}>
       {entries.map((e, i) => (
         <li key={i} role="treeitem" aria-level={depth + 1}>
-          <button className="toc-item" style={{ paddingLeft: 8 + depth * 12 }} onClick={() => { const id = bySpine.get(e.spineIndex); if (id) onSection(id); }}>{e.label}</button>
+          <button className="toc-item" style={{ paddingLeft: 8 + depth * 12 }} onClick={() => { const id = bySpine.get(e.spineIndex); if (id) onSection(id); }}>
+            <span className="toc-label">{e.label}</span>
+            {session.format === 'pdf' && <span className="toc-page">{e.spineIndex + 1}</span>}
+          </button>
           {e.children && e.children.length > 0 && render(e.children, depth + 1)}
         </li>
       ))}

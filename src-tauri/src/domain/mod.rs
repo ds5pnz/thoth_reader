@@ -16,7 +16,7 @@ pub mod versions {
     pub const EPUB_EXTRACTOR: &str = "epub-extractor/2";
     pub const EPUB_SANITIZER: &str = "epub-sanitizer/1";
     /// 2: content carries bold/italic runs (strong/emphasis nodes).
-    pub const PDF_EXTRACTOR: &str = "pdf-extractor/2";
+    pub const PDF_EXTRACTOR: &str = "pdf-extractor/3";
     pub const SPLITTER: &str = "1";
     pub const PLACEHOLDER: &str = "1";
     pub const ADAPTER: &str = "1";
@@ -131,6 +131,11 @@ pub enum SourceLocation {
     },
 }
 
+/// `#rrggbb`, lowercase hex only: the one form a colour may take anywhere in the app.
+pub fn is_hex_color(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
 /// Allow-listed inline content AST (spec §3.2). Never arbitrary HTML.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -139,6 +144,8 @@ pub enum SafeNode {
     Text { v: String },
     Emphasis { c: Vec<SafeNode> },
     Strong { c: Vec<SafeNode> },
+    /// Text set in a colour other than the block's own (`v` is `#rrggbb`).
+    Color { v: String, c: Vec<SafeNode> },
     InlineCode { v: String },
     /// href is either `res:<resourceId>` (internal) or a validated http(s) URL.
     Link { href: String, c: Vec<SafeNode> },
