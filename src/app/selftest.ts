@@ -76,9 +76,9 @@ export async function runSelftest() {
     const t1 = performance.now();
     window.__thoth?.open?.(r.documentId);
     const isPdf = r.format === 'pdf';
-    const firstContent = await waitFor(() => rows() > 0 || canvases() > 0, 30000);
+    const firstContent = await waitFor(() => rows() > 0 || canvases() > 0 || epubFrameText() > 0 || !!document.querySelector('.reader-error'), 30000);
     const res: Record<string, unknown> = { label, format: r.format, importMs, openToFirstContentMs: firstContent, totalOpenMs: Math.round(performance.now() - t1) };
-    await sleep(1500);
+    await sleep(cfg.scenario === 'security' ? 300 : 1500);
     if (cfg.scenario) {
       res.scenario = cfg.scenario;
       if (cfg.scenario === 'modes20') await modes20(res, isPdf);
@@ -250,6 +250,8 @@ async function modes20(res: Record<string, unknown>, isPdf: boolean) {
 /** AC08 / T08 in the real webview: the rendered sanitized document has nothing executable
  *  and no reference outside the asset origin. */
 async function securityScan(res: Record<string, unknown>) {
+  const refused = document.querySelector('.reader-error p')?.textContent;
+  if (refused) { res.security = { rejectedAtOpen: refused.slice(0, 80) }; clickButton('라이브러리로'); return; }
   clickButton('원문');
   await waitFor(() => epubFrameText() > 0, 10000);
   await sleep(600);
@@ -274,8 +276,10 @@ async function securityScan(res: Record<string, unknown>) {
 /** AC14: provider unreachable. Source stays readable, cached translations still show,
  *  failures surface as job errors without breaking the reader. */
 async function outage(res: Record<string, unknown>) {
+  clickButton('병렬');
+  await waitFor(() => rows() > 0 && !!document.querySelector('.reflow'), 15000);
   const scroller = document.querySelector<HTMLElement>('.reflow');
-  if (scroller) { scroller.scrollTop = 3000; userScroll(scroller); }
+  if (scroller) { scroller.scrollTop = 4000; userScroll(scroller); }
   await sleep(6000);
   res.outage = {
     rows: rows(),

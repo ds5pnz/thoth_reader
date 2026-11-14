@@ -6,8 +6,8 @@
 
 | 항목 | 명령 | 결과 |
 | --- | --- | --- |
-| Rust 단위·통합 테스트 | `cd src-tauri && cargo test --lib` | 219 통과, 0 실패, 3 ignored (실제 Keychain, fixture 생성기, 로컬 코퍼스) |
-| 프론트엔드 테스트 | `npx vitest run` | 115 통과, 1 skipped (로컬 코퍼스) |
+| Rust 단위·통합 테스트 | `cd src-tauri && cargo test --lib` | 222 통과, 0 실패, 3 ignored (실제 Keychain, fixture 생성기, 로컬 코퍼스) |
+| 프론트엔드 테스트 | `npx vitest run` | 116 통과, 1 skipped (로컬 코퍼스) |
 | 타입 검사 | `npx tsc -b --noEmit` | 오류 0 |
 | 경합 반복 (AC05) | `ac05_cancel_completion_race_1000`, `ac05_manual_vs_auto_race_1000` | 각 1,000회, 불변식 위반 0 |
 | 악성 EPUB corpus (T07/T08) | `epub_security::tests` | 32개 사례 차단 또는 무해화 |
@@ -30,6 +30,16 @@
 
 debug 빌드 수치이며 명세 §10.3의 M1·M4 release 벤치마크가 아니다.
 
+### 실제 앱 시나리오 (debug 전용 자기 테스트, `THOTH_SELFTEST_SCENARIO`)
+
+| 시나리오 | 대상 | 결과 |
+| --- | --- | --- |
+| `modes20` — 문서 중간에서 모드 20회 전환 (T06) | EPUB 3권, PDF 2권 | 앵커 변화 0건, 기준선 오차 최대 1px (기준 48px), 오류 0건 |
+| `security` — 악성 fixture를 원문 모드로 열어 DOM 검사 (T07/T08) | 32개 | 17개 열기 거부(사유 표시), 15개 무해화: 스크립트·이벤트 핸들러·외부 로드·앱 외부 요청 0건, iframe sandbox에 `allow-scripts` 없음 |
+| `outage` — 캐시 생성 후 Provider 종료 (AC14) | EPUB 1권 | 원문 25행 표시, 캐시 번역 8개 표시, 새 요청은 3회 시도 후 `PROVIDER_UNAVAILABLE` 실패 표시 |
+
+PDF 확대율·devicePixelRatio 변경(T04)과 테마·글꼴 변경 후 앵커(T06 일부)는 이 시나리오에 포함되지 않았다.
+
 ### 로컬 코퍼스 통계 (원문 미포함)
 
 | | PDF 35권 (문서당 최대 40쪽 샘플) | EPUB 14권 (전체) |
@@ -47,19 +57,19 @@ debug 빌드 수치이며 명세 §10.3의 M1·M4 release 벤치마크가 아니
 | ID | 상태 | 근거 / 남은 일 |
 | --- | --- | --- |
 | AC01 | 부분 충족 | 가져오기·중복 판정·재열기 테스트 통과, 실기 확인. T01/T05는 합성 fixture 기준 |
-| AC02 | 부분 충족 | 실기 자기 테스트로 모드 전환·앵커 유지 확인. 영상, T04/T06 20회 반복 기준 미수행 |
+| AC02 | 부분 충족 | 실기 `modes20`: EPUB 3권·PDF 2권에서 20회 전환 앵커 유지, 오차 ≤1px. 영상, 확대율·테마·글꼴 변경(T04/T06 일부) 미수행 |
 | AC03 | 충족(테스트) | `prefetch_next_three`, `original_mode_stops_auto`, 실기에서 P1 8건·P2 3건 관측 |
 | AC04 | 부분 충족 | OpenAI 호환(LM Studio) 실연 완료. **Ollama 실연 미수행**(미설치), 어댑터는 mock 서버 테스트만 |
 | AC05 | 충족(테스트) | T09–T12, 경합 1,000회 ×2 |
-| AC06 | 충족(테스트) | T13, 재시작 후 수동 고정본 복원 실기 확인. T14 강제 종료 시나리오는 단위 수준 |
+| AC06 | 충족(테스트) | T13, T14(스트림 중 종료 후 재시작: 미리보기 제외, 수동 고정본 복원), 실기 재열기 확인 |
 | AC07 | 충족(테스트) | golden key, T11/T15 |
-| AC08 | 부분 충족 | T07/T08/T18 단위 테스트 통과. 실기 네트워크 감시(비의도 I/O 0건) 미수행 |
-| AC09 | 부분 충족 | 마이그레이션·삭제 journal 테스트 통과. 디스크 부족·중단 fault injection 미수행 |
+| AC08 | 부분 충족 | T07/T08/T18 단위 테스트 + 실기 `security` 32개 위반 0건. OS 수준 네트워크 감시는 미수행 |
+| AC09 | 부분 충족 | 마이그레이션 실패 주입(데이터 보존·롤백·복구 백업·읽기 전용), checksum 불일치 거부, 삭제 journal 복구 테스트. 디스크 부족(DB full) 주입 미수행 |
 | AC10 | 부분 충족 | 검색·북마크·테마·위치 복원 구현, 검색은 SQL 테스트. native smoke는 위치 복원만 |
 | AC11 | **미충족** | M1/M4 release 벤치마크와 라벨된 추출 품질 측정 필요 |
 | AC12 | **미충족** | 키보드·ARIA 구현만. VoiceOver 실기 검증 필요 |
 | AC13 | **미충족** | Developer ID 서명·notarization 자격 필요. 서명 없는 내부 빌드까지만 |
-| AC14 | 부분 충족 | Provider 미설정·비활성 시 원문/캐시 읽기 유지. 네트워크 차단 실기 테스트 미수행 |
+| AC14 | 부분 충족 | 실기 `outage`로 Provider 장애 시 원문·캐시 읽기 확인. 시스템 네트워크 차단, Ollama 중단은 미수행 |
 
 ## 알려진 제한
 
