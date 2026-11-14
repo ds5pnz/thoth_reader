@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reader-set-viewport"
+description = "Enables the reader_set_viewport command without any pre-configured scope."
+commands.allow = ["reader_set_viewport"]
+
+[[permission]]
+identifier = "deny-reader-set-viewport"
+description = "Denies the reader_set_viewport command without any pre-configured scope."
+commands.deny = ["reader_set_viewport"]

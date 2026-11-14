@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-cache-invalidate"
+description = "Enables the cache_invalidate command without any pre-configured scope."
+commands.allow = ["cache_invalidate"]
+
+[[permission]]
+identifier = "deny-cache-invalidate"
+description = "Denies the cache_invalidate command without any pre-configured scope."
+commands.deny = ["cache_invalidate"]

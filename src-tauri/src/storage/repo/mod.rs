@@ -4,4 +4,4 @@ pub mod misc;
 pub mod translations;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

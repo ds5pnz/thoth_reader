@@ -79,7 +79,7 @@ pub struct DocumentImportArgs {
 #[tauri::command]
 pub async fn document_import(core: Core<'_>, meta: CommandMeta, args: DocumentImportArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    let w = with_receipt(&core, &meta, "document_import", &args, || async move {
+    let w = with_receipt(&core, &meta, "document_import", json_of(&args), || async move {
         let path = core2.imports.take(&args.import_token).ok_or_else(|| AppError::invalid("가져오기 토큰이 만료되었습니다. 파일을 다시 선택해 주세요."))?;
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         import::import_path(&core2.db, &core2.paths, path, name).await
@@ -145,11 +145,12 @@ pub async fn document_open(core: Core<'_>, window: WebviewWindow, meta: CommandM
         }
         let pos = misc::position_get(&core.db.reader, &doc.id).await?;
         let doc = documents::get(&core.db.reader, &doc.id).await?.unwrap_or(doc);
+        let extraction_id = s.extraction_id.read().unwrap().clone();
         Ok(ReaderSessionDto {
             session_id: s.id.clone(),
             generation: s.generation(),
             document_id: doc.id,
-            extraction_id: s.extraction_id.read().unwrap().clone(),
+            extraction_id,
             asset_token: s.asset_token.clone(),
             format: doc.format,
             title: doc.title,
@@ -205,7 +206,7 @@ pub struct DocumentDeleteArgs {
 #[tauri::command]
 pub async fn document_delete(core: Core<'_>, meta: CommandMeta, args: DocumentDeleteArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    Ok(with_receipt(&core, &meta, "document_delete", &args, || async move {
+    Ok(with_receipt(&core, &meta, "document_delete", json_of(&args), || async move {
         check_id(&args.document_id, "documentId")?;
         if !args.delete_history {
             return Err(AppError::invalid("v1.0은 이력을 포함한 문서 전체 삭제만 지원합니다."));

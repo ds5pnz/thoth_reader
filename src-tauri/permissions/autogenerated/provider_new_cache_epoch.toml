@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-provider-new-cache-epoch"
+description = "Enables the provider_new_cache_epoch command without any pre-configured scope."
+commands.allow = ["provider_new_cache_epoch"]
+
+[[permission]]
+identifier = "deny-provider-new-cache-epoch"
+description = "Denies the provider_new_cache_epoch command without any pre-configured scope."
+commands.deny = ["provider_new_cache_epoch"]

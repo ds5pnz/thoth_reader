@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-extraction-begin"
+description = "Enables the extraction_begin command without any pre-configured scope."
+commands.allow = ["extraction_begin"]
+
+[[permission]]
+identifier = "deny-extraction-begin"
+description = "Denies the extraction_begin command without any pre-configured scope."
+commands.deny = ["extraction_begin"]

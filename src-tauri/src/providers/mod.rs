@@ -168,7 +168,8 @@ impl ProviderConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[ts(export)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,

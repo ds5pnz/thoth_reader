@@ -63,7 +63,7 @@ pub fn respond<T: Serialize>(meta: &CommandMeta, r: AppResult<T>) -> Wire {
 
 /// Mutation wrapper: requestId replay returns the stored result; same id + different
 /// payload => CONFLICT. Successful results are stored after the work commits.
-pub async fn with_receipt<T, F, Fut>(core: &AppCore, meta: &CommandMeta, command: &str, payload: &impl Serialize, f: F) -> Wire
+pub async fn with_receipt<T, F, Fut>(core: &AppCore, meta: &CommandMeta, command: &str, payload: serde_json::Result<serde_json::Value>, f: F) -> Wire
 where
     T: Serialize,
     F: FnOnce() -> Fut,
@@ -72,7 +72,7 @@ where
     if let Err(e) = meta.validate() {
         return err_value(&meta.request_id, &e);
     }
-    let payload_json = match serde_json::to_value(payload) {
+    let payload_json = match payload {
         Ok(v) => v,
         Err(e) => return err_value(&meta.request_id, &AppError::from(e)),
     };
@@ -132,4 +132,9 @@ mod tests {
         assert!(check_lang("en_US").is_err());
         assert!(check_lang("").is_err());
     }
+}
+
+/// Serialize command args for receipt hashing (evaluated before the work closure).
+pub fn json_of<T: Serialize>(v: &T) -> serde_json::Result<serde_json::Value> {
+    serde_json::to_value(v)
 }

@@ -53,12 +53,8 @@ pub type ProviderFactory = Arc<dyn Fn(&ProviderConfig, Arc<dyn SecretStore>) -> 
 
 pub fn default_factory() -> ProviderFactory {
     Arc::new(|cfg, secrets| {
-        Ok(match cfg.kind {
-            crate::providers::ProviderKind::Ollama => Arc::new(crate::providers::ollama::OllamaProvider::new(cfg.clone())?) as Arc<dyn TranslationProvider>,
-            crate::providers::ProviderKind::OpenaiCompatible => {
-                Arc::new(crate::providers::openai_compatible::OpenAiCompatibleProvider::new(cfg.clone(), secrets)?) as Arc<dyn TranslationProvider>
-            }
-        })
+        let p: Arc<dyn TranslationProvider> = crate::providers::build_provider(cfg, secrets)?;
+        Ok(p)
     })
 }
 
@@ -699,7 +695,9 @@ impl TranslationService {
                     .execute(&self.db.writer)
                     .await?;
                 let (tx, mut rx) = tokio::sync::mpsc::channel::<TranslationDelta>(64);
-                let req = part.request.clone();
+                let mut req = part.request.clone();
+                req.job_id = e.job_id.clone();
+                req.request_id = crate::domain::new_uuid();
                 let cancel = e.cancel.clone();
                 let prov = provider.clone();
                 let call = tokio::spawn(async move { prov.translate(req, tx, cancel).await });
@@ -783,7 +781,7 @@ impl TranslationService {
                 }
             }
         }
-        let text = outputs.concat();
+        let text = prepare::join_parts(&outputs, &e.prepared.target_language);
         let is_current = {
             let st = s.state.lock().unwrap();
             e.generation == s.generation() && st.profile_id.is_some()

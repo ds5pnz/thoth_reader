@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-reader-switch-profile"
+description = "Enables the reader_switch_profile command without any pre-configured scope."
+commands.allow = ["reader_switch_profile"]
+
+[[permission]]
+identifier = "deny-reader-switch-profile"
+description = "Denies the reader_switch_profile command without any pre-configured scope."
+commands.deny = ["reader_switch_profile"]

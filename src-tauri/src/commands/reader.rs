@@ -55,7 +55,7 @@ pub struct BookmarkPutArgs {
 #[tauri::command]
 pub async fn bookmark_put(core: Core<'_>, meta: CommandMeta, args: BookmarkPutArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    Ok(with_receipt(&core, &meta, "bookmark_put", &args, || async move {
+    Ok(with_receipt(&core, &meta, "bookmark_put", json_of(&args), || async move {
         check_id(&args.document_id, "documentId")?;
         if let Some(b) = &args.bookmark_id {
             check_id(b, "bookmarkId")?;
@@ -80,7 +80,7 @@ pub struct BookmarkDeleteArgs {
 #[tauri::command]
 pub async fn bookmark_delete(core: Core<'_>, meta: CommandMeta, args: BookmarkDeleteArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    Ok(with_receipt(&core, &meta, "bookmark_delete", &args, || async move {
+    Ok(with_receipt(&core, &meta, "bookmark_delete", json_of(&args), || async move {
         check_id(&args.document_id, "documentId")?;
         check_id(&args.bookmark_id, "bookmarkId")?;
         Ok(serde_json::json!({"deleted": misc::bookmark_delete(&core2.db.writer, &args.document_id, &args.bookmark_id).await?}))
@@ -206,7 +206,7 @@ pub struct SettingsPatchArgs {
 #[tauri::command]
 pub async fn settings_patch(core: Core<'_>, meta: CommandMeta, args: SettingsPatchArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    Ok(with_receipt(&core, &meta, "settings_patch", &args, || async move {
+    Ok(with_receipt(&core, &meta, "settings_patch", json_of(&args), || async move {
         if !SETTING_KEYS.contains(&args.key.as_str()) {
             return Err(AppError::invalid("허용되지 않은 설정 키입니다."));
         }
@@ -236,7 +236,7 @@ pub async fn translation_save_edit(core: Core<'_>, window: WebviewWindow, meta: 
     let core2 = core.inner().clone();
     let label = window.label().to_string();
     let request_id = meta.request_id.clone();
-    Ok(with_receipt(&core, &meta, "translation_save_edit", &args, || async move {
+    Ok(with_receipt(&core, &meta, "translation_save_edit", json_of(&args), || async move {
         let s = core2.sessions.get(&args.session_id, &label)?;
         check_id(&args.block_id, "blockId")?;
         check_lang(&args.target_language)?;
@@ -264,7 +264,7 @@ pub struct ApplyRevisionArgs {
 pub async fn translation_apply_revision(core: Core<'_>, window: WebviewWindow, meta: CommandMeta, args: ApplyRevisionArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
     let label = window.label().to_string();
-    Ok(with_receipt(&core, &meta, "translation_apply_revision", &args, || async move {
+    Ok(with_receipt(&core, &meta, "translation_apply_revision", json_of(&args), || async move {
         let s = core2.sessions.get(&args.session_id, &label)?;
         check_id(&args.revision_id, "revisionId")?;
         let rev = translations::revision_get(&core2.db.reader, &args.revision_id).await?.ok_or_else(|| AppError::not_found("번역 이력"))?;
@@ -327,7 +327,7 @@ pub struct BlockPreferenceArgs {
 pub async fn block_set_preference(core: Core<'_>, window: WebviewWindow, meta: CommandMeta, args: BlockPreferenceArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
     let label = window.label().to_string();
-    Ok(with_receipt(&core, &meta, "block_set_preference", &args, || async move {
+    Ok(with_receipt(&core, &meta, "block_set_preference", json_of(&args), || async move {
         let s = core2.sessions.get(&args.session_id, &label)?;
         check_id(&args.block_id, "blockId")?;
         let b = extraction::get_block_in_extraction(&core2.db.reader, &args.block_id, &s.extraction()?).await?;

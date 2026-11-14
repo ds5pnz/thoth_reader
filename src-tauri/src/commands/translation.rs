@@ -4,7 +4,7 @@ use super::core::*;
 use crate::document::session::ReadingMode;
 use crate::domain::{new_uuid, now_ms};
 use crate::error::{AppError, AppResult, ErrorCode};
-use crate::providers::{ProviderCapabilities, ProviderKind, TranslationProvider};
+use crate::providers::{ProviderCapabilities, ProviderKind};
 use crate::storage::repo::{misc, translations};
 use crate::translation::prepare;
 use serde::{Deserialize, Serialize};
@@ -50,7 +50,7 @@ pub struct TranslationRequestArgs {
 pub async fn translation_request(core: Core<'_>, window: WebviewWindow, meta: CommandMeta, args: TranslationRequestArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
     let label = window.label().to_string();
-    Ok(with_receipt(&core, &meta, "translation_request", &args, || async move {
+    Ok(with_receipt(&core, &meta, "translation_request", json_of(&args), || async move {
         let s = core2.sessions.get(&args.session_id, &label)?;
         check_id(&args.block_id, "blockId")?;
         core2.translation.request(&s, &args.block_id, args.force).await
@@ -226,7 +226,7 @@ pub async fn provider_save(core: Core<'_>, meta: CommandMeta, args: ProviderSave
         secret_hash: args.new_secret.as_ref().map(|s| crate::domain::sha256_hex_str(s)),
     };
     let core2 = core.inner().clone();
-    let w = with_receipt(&core, &meta, "provider_save", &redacted, || async move { save_provider(&core2, args).await }).await;
+    let w = with_receipt(&core, &meta, "provider_save", json_of(&redacted), || async move { save_provider(&core2, args).await }).await;
     Ok(w)
 }
 
@@ -325,6 +325,7 @@ pub struct ProbeResult {
     pub capabilities: Option<serde_json::Value>,
     pub models: Vec<crate::providers::ModelInfo>,
     pub sent_test_prompt: bool,
+    pub warnings: Vec<String>,
 }
 
 /// Connection check: endpoint, auth, models. Never sends document text.
@@ -335,20 +336,32 @@ pub async fn provider_probe(core: Core<'_>, meta: CommandMeta, args: ProviderIdA
         let row = translations::provider_get(&core.db.reader, &args.provider_id).await?.ok_or_else(|| AppError::not_found("Provider"))?;
         let cfg = prepare::provider_config(&row)?;
         core.translation.invalidate_provider(&row.id);
-        let provider: Arc<dyn TranslationProvider> = (crate::translation::service::default_factory())(&cfg, core.translation.secrets.clone())?;
-        let caps = provider.probe().await;
-        let models = provider.list_models().await.unwrap_or_default();
-        match caps {
-            Ok(c) => {
+        let provider = crate::providers::build_provider(&cfg, core.translation.secrets.clone())?;
+        let model_id = misc::setting_get(&core.db.reader, "activeProfileId").await?
+            .and_then(|v| v.0.as_str().map(|s| s.to_string()));
+        let model_id = match model_id {
+            Some(pid) => translations::profile_get(&core.db.reader, &pid).await?.filter(|p| p.provider_id == row.id).map(|p| p.model_id),
+            None => None,
+        };
+        match provider.probe_model(&crate::providers::ProbeRequest { model_id, send_test_prompt: true }).await {
+            Ok(rep) => {
                 let mut stored = row.capabilities.clone();
-                if let (Some(obj), Ok(cv)) = (stored.as_object_mut(), serde_json::to_value(&c)) {
+                if let (Some(obj), Ok(cv)) = (stored.as_object_mut(), serde_json::to_value(&rep.capabilities)) {
                     obj.insert("probed".into(), cv);
                     obj.insert("probedAt".into(), serde_json::json!(now_ms()));
                 }
                 translations::provider_update_mutable(&core.db.writer, &row.id, None, None, None, Some(&stored)).await?;
-                Ok(ProbeResult { ok: true, error: None, capabilities: serde_json::to_value(&c).ok(), models, sent_test_prompt: c.streaming || c.structured_output })
+                let ok = rep.reachable && rep.auth_ok;
+                Ok(ProbeResult {
+                    ok,
+                    error: if ok { None } else { Some(crate::error::WireError::from(&AppError::new(ErrorCode::AuthFailed, "인증에 실패했습니다. API 키를 확인해 주세요."))) },
+                    capabilities: serde_json::to_value(&rep.capabilities).ok(),
+                    models: rep.models.unwrap_or_default(),
+                    sent_test_prompt: rep.sent_test_prompt,
+                    warnings: rep.warnings,
+                })
             }
-            Err(e) => Ok(ProbeResult { ok: false, error: Some(crate::error::WireError::from(&e.to_app_error())), capabilities: None, models, sent_test_prompt: false }),
+            Err(e) => Ok(ProbeResult { ok: false, error: Some(crate::error::WireError::from(&e.to_app_error())), capabilities: None, models: vec![], sent_test_prompt: false, warnings: vec![] }),
         }
     }
     .await;
@@ -358,7 +371,7 @@ pub async fn provider_probe(core: Core<'_>, meta: CommandMeta, args: ProviderIdA
 #[tauri::command]
 pub async fn provider_new_cache_epoch(core: Core<'_>, meta: CommandMeta, args: ProviderIdArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    Ok(with_receipt(&core, &meta, "provider_new_cache_epoch", &args, || async move {
+    Ok(with_receipt(&core, &meta, "provider_new_cache_epoch", json_of(&args), || async move {
         check_id(&args.provider_id, "providerId")?;
         let e = translations::provider_bump_epoch(&core2.db.writer, &args.provider_id).await?;
         core2.translation.invalidate_provider(&args.provider_id);
@@ -385,7 +398,7 @@ pub struct ProfileCreateArgs {
 #[tauri::command]
 pub async fn profile_create(core: Core<'_>, meta: CommandMeta, args: ProfileCreateArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    Ok(with_receipt(&core, &meta, "profile_create", &args, || async move {
+    Ok(with_receipt(&core, &meta, "profile_create", json_of(&args), || async move {
         check_id(&args.provider_id, "providerId")?;
         check_lang(&args.source_language)?;
         check_lang(&args.target_language)?;
@@ -415,7 +428,7 @@ pub struct CacheInvalidateArgs {
 #[tauri::command]
 pub async fn cache_invalidate(core: Core<'_>, meta: CommandMeta, args: CacheInvalidateArgs) -> Result<Wire, ()> {
     let core2 = core.inner().clone();
-    Ok(with_receipt(&core, &meta, "cache_invalidate", &args, || async move {
+    Ok(with_receipt(&core, &meta, "cache_invalidate", json_of(&args), || async move {
         let n = match (&args.document_id, &args.profile_id) {
             (Some(d), None) => {
                 check_id(d, "documentId")?;

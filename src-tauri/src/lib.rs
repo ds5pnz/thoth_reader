@@ -82,22 +82,12 @@ pub fn run() {
             });
             app.manage(core.clone());
 
-            let handle = app.handle().clone();
-            let core_dd = core.clone();
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
                 .title("Thoth Reader")
                 .inner_size(1280.0, 840.0)
                 .min_inner_size(900.0, 600.0)
                 .on_navigation(|url| navigation_allowed(url))
                 .on_new_window(|_url, _features| tauri::webview::NewWindowResponse::Deny)
-                .on_drag_drop_event(move |w, ev| {
-                    // Dropped paths are only accepted here and turned into single-use tokens.
-                    if let tauri::DragDropEvent::Drop { paths, .. } = ev {
-                        let cands: Vec<_> = paths.iter().take(50).filter_map(|p| core_dd.imports.register(p.clone())).collect();
-                        let _ = handle.emit_to(w.label(), "import-candidates", cands);
-                    }
-                    false
-                })
                 .build()?;
 
             // Idle WAL checkpoints and receipt pruning.
@@ -110,6 +100,15 @@ pub fn run() {
                 }
             });
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Dropped paths are only accepted here and turned into single-use tokens.
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                if let Some(core) = window.try_state::<Arc<AppCore>>() {
+                    let cands: Vec<_> = paths.iter().take(50).filter_map(|p| core.imports.register(p.clone())).collect();
+                    let _ = window.emit_to(window.label(), "import-candidates", cands);
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::document::library_list,

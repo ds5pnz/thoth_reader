@@ -6,3 +6,6 @@ pub mod prompt;
 pub mod service;
 pub mod splitter;
 pub mod validation;
+
+#[cfg(test)]
+mod service_tests;

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-translation-history"
+description = "Enables the translation_history command without any pre-configured scope."
+commands.allow = ["translation_history"]
+
+[[permission]]
+identifier = "deny-translation-history"
+description = "Denies the translation_history command without any pre-configured scope."
+commands.deny = ["translation_history"]
