@@ -45,6 +45,9 @@ export function useReaderSession(documentId: string) {
   const sessionRef = useRef<ReaderSessionDto | null>(null);
   const lastSeq = useRef(0);
   const loadingSections = useRef(new Set<string>());
+  const wanted = useRef(new Set<string>());
+  const sectionState = useRef(new Map<string, string>());
+  const loadSectionRef = useRef<(id: string, force?: boolean) => Promise<void>>(async () => {});
   const blocksRef = useRef(blocks);
   blocksRef.current = blocks;
 
@@ -53,7 +56,13 @@ export function useReaderSession(documentId: string) {
     if (!s) return [];
     try {
       const rows = await call<SectionRow[]>('sections_list', { sessionId: s.sessionId });
+      sectionState.current = new Map(rows.map((r) => [r.id, r.state]));
       setSections(rows);
+      // Sections that were asked for before they were published (progressive extraction)
+      // are loaded as soon as they become ready.
+      for (const id of wanted.current) {
+        if (sectionState.current.get(id) === 'ready' && !blocksRef.current.has(id)) void loadSectionRef.current(id);
+      }
       return rows;
     } catch {
       return [];
@@ -62,8 +71,12 @@ export function useReaderSession(documentId: string) {
 
   const loadSection = useCallback(async (sectionId: string, force = false) => {
     const s = sessionRef.current;
+    wanted.current.add(sectionId);
     if (!s || loadingSections.current.has(sectionId)) return;
     if (!force && blocksRef.current.has(sectionId)) return;
+    // Never cache an empty result for a section that is not published yet.
+    const st = sectionState.current.get(sectionId);
+    if (st !== undefined && st !== 'ready') return;
     loadingSections.current.add(sectionId);
     try {
       let cursor: number | null = null;
@@ -86,6 +99,8 @@ export function useReaderSession(documentId: string) {
       loadingSections.current.delete(sectionId);
     }
   }, []);
+
+  loadSectionRef.current = loadSection;
 
   const onEvent = useCallback((env: StreamEnvelope) => {
     const s = sessionRef.current;

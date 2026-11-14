@@ -55,8 +55,9 @@ function epubFrameText(): number {
 }
 
 export async function runSelftest() {
-  const cfg = await call<{ candidates: ImportCandidate[]; provider: string | null; model: string | null; slowMs: number | null; scenario: string | null }>('debug_selftest_files').catch(() => ({ candidates: [], provider: null, model: null, slowMs: null, scenario: null }));
+  const cfg = await call<{ candidates: ImportCandidate[]; provider: string | null; model: string | null; slowMs: number | null; scenario: string | null; page?: number | null }>('debug_selftest_files').catch(() => ({ candidates: [], provider: null, model: null, slowMs: null, scenario: null, page: null }));
   WAIT = cfg.slowMs ?? 30000;
+  (globalThis as { __thothPdfPage?: number }).__thothPdfPage = cfg.page ?? 0;
   const cands = cfg.candidates;
   if (!cands.length) return;
   if (cfg.provider) await setupProvider(cfg.provider, cfg.model);
@@ -86,6 +87,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'outage') await outage(res);
       if (cfg.scenario === 'style') await styleRun(res);
       if (cfg.scenario === 'chrome') await chromeCheck(res);
+      if (cfg.scenario === 'pdflayout') await pdfLayout(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -166,6 +168,9 @@ async function setupProvider(endpoint: string, model: string | null) {
     await log('result', { stage: 'provider', probeOk: probe.ok, models: probe.models.map((m) => m.id), caps: probe.capabilities, warnings: probe.warnings });
     const prof = await call<{ id: string }>('profile_create', { providerId: p.id, modelId: model ?? probe.models[0]?.id ?? 'mock-ko', sourceLanguage: 'en', targetLanguage: 'ko', temperature: 0.2, seed: null, maxOutputTokens: null, contextLimit: 8192, modelDigest: null });
     await call('settings_patch', { key: 'activeProfileId', value: prof.id, expectedVersion: null });
+    // The settings UI stores these with the profile; PDFs carry no language metadata.
+    await call('settings_patch', { key: 'defaultSourceLanguage', value: 'en', expectedVersion: null });
+    await call('settings_patch', { key: 'defaultTargetLanguage', value: 'ko', expectedVersion: null });
     await window.__thoth?.reloadSettings?.();
   } catch (e) {
     await log('result', { stage: 'provider', error: String((e as Error).message) });
@@ -370,4 +375,51 @@ async function chromeCheck(res: Record<string, unknown>) {
     maxAnchorErrPx: Math.max(0, ...errs.map((e) => Math.round(e ?? 0))),
     pauseToggle: [labelBefore, labelAfter],
   };
+}
+
+/** Layout-preserving PDF side-by-side: translated pages line up with originals, show the page
+ *  raster (figures/table rules), and carry fitted translations in block positions. */
+async function pdfLayout(res: Record<string, unknown>) {
+  clickButton('원본');
+  clickButton('병렬');
+  await waitFor(() => canvases() > 0, 20000);
+  const pane = document.querySelector<HTMLElement>('.pdf-pages');
+  const page = Number((globalThis as { __thothPdfPage?: number }).__thothPdfPage ?? 0);
+  const goto = async (i: number) => {
+    const n = document.querySelector<HTMLElement>(`.pdf-page[data-page="${i}"]`);
+    if (!pane || !n) return;
+    pane.scrollTop += n.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8;
+    userScroll(pane);
+    await sleep(600);
+  };
+  await goto(page);
+  // wait for translations (or slots) on the visible page to settle
+  await waitFor(() => document.querySelectorAll('.tp-text').length >= 3, WAIT);
+  await waitFor(() => document.querySelectorAll('.tp-slot.busy').length === 0, WAIT);
+  await sleep(800);
+  const rowsEl = [...document.querySelectorAll<HTMLElement>('.pdf-row')].filter((r) => r.querySelector('.pdf-page.translated canvas'));
+  const pairs = rowsEl.map((r) => {
+    const o = r.querySelector<HTMLElement>('.pdf-page:not(.translated)')!.getBoundingClientRect();
+    const t = r.querySelector<HTMLElement>('.pdf-page.translated')!.getBoundingClientRect();
+    const c = r.querySelector<HTMLCanvasElement>('.pdf-page.translated canvas')!;
+    return { dy: Math.round(Math.abs(o.top - t.top)), sameSize: Math.abs(o.width - t.width) < 1 && Math.abs(o.height - t.height) < 1, painted: c.width > 0 };
+  });
+  const texts = [...document.querySelectorAll<HTMLElement>('.tp-text')];
+  const sizes = texts.map((t) => parseFloat(getComputedStyle(t).fontSize));
+  res.pdfLayout = {
+    paneWidth: pane?.clientWidth,
+    liveRows: pairs.length,
+    aligned: pairs.every((p) => p.dy === 0 && p.sameSize),
+    rasterCopied: pairs.filter((p) => p.painted).length,
+    overlays: texts.length,
+    overflowing: texts.filter((t) => t.scrollHeight > t.clientHeight + 2 || t.scrollWidth > t.clientWidth + 2).length,
+    fontPx: sizes.length ? { min: Math.min(...sizes), median: sizes.slice().sort((a, b) => a - b)[Math.floor(sizes.length / 2)], max: Math.max(...sizes) } : null,
+    slotsLeft: document.querySelectorAll('.tp-slot').length,
+    failed: document.querySelectorAll('.tp-slot.failed').length,
+    horizontalScroll: pane ? pane.scrollWidth > pane.clientWidth + 1 : null,
+  };
+  // popover: click a translated block
+  texts[0]?.click();
+  await sleep(300);
+  res.popover = { open: !!document.querySelector('.pdf-pop'), hasMenu: !!document.querySelector('.pdf-pop .tcell-menu button') };
 }

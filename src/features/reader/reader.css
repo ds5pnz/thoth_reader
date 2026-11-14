@@ -82,24 +82,33 @@
 .epub-original { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .epub-host { flex: 1; min-height: 0; background: var(--bg-elev); }
 
-/* PDF original */
-.pdf-split { flex: 1; display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); min-height: 0; }
-.pdf-split.only { grid-template-columns: 1fr; }
-.pdf-pages { overflow: auto; background: var(--bg-sunken); padding: 16px 0 40vh; position: relative; }
-.pdf-page { position: relative; margin: 0 auto 16px; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+/* PDF original + layout-preserving translated page */
+.pdf-split { flex: 1; display: flex; min-height: 0; position: relative; }
+.pdf-pages { flex: 1; overflow: auto; background: var(--bg-sunken); padding: 16px 0 40vh; position: relative; }
+.pdf-row { display: flex; justify-content: center; align-items: flex-start; }
+.pdf-page { position: relative; flex: none; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.15); overflow: hidden; }
 .pdf-page canvas { display: block; width: 100%; height: 100%; }
 .pdf-page .textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; opacity: 1; }
 .pdf-page .textLayer span { color: transparent; position: absolute; white-space: pre; transform-origin: 0 0; cursor: text; }
 .pdf-page .textLayer ::selection { background: rgba(0, 100, 255, .25); }
 .pdf-hl { position: absolute; background: var(--highlight); mix-blend-mode: multiply; pointer-events: none; border-radius: 2px; }
-.pdf-hit { position: absolute; cursor: pointer; }
-.pdf-hit:hover { outline: 1px dashed var(--accent); }
 .pdf-page .page-badge { position: absolute; top: 6px; right: 6px; }
-.pdf-trn { overflow: auto; padding: 16px 20px 40vh; border-left: 1px solid var(--border); }
-.pdf-trn .trow { margin-bottom: 14px; padding: 6px 8px; border-radius: 6px; }
-.pdf-trn .trow.anchor { background: var(--accent-soft); }
-.pdf-trn .trow .src-mini { font-size: 12px; color: var(--fg-faint); margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sync-chip { position: sticky; top: 0; z-index: 3; display: flex; justify-content: center; }
+.tp-text { position: absolute; overflow: hidden; line-height: 1.22; font-family: -apple-system, "Apple SD Gothic Neo", "Helvetica Neue", sans-serif; word-break: keep-all; overflow-wrap: anywhere; cursor: pointer; border-radius: 1px; }
+.tp-text.sel { outline: 2px solid var(--focus); outline-offset: 1px; z-index: 2; }
+.tp-text.stale { opacity: .72; }
+.tp-text.manual { box-shadow: inset 2px 0 0 var(--ok); }
+.tp-text.streaming { color: #1f5f6b !important; }
+.tp-text:hover { outline: 1px solid rgba(31, 95, 107, .55); }
+.tp-slot { position: absolute; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 2px; }
+.tp-slot:hover, .tp-slot.sel { outline: 1px dashed rgba(31, 95, 107, .7); }
+.tp-slot.busy { background: linear-gradient(90deg, rgba(31,95,107,0) 0%, rgba(31,95,107,.16) 50%, rgba(31,95,107,0) 100%); background-size: 200% 100%; animation: tp-busy 1.4s linear infinite; }
+.tp-slot.failed { outline: 1px solid rgba(180, 35, 24, .7); }
+@keyframes tp-busy { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .tp-slot.busy { animation: none; background: rgba(31,95,107,.12); } }
+.pdf-pop { position: absolute; right: 16px; bottom: 16px; width: min(460px, calc(100% - 32px)); max-height: 46%; overflow: auto; background: var(--bg-elev); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 10px 36px rgba(0,0,0,.28); padding: 8px 12px 12px; z-index: 6; }
+.pdf-pop header { display: flex; align-items: center; margin-bottom: 4px; font-size: 12px; }
+.pdf-pop .tcell-head { height: auto; min-height: 22px; top: 0; margin-bottom: 4px; }
+.pdf-pop .tcell-menu { opacity: 1; }
 
 /* mirrored images in the translation column (side-by-side) */
 .trn-mirror { font-family: var(--reader-font); font-size: var(--reader-size); line-height: var(--reader-line); }

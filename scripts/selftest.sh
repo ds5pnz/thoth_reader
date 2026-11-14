@@ -4,7 +4,7 @@
 set -u
 LOG="$1"; DATA="$2"; shift 2
 FILES="$(IFS=:; echo "$*")"
-pkill -f "/target/debug/thoth-reader" 2>/dev/null
+pkill -f "target/debug/thoth-reader" 2>/dev/null
 pkill -f "tauri dev" 2>/dev/null
 for p in $(lsof -tiTCP:1420 -sTCP:LISTEN 2>/dev/null); do kill "$p"; done
 sleep 1
