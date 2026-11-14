@@ -177,6 +177,11 @@ export function useReaderSession(documentId: string) {
     for (const id of ids) await loadSection(id, true);
   }, [loadSection]);
 
+  const updateSession = useCallback((next: ReaderSessionDto) => {
+    sessionRef.current = next;
+    setSession(next);
+  }, []);
+
   const model: ReaderModel = useMemo(() => ({ session, error, sections, blocks, display, jobs, previews, indexProgress }), [session, error, sections, blocks, display, jobs, previews, indexProgress]);
-  return { model, sessionRef, loadSection, refreshSections, setGeneration, setBlockDisplay, resync, setSession };
+  return { model, sessionRef, loadSection, refreshSections, setGeneration, setBlockDisplay, resync, setSession: updateSession };
 }

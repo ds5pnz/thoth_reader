@@ -1,0 +1,130 @@
+// Drives progressive PDF extraction (spec §2.2): restore page and first pages first,
+// then the rest at low priority, in small batches; each page is staged in ≤100-block /
+// ≤1MiB batches and published atomically with extraction_finalize_section.
+import { useEffect, useRef } from 'react';
+import { call } from '../../ipc/client';
+import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
+import type { ExtractionBeginResult } from '../../ipc/generated/ExtractionBeginResult';
+import type { Block } from '../../ipc/generated/Block';
+import { openSessionPdf } from './sessionPdf';
+import { buildPageInput } from './pageInput';
+import { PdfExtractClient } from './extractClient';
+import { canonicalJson } from '../../domain/canonicalJson';
+import type { PdfPageInput, RunningElementUpdate } from './types';
+
+export const PDF_EXTRACTOR_VERSION = 'pdf-extractor/1';
+const BATCH_PAGES = 6;
+const MAX_BATCH_BLOCKS = 100;
+const MAX_BATCH_BYTES = 900 * 1024;
+
+async function sha256Hex(s: string): Promise<string> {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function blocksChecksum(blocks: Block[]): Promise<string> {
+  return sha256Hex(canonicalJson(blocks.map((b) => [b.id, b.sourceHash])));
+}
+
+function applyRunning(blocks: Block[], ups: RunningElementUpdate[]) {
+  const byId = new Map(ups.map((u) => [u.blockId, u]));
+  for (const b of blocks) {
+    const u = byId.get(b.id);
+    if (u) {
+      if (!b.roles.includes(u.role)) b.roles.push(u.role);
+      b.translationPolicy = 'preserve';
+    }
+  }
+}
+
+async function commitPage(session: ReaderSessionDto, token: string, sectionId: string, blocks: Block[]) {
+  let batch: Block[] = [];
+  let bytes = 0;
+  let index = 0;
+  const flush = async () => {
+    if (!batch.length) return;
+    await call('blocks_commit_batch', { sessionId: session.sessionId, extractionToken: token, sectionId, batchIndex: index++, blocks: batch });
+    batch = [];
+    bytes = 0;
+  };
+  for (const b of blocks) {
+    const size = new TextEncoder().encode(JSON.stringify(b)).length;
+    if (batch.length >= MAX_BATCH_BLOCKS || bytes + size > MAX_BATCH_BYTES) await flush();
+    batch.push(b);
+    bytes += size;
+  }
+  await flush();
+  await call('extraction_finalize_section', { sessionId: session.sessionId, extractionToken: token, sectionId, expectedCount: blocks.length, checksum: await blocksChecksum(blocks), failed: false });
+}
+
+export function usePdfExtraction(session: ReaderSessionDto | null, refreshSections: () => Promise<unknown>, onSession: (s: ReaderSessionDto) => void) {
+  const started = useRef<string | null>(null);
+  const latest = useRef({ session, refreshSections, onSession });
+  latest.current = { session, refreshSections, onSession };
+  const sessionId = session?.sessionId ?? null;
+  useEffect(() => {
+    const { session, refreshSections, onSession } = latest.current;
+    if (!session || started.current === session.sessionId) return;
+    started.current = session.sessionId;
+    let cancelled = false;
+    const client = new PdfExtractClient();
+    void (async () => {
+      const doc = await openSessionPdf(session);
+      try {
+        const meta = await doc.getMetadata().catch(() => null);
+        const title = (meta?.info as { Title?: string } | undefined)?.Title ?? null;
+        const begin = await call<ExtractionBeginResult>('extraction_begin', {
+          sessionId: session.sessionId,
+          extractorVersions: { pdfExtractor: PDF_EXTRACTOR_VERSION, pdfjs: '6.5.438' },
+          pageCount: doc.numPages,
+          title,
+        });
+        onSession({ ...session, extractionId: begin.extractionId });
+        await refreshSections();
+        const pending = begin.sections.filter((s) => s.state !== 'ready' && s.state !== 'failed').map((s) => ({ id: s.id, page: Number(s.ordinal) }));
+        // Restore page first, then pages after it, then the rest.
+        const restorePage = session.position?.location?.kind === 'pdf' ? session.position.location.pageIndex : 0;
+        pending.sort((a, b) => {
+          const ka = a.page >= restorePage ? a.page - restorePage : 1e6 + a.page;
+          const kb = b.page >= restorePage ? b.page - restorePage : 1e6 + b.page;
+          return ka - kb;
+        });
+        for (let i = 0; i < pending.length && !cancelled; i += BATCH_PAGES) {
+          const chunk = pending.slice(i, i + BATCH_PAGES);
+          const inputs: PdfPageInput[] = [];
+          for (const p of chunk) {
+            const page = await doc.getPage(p.page + 1);
+            inputs.push(await buildPageInput(page));
+            page.cleanup();
+          }
+          const results = new Map<number, Block[]>();
+          const failed = new Set<number>();
+          let running: RunningElementUpdate[] = [];
+          const job = client.extract(begin.extractionId, inputs, {
+            onPage: (pi, blocks) => results.set(pi, blocks),
+            onPageError: (pi) => { if (pi != null) failed.add(pi); },
+            onRunning: (u) => { running = running.concat(u); },
+          });
+          await job.done;
+          for (const p of chunk) {
+            if (cancelled) break;
+            const blocks = results.get(p.page);
+            if (!blocks || failed.has(p.page)) {
+              await call('extraction_finalize_section', { sessionId: session.sessionId, extractionToken: begin.extractionToken, sectionId: p.id, expectedCount: 0, checksum: '', failed: true }).catch(() => {});
+              continue;
+            }
+            applyRunning(blocks, running);
+            await commitPage(session, begin.extractionToken, p.id, blocks).catch(async () => {
+              await call('extraction_finalize_section', { sessionId: session.sessionId, extractionToken: begin.extractionToken, sectionId: p.id, expectedCount: 0, checksum: '', failed: true }).catch(() => {});
+            });
+          }
+          // Yield to keep the UI responsive between batches (low priority remainder).
+          await new Promise((r) => setTimeout(r, i === 0 ? 0 : 30));
+        }
+      } finally {
+        void doc.destroy();
+      }
+    })().catch(() => {});
+    return () => { cancelled = true; client.dispose(); };
+  }, [sessionId]);
+}

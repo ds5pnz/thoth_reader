@@ -14,6 +14,7 @@ import { useShortcut } from '../../app/shortcuts';
 import { EpubOriginalView, type EpubOriginalHandle } from '../../document/epub/EpubOriginalView';
 import { PdfOriginalView, type PdfOriginalHandle } from '../../document/pdf/PdfOriginalView';
 import { usePdfExtraction } from '../../document/pdf/usePdfExtraction';
+import { setPasswordAsker } from '../../document/pdf/sessionPdf';
 import './reader.css';
 
 type PendingSwitch = { run: () => void } | null;
@@ -47,6 +48,12 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const autoActive = (settings.autoTranslate ?? true) && !paused && mode !== 'original' && !!settings.activeProfileId;
 
   usePdfExtraction(isPdf ? session : null, refreshSections, (s) => setSession(s));
+  const [pwPrompt, setPwPrompt] = useState<{ reason: string; resolve: (v: string | null) => void } | null>(null);
+  useEffect(() => {
+    // PDF passwords are session-only: never persisted or sent to Rust.
+    setPasswordAsker((reason) => new Promise((resolve) => setPwPrompt({ reason, resolve })));
+    return () => setPasswordAsker(async () => null);
+  }, []);
 
   useEffect(() => { if (session) positionVersion.current = Number(session.positionVersion); }, [session?.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -361,6 +368,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       {historyFor && (
         <HistoryDialog sessionId={session.sessionId} block={historyFor} targetLanguage={targetLanguage} onClose={() => setHistoryFor(null)} onApplied={() => void call('reader_get_snapshot', { sessionId: session.sessionId, afterSequence: 0, blockIds: [historyFor.id] }).then((r) => { const d = (r as { display: Parameters<typeof setBlockDisplay>[0][] }).display[0]; if (d) setBlockDisplay(d); })} />
       )}
+      {pwPrompt && <PasswordDialog reason={pwPrompt.reason} onDone={(v) => { pwPrompt.resolve(v); setPwPrompt(null); }} />}
       {pendingSwitch && (
         <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-labelledby="unsaved-title">
           <div className="modal" style={{ width: 420 }}>
@@ -392,6 +400,25 @@ function SourceLanguagePrompt({ onPick }: { onPick: (lang: string) => void }) {
         <option value="de">독일어 (de)</option><option value="fr">프랑스어 (fr)</option><option value="es">스페인어 (es)</option><option value="ko">한국어 (ko)</option>
       </select>
       <button className="btn small primary" onClick={() => onPick(v)}>적용</button>
+    </div>
+  );
+}
+
+function PasswordDialog({ reason, onDone }: { reason: string; onDone: (v: string | null) => void }) {
+  const [v, setV] = useState('');
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pw-title">
+      <form className="modal" style={{ width: 380 }} onSubmit={(e) => { e.preventDefault(); onDone(v); }}>
+        <header><h2 id="pw-title">PDF 암호</h2></header>
+        <div className="body">
+          <p>{reason === 'incorrect_password' ? '암호가 올바르지 않습니다. 다시 입력해 주세요.' : '이 PDF는 암호로 보호되어 있습니다. 암호는 이번 세션에서만 사용하며 저장하지 않습니다.'}</p>
+          <input className="input" type="password" autoFocus value={v} onChange={(e) => setV(e.target.value)} aria-label="PDF 암호" style={{ width: '100%' }} />
+        </div>
+        <footer>
+          <button type="button" className="btn" onClick={() => onDone(null)}>취소</button>
+          <button type="submit" className="btn primary">열기</button>
+        </footer>
+      </form>
     </div>
   );
 }
