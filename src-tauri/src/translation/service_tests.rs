@@ -355,3 +355,37 @@ async fn ac05_manual_vs_auto_race_1000() {
     let revs: i64 = sqlx::query_scalar("select count(*) from translation_revisions").fetch_one(&db.reader).await.unwrap();
     assert_eq!(revs, 1000 + manual_saves);
 }
+
+/// T14: the app dies while a job streams. After restart the uncommitted preview is gone,
+/// the job is CANCELLED/INTERRUPTED (not re-run), and the saved manual edit is restored.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn t14_crash_during_stream_then_restart() {
+    let f = fixture(2, MockConfig::default()).await;
+    let b = f.blocks[0].clone();
+    translations::save_manual(&f.db.writer, &b.id, "ko", &b.source_hash, "저장된 수정본", 0, "rq").await.unwrap();
+    // Block 1 starts streaming and never completes (simulated crash mid-stream).
+    f.mock.script([MockStep::FailAfterChunks { chunks: 1, error: ProviderError::Disconnected { maybe_sent: true } }, MockStep::Hang]);
+    f.svc.request(&f.s, &f.blocks[1].id, false).await.unwrap();
+    f.svc.request(&f.s, &b.id, true).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let path = f.db.path.clone();
+    let backups = path.parent().unwrap().parent().unwrap().join("backups");
+    // "Kill": no shutdown, no cancel. Re-open the same DB file as a new process would.
+    let db2 = Db::open(&path, &backups).await.unwrap();
+    let svc2 = TranslationService::new(db2.clone(), Arc::new(MemorySecretStore::new()), default_factory());
+    svc2.start().await.unwrap();
+    let active: i64 = sqlx::query_scalar("select count(*) from translation_jobs where state in ('QUEUED','RUNNING','STREAMING','RETRY_WAIT')").fetch_one(&db2.reader).await.unwrap();
+    assert_eq!(active, 0, "no job survives a restart as active");
+    let interrupted: i64 = sqlx::query_scalar("select count(*) from translation_jobs where state = 'CANCELLED' and error_code = 'INTERRUPTED'").fetch_one(&db2.reader).await.unwrap();
+    assert!(interrupted >= 1);
+    // No partial stream became a revision or cache entry.
+    let generated: i64 = sqlx::query_scalar("select count(*) from translation_revisions where origin = 'generated'").fetch_one(&db2.reader).await.unwrap();
+    assert_eq!(generated, 0);
+    let cache: i64 = sqlx::query_scalar("select count(*) from translation_cache").fetch_one(&db2.reader).await.unwrap();
+    assert_eq!(cache, 0);
+    // The committed manual edit is still the head.
+    let h = translations::head_get(&db2.reader, &b.id, "ko").await.unwrap();
+    let m = translations::revision_get(&db2.reader, h.manual_revision_id.as_ref().unwrap()).await.unwrap().unwrap();
+    assert_eq!(m.text, "저장된 수정본");
+    crate::storage::integrity_check(&db2.writer).await.unwrap();
+}

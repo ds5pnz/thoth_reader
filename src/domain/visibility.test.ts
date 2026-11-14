@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isVisible, pickAnchor, scrollTopForAnchor } from './visibility';
+import { isVisible, pickAnchor, scrollTopForAnchor, ScrollOrigin } from './visibility';
 
 const vp = { top: 0, bottom: 800, height: 800 };
 
@@ -27,5 +27,22 @@ describe('anchor', () => {
     const a = pickAnchor([{ id: 'x', top: 1000, bottom: 1300 }], st, 800);
     expect(a?.id).toBe('x');
     expect(a?.ratio).toBeCloseTo(0.5, 6);
+  });
+});
+
+describe('scroll origin', () => {
+  it('only real input makes a scroll the user\'s', () => {
+    const o = new ScrollOrigin();
+    expect(o.classify()).toBe('program'); // layout shift / virtual list correction
+    o.noteUserInput();
+    expect(o.classify()).toBe('user');
+    const o2 = new ScrollOrigin();
+    o2.markProgrammatic(500);
+    expect(o2.classify()).toBe('program');
+    o2.noteUserInput(); // input during a programmatic window wins
+    expect(o2.classify()).toBe('user');
+    const o3 = new ScrollOrigin();
+    o3.setHeld(true); // scrollbar drag
+    expect(o3.classify()).toBe('user');
   });
 });

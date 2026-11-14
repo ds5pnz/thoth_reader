@@ -81,7 +81,8 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       .catch((e) => toast({ kind: 'error', text: errorMessage(e) }));
   }, [settings.activeProfileId, targetLanguage, session?.sessionId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const currentAnchor = useCallback((): ReaderAnchor | null => {
+  /** Measure the anchor from the active view's DOM (25% line rule). */
+  const measureAnchor = useCallback((): ReaderAnchor | null => {
     const s = sessionRef.current;
     if (!s?.extractionId) return null;
     let a: { blockId: string; ratio: number } | null = null;
@@ -99,9 +100,23 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     return { schemaVersion: 1, documentId: s.documentId, extractionId: s.extractionId, blockId: a.blockId, sourceOffsetU16: 0, withinBlockRatio: Math.min(1, Math.max(0, a.ratio)), location };
   }, [sessionRef, showPdfOriginal, showOriginalEpub]);
 
+  // The reading anchor is state that only *user* scrolling changes. Mode switches,
+  // re-layout and streaming translations restore from it and never re-measure it, so
+  // repeated switches cannot drift (spec §3.4, T06).
+  const userAnchor = useRef<ReaderAnchor | null>(null);
+  const currentAnchor = useCallback((): ReaderAnchor | null => userAnchor.current ?? measureAnchor(), [measureAnchor]);
+
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    window.__thoth = { ...(window.__thoth ?? {}), anchor: () => currentAnchor() };
+    window.__thoth = {
+      ...(window.__thoth ?? {}),
+      anchor: () => currentAnchor(),
+      anchorError: () => {
+        const a = currentAnchor();
+        if (!a?.blockId) return null;
+        return reflowRef.current?.anchorErrorPx(a.blockId, a.withinBlockRatio) ?? pdfRef.current?.anchorErrorPx(a.blockId, a.withinBlockRatio) ?? epubRef.current?.anchorErrorPx(a.blockId, a.withinBlockRatio) ?? null;
+      },
+    };
   }, [currentAnchor]);
 
   const savePosition = useCallback(async () => {
@@ -117,28 +132,31 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     }
   }, [sessionRef, currentAnchor, mode, pdfView]);
 
-  const onScrolled = useCallback(() => {
+  const onScrolledSaveOnly = useCallback(() => {
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => void savePosition(), 500);
   }, [savePosition]);
+
+  /** Called by views for user-initiated scrolling only. */
+  const anchorTimer = useRef<number | null>(null);
+  const onScrolled = useCallback(() => {
+    if (anchorTimer.current) window.clearTimeout(anchorTimer.current);
+    anchorTimer.current = window.setTimeout(() => { const a = measureAnchor(); if (a) userAnchor.current = a; }, 160);
+    if (saveTimer.current) window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => void savePosition(), 500);
+  }, [savePosition, measureAnchor]);
 
   const lastAnchor = useRef<ReaderAnchor | null>(null);
   const onVisible = useCallback((ids: string[], direction: 'forward' | 'backward') => {
     const s = sessionRef.current;
     if (!s) return;
-    // Track the reading anchor continuously; save 500ms after it changes (spec §3.4).
     const a = currentAnchor();
-    if (a && a.blockId !== lastAnchor.current?.blockId) {
-      lastAnchor.current = a;
-      if (restored.current) onScrolled();
-    } else if (a) {
-      lastAnchor.current = a;
-    }
+    if (a) lastAnchor.current = a;
     viewportSeq.current += 1;
     void call<{ blockedReason?: string }>('reader_set_viewport', { sessionId: s.sessionId, generation: s.generation, sequence: viewportSeq.current, visibleIds: autoActive ? ids : [], direction })
       .then((r) => setBlockedReason(r.blockedReason ?? null))
       .catch(() => {});
-  }, [sessionRef, autoActive, currentAnchor, onScrolled]);
+  }, [sessionRef, autoActive, currentAnchor]);
 
   // Restore saved position once the first sections exist: load the anchor's section,
   // then retry until its rows are rendered (React commits after loadSection resolves).
@@ -147,6 +165,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     const a = session.position;
     restored.current = true;
     if (!a.blockId || a.extractionId !== session.extractionId) return;
+    userAnchor.current = a;
     const loc = a.location;
     const want = loc?.kind === 'epub' ? loc.spineIndex : loc?.kind === 'pdf' ? loc.pageIndex : null;
     const target = want == null ? null : model.sections.find((sec) => {
@@ -158,7 +177,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       for (const sec of candidates) {
         await loadSection(sec.id);
         for (let i = 0; i < 30; i++) {
-          if (reflowRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || pdfRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || epubRef.current?.scrollToBlock(a.blockId!)) return;
+          if (reflowRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || pdfRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio) || epubRef.current?.scrollToBlock(a.blockId!, a.withinBlockRatio)) return;
           await new Promise((r) => setTimeout(r, 100));
           if (!blocksRef.current.has(sec.id)) continue;
           if (!blocksRef.current.get(sec.id)!.some((b) => b.id === a.blockId)) break;
@@ -175,11 +194,16 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       if (a?.blockId) {
         const id = a.blockId;
         const ratio = a.withinBlockRatio;
-        const restore = () => reflowRef.current?.scrollToBlock(id, ratio) || pdfRef.current?.scrollToBlock(id, ratio) || epubRef.current?.scrollToBlock(id);
-        // Once after the new layout mounts, again after row heights are re-measured
-        // (ResizeObserver / image and font load corrections, spec §3.4).
-        setTimeout(restore, 60);
-        setTimeout(() => { if (!epubRef.current) restore(); }, 400);
+        userAnchor.current = a; // pin: the switch itself must not move the anchor
+        const restore = () => reflowRef.current?.scrollToBlock(id, ratio) || pdfRef.current?.scrollToBlock(id, ratio) || epubRef.current?.scrollToBlock(id, ratio);
+        // Retry until the new view has mounted and rendered the block, then once more
+        // after row heights are re-measured (spec §3.4).
+        let tries = 0;
+        const attempt = () => {
+          if (restore()) { setTimeout(restore, 350); return; }
+          if (++tries < 40) setTimeout(attempt, 75);
+        };
+        setTimeout(attempt, 40);
       }
     };
     if (dirty.current.size > 0) setPendingSwitch({ run });
@@ -238,6 +262,14 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
 
   const revealBlock = useCallback(async (blockId: string, sectionId?: string) => {
     if (sectionId) await loadSection(sectionId);
+    // An explicit jump (search hit, bookmark, source reveal) becomes the new anchor.
+    const s0 = sessionRef.current;
+    if (s0?.extractionId) {
+      let location: ReaderAnchor['location'] = null;
+      for (const bs of blocksRef.current.values()) { const hit = bs.find((b) => b.id === blockId); if (hit) { location = hit.location; break; } }
+      userAnchor.current = { schemaVersion: 1, documentId: s0.documentId, extractionId: s0.extractionId, blockId, sourceOffsetU16: 0, withinBlockRatio: 0, location };
+      onScrolledSaveOnly();
+    }
     setHighlight(blockId);
     setTimeout(() => {
       if (showPdfOriginal) pdfRef.current?.scrollToBlock(blockId, 0, true);
@@ -245,7 +277,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       else reflowRef.current?.scrollToBlock(blockId, 0, true);
     }, 30);
     setTimeout(() => setHighlight((h) => (h === blockId ? null : h)), 2500);
-  }, [loadSection, showPdfOriginal, showOriginalEpub]);
+  }, [loadSection, showPdfOriginal, showOriginalEpub, sessionRef, onScrolledSaveOnly]);
 
   const actions: CellActions = useMemo(() => ({
     retranslate: (blockId) => {
@@ -387,7 +419,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           session={session}
           model={model}
           onJump={(blockId, sectionId) => void revealBlock(blockId, sectionId)}
-          onSection={(sectionId) => { void loadSection(sectionId); reflowRef.current?.scrollToSection(sectionId); pdfRef.current?.scrollToSection(sectionId); epubRef.current?.scrollToSection(sectionId); }}
+          onSection={(sectionId) => { userAnchor.current = null; void loadSection(sectionId); reflowRef.current?.scrollToSection(sectionId); pdfRef.current?.scrollToSection(sectionId); epubRef.current?.scrollToSection(sectionId); }}
           currentAnchor={currentAnchor}
         />
         <main className="content">

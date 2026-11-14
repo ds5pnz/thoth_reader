@@ -7,7 +7,7 @@ import type { SectionRow } from '../../ipc/generated/SectionRow';
 import type { ReaderModel } from './useReaderSession';
 import { SafeContentView, type ContentResolvers } from './SafeContentView';
 import { TranslationCell, type CellActions } from '../translation/TranslationCell';
-import { Debouncer, isVisible, pickAnchor, scrollTopForAnchor, ScrollOrigin, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
+import { Debouncer, isVisible, pickAnchor, scrollTopForAnchor, ScrollOrigin, attachUserIntent, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
 
 export type ReflowMode = 'parallel' | 'interleaved' | 'original';
 
@@ -20,6 +20,9 @@ export interface ReflowHandle {
   getAnchor: () => { blockId: string; ratio: number } | null;
   scrollToBlock: (blockId: string, ratio?: number, highlight?: boolean) => boolean;
   scrollToSection: (sectionId: string) => void;
+  /** Distance (CSS px) between the anchor point and the 25% reading line; 0 when the
+   *  scroll range is clamped and the block is on screen; null when not rendered. */
+  anchorErrorPx: (blockId: string, ratio: number) => number | null;
 }
 
 function isLeaf(b: Block, parents: Set<string>) {
@@ -120,6 +123,7 @@ export const ReflowView = forwardRef<ReflowHandle, {
   // on-screen offset; when rows resize without user input (translations streaming in,
   // images/fonts loading, sections measured) shift scrollTop so that block stays put.
   const sticky = useRef<{ id: string; offset: number } | null>(null);
+  const alignToken = useRef(0);
   const lastUserScroll = useRef(0);
   const captureSticky = useCallback(() => {
     const el = scrollRef.current;
@@ -139,21 +143,31 @@ export const ReflowView = forwardRef<ReflowHandle, {
     const el = scrollRef.current;
     const inner = innerRef.current;
     if (!el || !inner) return;
+    let raf = 0;
     const ro = new ResizeObserver(() => {
-      const st = sticky.current;
-      if (!st || performance.now() - lastUserScroll.current < 250) return;
-      const node = el.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(st.id)}"]`);
-      if (!node) return;
-      const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - st.offset;
-      if (Math.abs(delta) > 1) {
-        origin.current.markProgrammatic(150);
-        el.scrollTop += delta;
-      }
+      // Adjust in the next frame: changing scroll inside the RO callback re-triggers it.
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const st = sticky.current;
+        if (!st || performance.now() - lastUserScroll.current < 250) return;
+        const node = el.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(st.id)}"]`);
+        if (!node) return;
+        const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - st.offset;
+        if (Math.abs(delta) > 1) {
+          origin.current.markProgrammatic(150);
+          el.scrollTop += delta;
+        }
+      });
     });
     ro.observe(inner);
     inner.querySelectorAll('.row-wrap').forEach((r) => ro.observe(r));
-    return () => ro.disconnect();
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
   }, [items]);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    return el ? attachUserIntent(el, origin.current) : undefined;
+  }, []);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -191,23 +205,45 @@ export const ReflowView = forwardRef<ReflowHandle, {
     scrollToBlock(blockId, ratio = 0, _highlight = false) {
       const idx = indexById.get(blockId);
       if (idx == null) return false;
-      origin.current.markProgrammatic(400);
-      virt.scrollToIndex(idx, { align: 'start' });
-      // second pass after measurement so the ratio lands on the 25% line
-      requestAnimationFrame(() => requestAnimationFrame(() => {
+      const token = ++alignToken.current;
+      const startedAt = performance.now();
+      // The virtual list's own scrollToIndex keeps re-aligning the row to the top for a
+      // while; so it is used only to get the row rendered, and then this loop asserts the
+      // 25%-line position until measurements settle (or the user scrolls).
+      const step = (n: number) => {
         const el = scrollRef.current;
-        const node = el?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`);
-        if (!el || !node) return;
-        const src = node.querySelector<HTMLElement>('.src') ?? node;
-        // Rows are positioned with transform: translateY, which offsetTop ignores; use
-        // layout rects relative to the scroller instead.
-        const sr = src.getBoundingClientRect();
-        const top = el.scrollTop + (sr.top - el.getBoundingClientRect().top);
-        origin.current.markProgrammatic(200);
-        el.scrollTop = scrollTopForAnchor(top, sr.height, ratio, el.clientHeight);
-        requestAnimationFrame(() => captureSticky());
-      }));
+        if (!el || token !== alignToken.current || lastUserScroll.current > startedAt) return;
+        const node = el.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`);
+        if (!node) {
+          origin.current.markProgrammatic(400);
+          virt.scrollToIndex(idx, { align: 'start' });
+        } else {
+          const src = node.querySelector<HTMLElement>('.src') ?? node;
+          // Rows are positioned with transform: translateY, which offsetTop ignores; use
+          // layout rects relative to the scroller instead.
+          const sr = src.getBoundingClientRect();
+          const er = el.getBoundingClientRect();
+          const target = scrollTopForAnchor(el.scrollTop + (sr.top - er.top), sr.height, ratio, el.clientHeight);
+          if (Math.abs(target - el.scrollTop) > 1) {
+            origin.current.markProgrammatic(200);
+            el.scrollTop = target;
+          }
+          sticky.current = { id: blockId, offset: node.getBoundingClientRect().top - er.top - (target - el.scrollTop) };
+        }
+        if (n < 10) setTimeout(() => step(n + 1), n < 3 ? 40 : 90);
+      };
+      step(0);
       return true;
+    },
+    anchorErrorPx(blockId, ratio) {
+      const el = scrollRef.current;
+      const node = el?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`);
+      if (!el || !node) return null;
+      const vp = el.getBoundingClientRect();
+      const r = (node.querySelector<HTMLElement>('.src') ?? node).getBoundingClientRect();
+      const err = Math.abs(r.top + r.height * ratio - (vp.top + vp.height * 0.25));
+      const clamped = el.scrollTop <= 1 || el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+      return clamped && r.bottom > vp.top && r.top < vp.bottom ? 0 : err;
     },
     scrollToSection(sectionId) {
       const idx = rows.findIndex((r) => (r.kind === 'block' && r.sectionId === sectionId) || (r.kind !== 'block' && r.section.id === sectionId));

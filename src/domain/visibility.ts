@@ -37,22 +37,63 @@ export function scrollTopForAnchor(blockTop: number, blockHeight: number, ratio:
   return Math.max(0, blockTop + blockHeight * ratio - viewportHeight * ANCHOR_LINE);
 }
 
-/** Tags user vs programmatic scrolls so sync handlers don't re-trigger each other. */
+/**
+ * Classifies scroll events. A scroll is the user's only when real input (wheel, touch,
+ * scroll keys, pointer held on the scroller) happened just before it; everything else —
+ * programmatic restores, virtual-list offset corrections, layout shifts — is 'program'.
+ * Sequence numbers tag programmatic moves so sync handlers don't re-trigger each other.
+ */
 export class ScrollOrigin {
   private seq = 0;
-  private pending: { seq: number; until: number } | null = null;
+  private programUntil = 0;
+  private userUntil = 0;
+  private held = false;
   markProgrammatic(windowMs = 120): number {
     this.seq += 1;
-    this.pending = { seq: this.seq, until: performance.now() + windowMs };
+    this.programUntil = performance.now() + windowMs;
     return this.seq;
   }
-  /** Returns 'program' for scroll events caused by the last programmatic move. */
+  noteUserInput(windowMs = 1200) {
+    this.userUntil = performance.now() + windowMs;
+    this.programUntil = 0; // real input always wins over a pending programmatic window
+  }
+  setHeld(held: boolean) {
+    this.held = held;
+    if (held) this.programUntil = 0;
+    else this.userUntil = performance.now() + 300;
+  }
   classify(): 'user' | 'program' {
-    if (this.pending && performance.now() <= this.pending.until) return 'program';
-    this.pending = null;
-    return 'user';
+    const now = performance.now();
+    if (now <= this.programUntil) return 'program';
+    return this.held || now <= this.userUntil ? 'user' : 'program';
   }
   get sequence() { return this.seq; }
+}
+
+const SCROLL_KEYS = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ', 'Spacebar']);
+
+/** Wire real-input listeners on a scroll container. Returns a cleanup function. */
+export function attachUserIntent(el: HTMLElement, origin: ScrollOrigin): () => void {
+  const input = () => origin.noteUserInput();
+  const key = (e: KeyboardEvent) => { if (SCROLL_KEYS.has(e.key)) origin.noteUserInput(); };
+  const down = () => origin.setHeld(true);
+  const up = () => origin.setHeld(false);
+  el.addEventListener('wheel', input, { passive: true });
+  el.addEventListener('touchstart', input, { passive: true });
+  el.addEventListener('touchmove', input, { passive: true });
+  el.addEventListener('keydown', key);
+  el.addEventListener('pointerdown', down);
+  window.addEventListener('pointerup', up);
+  window.addEventListener('pointercancel', up);
+  return () => {
+    el.removeEventListener('wheel', input);
+    el.removeEventListener('touchstart', input);
+    el.removeEventListener('touchmove', input);
+    el.removeEventListener('keydown', key);
+    el.removeEventListener('pointerdown', down);
+    window.removeEventListener('pointerup', up);
+    window.removeEventListener('pointercancel', up);
+  };
 }
 
 export class Debouncer {

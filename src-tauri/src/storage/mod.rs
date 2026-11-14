@@ -46,6 +46,11 @@ pub fn parse_version(v: &str) -> (u32, u32, u32) {
 impl Db {
     /// Open (or create) the DB, verify the bundled SQLite build, back up and migrate.
     pub async fn open(path: &Path, backups_dir: &Path) -> AppResult<Db> {
+        Self::open_with(path, backups_dir, &MIGRATOR).await
+    }
+
+    /// Same as `open` with an explicit migrator (fault-injection tests).
+    pub async fn open_with(path: &Path, backups_dir: &Path, migrator: &sqlx::migrate::Migrator) -> AppResult<Db> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -65,20 +70,20 @@ impl Db {
         verify_sqlite_build(&writer).await?;
 
         let mut read_only_reason = None;
-        match pending_state(&writer).await? {
+        match pending_state(&writer, migrator).await? {
             SchemaState::Newer => {
                 read_only_reason = Some("DB가 더 새로운 앱 버전에서 생성되었습니다. 호환되는 버전으로 열어 주세요.".into());
             }
             SchemaState::Pending if existed => {
                 backup::snapshot(&writer, backups_dir, "pre-migration").await?;
-                if let Err(e) = MIGRATOR.run(&writer).await {
+                if let Err(e) = migrator.run(&writer).await {
                     backup::mark_latest_as_recovery(backups_dir);
                     tracing::error!("migration failed: {}", crate::diagnostics::redact(&e.to_string()));
                     read_only_reason = Some("데이터베이스 업데이트에 실패했습니다. 백업에서 복원할 수 있습니다.".into());
                 }
             }
             SchemaState::Pending => {
-                MIGRATOR.run(&writer).await.map_err(|e| {
+                migrator.run(&writer).await.map_err(|e| {
                     tracing::error!("migration failed: {}", crate::diagnostics::redact(&e.to_string()));
                     AppError::new(ErrorCode::MigrationFailed, "데이터베이스 초기화에 실패했습니다.")
                 })?;
@@ -131,7 +136,7 @@ enum SchemaState {
     Newer,
 }
 
-async fn pending_state(pool: &SqlitePool) -> AppResult<SchemaState> {
+async fn pending_state(pool: &SqlitePool, migrator: &sqlx::migrate::Migrator) -> AppResult<SchemaState> {
     let has_table: i64 = sqlx::query_scalar(
         "select count(*) from sqlite_master where type='table' and name='_sqlx_migrations'",
     )
@@ -143,7 +148,7 @@ async fn pending_state(pool: &SqlitePool) -> AppResult<SchemaState> {
     let rows = sqlx::query("select version, checksum from _sqlx_migrations where success = 1")
         .fetch_all(pool)
         .await?;
-    let known: std::collections::HashMap<i64, Vec<u8>> = MIGRATOR
+    let known: std::collections::HashMap<i64, Vec<u8>> = migrator
         .iter()
         .map(|m| (m.version, m.checksum.to_vec()))
         .collect();
@@ -218,6 +223,53 @@ mod tests {
         let (db, _d) = test_db().await;
         let r = sqlx::query("insert into settings(key, value_json, updated_at) values ('x','1',0)")
             .execute(&db.reader).await;
+        assert!(r.is_err());
+    }
+
+    /// T16: a migration that fails midway must leave existing data intact, keep a recovery
+    /// backup, and put the app in read-only mode instead of starting queues/edits.
+    #[tokio::test]
+    async fn failed_migration_keeps_data_and_recovery_backup() {
+        let (db, dir) = test_db().await;
+        sqlx::query("insert into settings(key, value_json, updated_at) values ('theme','\"dark\"',0)").execute(&db.writer).await.unwrap();
+        drop(db);
+        // Migrator = real migrations + a broken 9000 (second statement fails).
+        let mdir = dir.path().join("mig");
+        std::fs::create_dir_all(&mdir).unwrap();
+        for f in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/migrations")).unwrap().flatten() {
+            std::fs::copy(f.path(), mdir.join(f.file_name())).unwrap();
+        }
+        std::fs::write(mdir.join("9000_broken.sql"), "CREATE TABLE half_done(x);\nINSERT INTO no_such_table VALUES (1);").unwrap();
+        let broken = sqlx::migrate::Migrator::new(mdir.clone()).await.unwrap();
+        let p = dir.path().join("database/thoth.sqlite");
+        let b = dir.path().join("backups");
+        let db2 = Db::open_with(&p, &b, &broken).await.unwrap();
+        assert!(db2.read_only_reason.is_some());
+        assert!(db2.ensure_writable().is_err());
+        // Existing data readable; the failed migration's partial work was rolled back.
+        let v: String = sqlx::query_scalar("select value_json from settings where key='theme'").fetch_one(&db2.reader).await.unwrap();
+        assert_eq!(v, "\"dark\"");
+        let half: i64 = sqlx::query_scalar("select count(*) from sqlite_master where name='half_done'").fetch_one(&db2.reader).await.unwrap();
+        assert_eq!(half, 0);
+        integrity_check(&db2.writer).await.unwrap();
+        let rec: Vec<_> = std::fs::read_dir(&b).unwrap().flatten().filter(|e| e.file_name().to_string_lossy().contains("-recovery")).collect();
+        assert_eq!(rec.len(), 1, "recovery backup kept");
+        // Pruning never removes the recovery backup.
+        backup::prune(&b, 0);
+        assert!(rec[0].path().exists());
+        drop(db2);
+        // The correct app version opens the same DB normally afterwards.
+        let db3 = Db::open(&p, &b).await.unwrap();
+        assert!(db3.read_only_reason.is_none());
+    }
+
+    /// T16: a migration checksum that differs from the recorded one is refused.
+    #[tokio::test]
+    async fn checksum_mismatch_is_refused() {
+        let (db, dir) = test_db().await;
+        sqlx::query("update _sqlx_migrations set checksum = x'00' where version = 1").execute(&db.writer).await.unwrap();
+        drop(db);
+        let r = Db::open(&dir.path().join("database/thoth.sqlite"), &dir.path().join("backups")).await;
         assert!(r.is_err());
     }
 }

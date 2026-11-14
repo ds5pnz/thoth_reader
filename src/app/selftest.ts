@@ -6,7 +6,7 @@ import { call } from '../ipc/client';
 import type { ImportCandidate } from '../ipc/generated/ImportCandidate';
 import type { ImportResult } from '../ipc/generated/ImportResult';
 
-type Hooks = { open: (id: string) => void; close: () => void; anchor: () => unknown; reloadSettings: () => Promise<void> };
+type Hooks = { open: (id: string) => void; close: () => void; anchor: () => unknown; anchorError: () => number | null; reloadSettings: () => Promise<void> };
 declare global {
   interface Window { __thoth?: Partial<Hooks> }
 }
@@ -15,7 +15,11 @@ const log = (level: string, message: unknown) =>
   invoke('debug_log', { meta: { apiVersion: 1, requestId: crypto.randomUUID() }, level, message: typeof message === 'string' ? message : JSON.stringify(message) }).catch(() => {});
 
 export function installErrorForwarding() {
-  window.addEventListener('error', (e) => void log('error', `${e.message} @ ${e.filename}:${e.lineno}`));
+  window.addEventListener('error', (e) => {
+    // Benign browser notice (observers deferring to the next frame); not an app error.
+    if (e.message.startsWith('ResizeObserver loop')) return;
+    void log('error', `${e.message} @ ${e.filename}:${e.lineno}`);
+  });
   window.addEventListener('unhandledrejection', (e) => {
     const r = e.reason as { message?: string; code?: string; stack?: string };
     void log('error', `unhandled: ${r?.code ?? ''} ${r?.message ?? String(e.reason)} | ${String(r?.stack ?? '').slice(0, 600)}`);
@@ -51,7 +55,7 @@ function epubFrameText(): number {
 }
 
 export async function runSelftest() {
-  const cfg = await call<{ candidates: ImportCandidate[]; provider: string | null; model: string | null; slowMs: number | null }>('debug_selftest_files').catch(() => ({ candidates: [], provider: null, model: null, slowMs: null }));
+  const cfg = await call<{ candidates: ImportCandidate[]; provider: string | null; model: string | null; slowMs: number | null; scenario: string | null }>('debug_selftest_files').catch(() => ({ candidates: [], provider: null, model: null, slowMs: null, scenario: null }));
   WAIT = cfg.slowMs ?? 30000;
   const cands = cfg.candidates;
   if (!cands.length) return;
@@ -75,6 +79,16 @@ export async function runSelftest() {
     const firstContent = await waitFor(() => rows() > 0 || canvases() > 0, 30000);
     const res: Record<string, unknown> = { label, format: r.format, importMs, openToFirstContentMs: firstContent, totalOpenMs: Math.round(performance.now() - t1) };
     await sleep(1500);
+    if (cfg.scenario) {
+      res.scenario = cfg.scenario;
+      if (cfg.scenario === 'modes20') await modes20(res, isPdf);
+      if (cfg.scenario === 'security') await securityScan(res);
+      if (cfg.scenario === 'outage') await outage(res);
+      await log('result', res);
+      window.__thoth?.close?.();
+      await sleep(800);
+      continue;
+    }
     res.initial = { rows: rows(), canvases: canvases(), anchor: window.__thoth?.anchor?.() };
     if (isPdf) {
       clickButton('리플로우');
@@ -151,7 +165,7 @@ async function translationChecks(res: Record<string, unknown>, documentId: strin
   // Scroll into body text: visible blocks must be requested first (P1).
   const scroller = document.querySelector<HTMLElement>('.reflow');
   const before = translated();
-  if (scroller) { scroller.scrollTop = 4000; scroller.dispatchEvent(new Event('scroll')); }
+  if (scroller) { scroller.scrollTop = 4000; userScroll(scroller); }
   res.afterScrollTranslatedMs = await waitFor(() => translated() >= before + 3, WAIT);
   res.translatedCells = translated();
   res.translateWindowMs = Math.round(performance.now() - t0);
@@ -187,4 +201,87 @@ async function translationChecks(res: Record<string, unknown>, documentId: strin
   res.reopenManualKept = [...document.querySelectorAll('.tcell-text')].some((x) => x.textContent === '수동으로 고친 번역');
   res.reopenWindowMs = Math.round(performance.now() - t1);
   await log('mark', 'reopen-end');
+}
+
+/** Simulate real input before the scroll so it counts as the user's. */
+function userScroll(el: HTMLElement) {
+  el.dispatchEvent(new WheelEvent('wheel', { bubbles: true, deltaY: 100 }));
+  el.dispatchEvent(new Event('scroll'));
+}
+
+const anchorId = () => (window.__thoth?.anchor?.() as { blockId?: string } | null)?.blockId ?? null;
+
+/** T06 / AC02: 20 mode switches from a mid-document position. The anchor state must not
+ *  change, and the anchor point must sit within the spec tolerance of the 25% line
+ *  (48 CSS px for EPUB/reflow; inside the block region or 5% of the viewport for PDF original). */
+async function modes20(res: Record<string, unknown>, isPdf: boolean) {
+  // The reading mode is a persisted setting: start from a known block-list mode.
+  if (isPdf) clickButton('리플로우');
+  clickButton('병렬');
+  await waitFor(() => rows() > 0 && !!document.querySelector('.reflow'), 20000);
+  const scroller = document.querySelector<HTMLElement>('.reflow');
+  if (scroller) { scroller.scrollTop = 6000; userScroll(scroller); }
+  await waitFor(() => anchorId() != null && rows() > 0, 15000);
+  await sleep(1500);
+  const start = anchorId();
+  const seq = isPdf ? ['교차', '병렬', '원본', '리플로우'] : ['교차', '원문', '병렬'];
+  const steps: { mode: string; same: boolean; errPx: number | null }[] = [];
+  for (let i = 0; i < 20; i++) {
+    const m = seq[i % seq.length]!;
+    clickButton(m);
+    if (m === '원문') await waitFor(() => epubFrameText() > 0, 10000);
+    else if (m === '원본') await waitFor(() => canvases() > 0, 10000);
+    else await waitFor(() => rows() > 0, 10000);
+    await sleep(1100);
+    const err = window.__thoth?.anchorError?.() ?? null;
+    steps.push({ mode: m, same: anchorId() === start, errPx: err == null ? null : Math.round(err) });
+  }
+  const tol = (m: string) => (m === '원본' ? window.innerHeight * 0.05 : 48);
+  res.modes20 = {
+    start: start?.slice(0, 8) ?? null,
+    dbg: start ? undefined : { rows: rows(), placeholders: document.querySelectorAll('.placeholder').length, top: scroller?.scrollTop, h: scroller?.scrollHeight },
+    anchorChanged: steps.filter((x) => !x.same).length,
+    notMeasured: steps.filter((x) => x.errPx == null).map((x) => x.mode),
+    overTolerance: steps.filter((x) => x.errPx != null && x.errPx > tol(x.mode)),
+    maxErrPx: Math.max(0, ...steps.map((x) => x.errPx ?? 0)),
+  };
+}
+
+/** AC08 / T08 in the real webview: the rendered sanitized document has nothing executable
+ *  and no reference outside the asset origin. */
+async function securityScan(res: Record<string, unknown>) {
+  clickButton('원문');
+  await waitFor(() => epubFrameText() > 0, 10000);
+  await sleep(600);
+  const f = document.querySelector<HTMLIFrameElement>('.epub-host iframe');
+  const d = f?.contentDocument;
+  if (!d) { res.security = { error: 'no frame document' }; return; }
+  const all = [...d.querySelectorAll('*')];
+  const external = (u: string | null) => !!u && /^(https?:|\/\/|data:|file:|javascript:)/i.test(u.trim());
+  res.security = {
+    sandbox: f?.getAttribute('sandbox'),
+    scripts: d.querySelectorAll('script').length,
+    activeEmbeds: d.querySelectorAll('iframe,object,embed,form,base[href^="http"],meta[http-equiv="refresh" i]').length,
+    eventHandlers: all.filter((e) => [...e.attributes].some((a) => a.name.toLowerCase().startsWith('on'))).length,
+    externalLoads: all.filter((e) => ['IMG', 'LINK', 'SOURCE', 'VIDEO', 'AUDIO', 'IMAGE', 'USE'].includes(e.tagName.toUpperCase()) && (external(e.getAttribute('src')) || external(e.getAttribute('href')) || external(e.getAttribute('xlink:href')))).length,
+    jsLinks: [...d.querySelectorAll('a[href]')].filter((a) => /^\s*(javascript|data|file|vbscript):/i.test(a.getAttribute('href') ?? '')).length,
+    // A script that somehow ran would have set this marker (fixtures try to).
+    pwned: Boolean((window as unknown as { __pwned?: unknown }).__pwned) || Boolean((f?.contentWindow as unknown as { __pwned?: unknown } | null)?.__pwned),
+    nonAssetRequests: performance.getEntriesByType('resource').map((e) => e.name).filter((n) => !n.startsWith('thoth-doc:') && !n.startsWith(location.origin) && !n.startsWith('blob:') && !n.startsWith('ipc:') && !n.startsWith('http://ipc.localhost')).length,
+  };
+}
+
+/** AC14: provider unreachable. Source stays readable, cached translations still show,
+ *  failures surface as job errors without breaking the reader. */
+async function outage(res: Record<string, unknown>) {
+  const scroller = document.querySelector<HTMLElement>('.reflow');
+  if (scroller) { scroller.scrollTop = 3000; userScroll(scroller); }
+  await sleep(6000);
+  res.outage = {
+    rows: rows(),
+    sourceReadable: [...document.querySelectorAll('.brow .src')].filter((x) => (x.textContent ?? '').trim().length > 0).length,
+    cachedShown: translated(),
+    failedBadges: [...document.querySelectorAll('.tcell .badge')].filter((b) => b.textContent === '실패' || b.textContent === '재시도 대기').length,
+    banner: document.querySelector('.banner.warn')?.textContent?.slice(0, 60) ?? null,
+  };
 }

@@ -9,13 +9,15 @@ import type { Block } from '../../ipc/generated/Block';
 import type { ReaderModel } from '../../features/reader/useReaderSession';
 import { TranslationCell, type CellActions } from '../../features/translation/TranslationCell';
 import { pdfRectToCss, cssPointToPdf, hitTest } from './coords';
-import { isVisible, pickAnchor, ScrollOrigin, Debouncer, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
+import { isVisible, pickAnchor, ScrollOrigin, attachUserIntent, Debouncer, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
 import { openSessionPdf, releaseSessionPdf } from './sessionPdf';
 
 export interface PdfOriginalHandle {
   getAnchor: () => { blockId: string; ratio: number } | null;
   scrollToBlock: (blockId: string, ratio?: number, highlight?: boolean) => boolean;
   scrollToSection: (sectionId: string) => void;
+  /** 0 when the 25% line is inside the block's region (spec §10.4), else the distance. */
+  anchorErrorPx: (blockId: string, ratio: number) => number | null;
 }
 
 const MAX_LIVE_CANVASES = 5;
@@ -148,6 +150,11 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   // Re-run visibility/anchor whenever the live page set or loaded blocks change.
   useEffect(() => { deb.current.run(report); }, [report]);
 
+  useEffect(() => {
+    const el = pagesRef.current;
+    return el ? attachUserIntent(el, origin.current) : undefined;
+  }, []);
+
   const onScroll = () => {
     const el = pagesRef.current;
     if (!el) return;
@@ -207,12 +214,33 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
       return null;
     },
     scrollToBlock: scrollToBlockImpl,
+    anchorErrorPx(blockId) {
+      const el = pagesRef.current;
+      if (!el) return null;
+      for (const pm of pages) {
+        const b = (blocksByPage.get(pm.index) ?? []).find((x) => x.id === blockId);
+        if (!b || b.location.kind !== 'pdf' || !pm.viewport || !b.location.rects.length) continue;
+        const node = el.querySelector<HTMLElement>(`[data-page="${pm.index}"]`);
+        if (!node) return null;
+        const pv = pm.viewport;
+        const css = b.location.rects.map((r) => pdfRectToCss(r, pv));
+        const pr = node.getBoundingClientRect();
+        const vp = el.getBoundingClientRect();
+        const top = pr.top + Math.min(...css.map((c) => c.top));
+        const bottom = pr.top + Math.max(...css.map((c) => c.top + c.height));
+        const line = vp.top + vp.height * 0.25;
+        const clamped = el.scrollTop <= 1 || el.scrollTop + el.clientHeight >= el.scrollHeight - 1;
+        if (clamped && bottom > vp.top && top < vp.bottom) return 0;
+        return line < top ? top - line : line > bottom ? line - bottom : 0;
+      }
+      return null;
+    },
     scrollToSection(sectionId) {
       const s = model.sections.find((x) => x.id === sectionId);
       const node = s ? pagesRef.current?.querySelector<HTMLElement>(`[data-page="${Number(s.ordinal)}"]`) : null;
       if (node && pagesRef.current) { origin.current.markProgrammatic(300); pagesRef.current.scrollTop = node.offsetTop; }
     },
-  }), [anchorId, scrollToBlockImpl, model.sections]);
+  }), [anchorId, scrollToBlockImpl, model.sections, pages, blocksByPage]);
 
   if (error) return <div className="banner warn">PDF를 열 수 없습니다: {error}</div>;
 
@@ -237,6 +265,10 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
         <div
           ref={panelRef}
           className="pdf-trn"
+          onWheel={() => panelOrigin.current.noteUserInput()}
+          onTouchMove={() => panelOrigin.current.noteUserInput()}
+          onPointerDown={() => panelOrigin.current.setHeld(true)}
+          onPointerUp={() => panelOrigin.current.setHeld(false)}
           onScroll={() => { if (panelOrigin.current.classify() === 'user') setUserScrollingPanel(true); }}
           aria-label="번역"
         >
