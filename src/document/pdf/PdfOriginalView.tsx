@@ -13,7 +13,7 @@ import { TranslationCell, type CellActions } from '../../features/translation/Tr
 import { pdfRectToCss, cssPointToPdf, hitTest } from './coords';
 import { isVisible, pickAnchor, ScrollOrigin, attachUserIntent, Debouncer, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
 import { openSessionPdf, releaseSessionPdf } from './sessionPdf';
-import { blockBox, fitFontSize, pickBackground, textColorFor, type Rgb } from './translatedPage';
+import { blockBox, expandBox, fitFontSize, harmonizeFontSizes, pickBackground, textColorFor, type BlockBox, type ItemSize, type Rgb } from './translatedPage';
 
 export interface PdfOriginalHandle {
   getAnchor: () => { blockId: string; ratio: number } | null;
@@ -51,6 +51,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rendered, setRendered] = useState<Map<number, number>>(new Map());
   const canvases = useRef(new Map<number, HTMLCanvasElement>());
+  const itemSizes = useRef(new Map<number, ItemSize[]>());
   // Fit to width: one page in original mode, two pages side by side otherwise.
   const scale = useMemo(() => {
     const bw = bases[0]?.bw ?? 0;
@@ -299,7 +300,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
                 sectionState={model.sections.find((s) => Number(s.ordinal) === pm.index)?.state}
                 highlightBlockId={hlId}
                 onPick={(b) => { setAnchorId(b.id); setSelectedId(b.id); }}
-                onRendered={(c) => { canvases.current.set(pm.index, c); setRendered((prev) => new Map(prev).set(pm.index, (prev.get(pm.index) ?? 0) + 1)); }}
+                onRendered={(c, items) => { canvases.current.set(pm.index, c); itemSizes.current.set(pm.index, items); setRendered((prev) => new Map(prev).set(pm.index, (prev.get(pm.index) ?? 0) + 1)); }}
               />
               {mode !== 'original' && (
                 <TranslatedPage
@@ -308,6 +309,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
                   blocks={blocks.filter(translatable)}
                   model={model}
                   source={canvases.current.get(pm.index) ?? null}
+                  items={itemSizes.current.get(pm.index) ?? null}
                   version={rendered.get(pm.index) ?? 0}
                   targetLanguage={targetLanguage}
                   highlightBlockId={hlId}
@@ -333,7 +335,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
 });
 
 function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockId, onPick, onRendered }: {
-  doc: PDFDocumentProxy | null; meta: PageMeta; scale: number; live: boolean; blocks: Block[]; sectionState?: string; highlightBlockId: string | null; onPick: (b: Block) => void; onRendered: (c: HTMLCanvasElement) => void;
+  doc: PDFDocumentProxy | null; meta: PageMeta; scale: number; live: boolean; blocks: Block[]; sectionState?: string; highlightBlockId: string | null; onPick: (b: Block) => void; onRendered: (c: HTMLCanvasElement, items: ItemSize[]) => void;
 }) {
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
@@ -357,10 +359,13 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
       task = page.render({ canvasContext: ctx, viewport: vp, canvas: c } as Parameters<PDFPageProxy['render']>[0]);
       const ok = await task.promise.then(() => true, () => false);
       if (cancelled || !textRef.current) return;
-      if (ok) onRenderedRef.current(c);
       // Text layer for native selection (original-mode text selection).
       const pdfjs = await import('pdfjs-dist');
       const tc = await page.getTextContent();
+      // Same item order as extraction (itemRanges index into the `str` items).
+      const sizes: ItemSize[] = [];
+      for (const it of tc.items) if ('str' in it) sizes.push({ h: it.height, n: it.str.length });
+      if (ok && !cancelled) onRenderedRef.current(c, sizes);
       const container = textRef.current;
       if (cancelled || !container) return; // unmounted while awaiting
       container.replaceChildren();
@@ -402,16 +407,17 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
 
 /** The layout-preserving translated page: a copy of the page raster with each translated
  *  block drawn over its own region. Untranslated blocks keep showing the original. */
-function TranslatedPage({ meta, live, blocks, model, source, version, targetLanguage, highlightBlockId, onPick }: {
-  meta: PageMeta; live: boolean; blocks: Block[]; model: ReaderModel; source: HTMLCanvasElement | null; version: number; targetLanguage: string; highlightBlockId: string | null; onPick: (b: Block) => void;
+function TranslatedPage({ meta, live, blocks, model, source, items, version, targetLanguage, highlightBlockId, onPick }: {
+  meta: PageMeta; live: boolean; blocks: Block[]; model: ReaderModel; source: HTMLCanvasElement | null; items: ItemSize[] | null; version: number; targetLanguage: string; highlightBlockId: string | null; onPick: (b: Block) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [colors, setColors] = useState<Map<string, Rgb>>(new Map());
+  const [fit, setFit] = useState<Map<string, { bg: Rgb; width: number; height: number }>>(new Map());
   const vp = meta.viewport;
-  const boxes = useMemo(() => (vp ? blocks.map((b) => ({ b, box: blockBox(b, vp) })).filter((x): x is { b: Block; box: NonNullable<ReturnType<typeof blockBox>> } => !!x.box) : []), [blocks, vp]);
+  const boxes = useMemo(() => (vp ? blocks.map((b) => ({ b, id: b.id, box: blockBox(b, vp, items) })).filter((x): x is { b: Block; id: string; box: BlockBox } => !!x.box) : []), [blocks, vp, items]);
+  const fonts = useMemo(() => harmonizeFontSizes(boxes), [boxes]);
 
-  // Copy the original raster (cheaper than rendering the page twice) and sample each
-  // block's background so the overlay blends into coloured boxes and table cells.
+  // Copy the original raster (cheaper than rendering the page twice), sample each block's
+  // background, and grow each block's region into the empty space around it.
   useEffect(() => {
     const c = canvasRef.current;
     if (!live || !c || !source || source.width === 0) return;
@@ -421,18 +427,24 @@ function TranslatedPage({ meta, live, blocks, model, source, version, targetLang
     if (!ctx) return;
     ctx.drawImage(source, 0, 0);
     const k = meta.width > 0 ? c.width / meta.width : 1;
-    const next = new Map<string, Rgb>();
+    const img = ctx.getImageData(0, 0, c.width, c.height);
+    const at = (xCss: number, yCss: number): Rgb => {
+      const x = Math.min(c.width - 1, Math.max(0, Math.round(xCss * k)));
+      const y = Math.min(c.height - 1, Math.max(0, Math.round(yCss * k)));
+      const i = (y * c.width + x) * 4;
+      return [img.data[i]!, img.data[i + 1]!, img.data[i + 2]!];
+    };
+    const all = boxes.map((x) => x.box);
+    const pageRight = Math.min(meta.width - 4, Math.max(...all.map((x) => x.left + x.width), 0));
+    const next = new Map<string, { bg: Rgb; width: number; height: number }>();
     for (const { b, box } of boxes) {
       const pts: Rgb[] = [];
-      for (const [fx, fy] of [[0, 0], [1, 0], [0, 1], [1, 1], [0.5, 0], [0.5, 1], [0, 0.5], [1, 0.5]] as const) {
-        const x = Math.min(c.width - 1, Math.max(0, Math.round((box.left - 2 + fx * (box.width + 4)) * k)));
-        const y = Math.min(c.height - 1, Math.max(0, Math.round((box.top - 2 + fy * (box.height + 4)) * k)));
-        const d = ctx.getImageData(x, y, 1, 1).data;
-        pts.push([d[0]!, d[1]!, d[2]!]);
-      }
-      next.set(b.id, pickBackground(pts));
+      for (const [fx, fy] of [[0, 0], [1, 0], [0, 1], [1, 1], [0.5, 0], [0.5, 1], [0, 0.5], [1, 0.5]] as const) pts.push(at(box.left - 2 + fx * (box.width + 4), box.top - 2 + fy * (box.height + 4)));
+      const bg = pickBackground(pts);
+      const grown = expandBox(img, k, box, bg, all, pageRight);
+      next.set(b.id, { bg, ...grown });
     }
-    setColors(next);
+    setFit(next);
     return () => { c.width = 0; c.height = 0; };
   }, [live, source, version, boxes, meta.width]);
 
@@ -445,25 +457,29 @@ function TranslatedPage({ meta, live, blocks, model, source, version, targetLang
         const preview = model.previews.get(b.id);
         const text = d?.shown?.text ?? '';
         const busy = !!job && job.state !== 'FAILED';
-        const bg = colors.get(b.id);
-        const style = { left: box.left - 1, top: box.top - 1, width: box.width + 2, height: box.height + 2 };
+        const f = fit.get(b.id);
+        const slot = { left: box.left - 1, top: box.top - 1, width: box.width + 2, height: box.height + 2 };
         if (!text && !preview) {
           return (
-            <button key={b.id} type="button" className={`tp-slot ${busy ? 'busy' : ''} ${job?.state === 'FAILED' ? 'failed' : ''} ${b.id === highlightBlockId ? 'sel' : ''}`} style={style} onClick={() => onPick(b)} aria-label={busy ? '번역 중인 문단' : job?.state === 'FAILED' ? '번역에 실패한 문단' : '아직 번역되지 않은 문단'} />
+            <button key={b.id} type="button" className={`tp-slot ${busy ? 'busy' : ''} ${job?.state === 'FAILED' ? 'failed' : ''} ${b.id === highlightBlockId ? 'sel' : ''}`} style={slot} onClick={() => onPick(b)} aria-label={busy ? '번역 중인 문단' : job?.state === 'FAILED' ? '번역에 실패한 문단' : '아직 번역되지 않은 문단'} />
           );
         }
+        const fontSize = fonts.get(b.id) ?? box.fontSize;
         return (
           <FitText
             key={b.id}
             text={text || preview || ''}
-            box={style}
-            baseSize={box.fontSize}
-            bg={bg}
+            cover={slot}
+            maxWidth={(f?.width ?? box.width) + 2}
+            maxHeight={(f?.height ?? box.height) + 2}
+            baseSize={fontSize}
+            // Keep the original line rhythm; single lines get a normal leading.
+            lineHeight={box.pitch > 0 ? Math.max(1.05, Math.min(1.9, box.pitch / fontSize)) : 1.25}
+            bg={f?.bg}
             stale={d?.status === 'stale'}
             manual={d?.status === 'manual'}
             streaming={!text && !!preview}
             selected={b.id === highlightBlockId}
-            centered={false}
             onClick={() => onPick(b)}
           />
         );
@@ -472,22 +488,29 @@ function TranslatedPage({ meta, live, blocks, model, source, version, targetLang
   );
 }
 
-function FitText({ text, box, baseSize, bg, stale, manual, streaming, selected, centered, onClick }: {
-  text: string; box: { left: number; top: number; width: number; height: number }; baseSize: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; centered: boolean; onClick: () => void;
+/** Translated text for one block. It always covers the original text region (`cover`) and
+ *  may use the free space up to maxWidth/maxHeight; the font shrinks only if that is not enough. */
+function FitText({ text, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, stale, manual, streaming, selected, onClick }: {
+  text: string; cover: { left: number; top: number; width: number; height: number }; maxWidth: number; maxHeight: number; baseSize: number; lineHeight: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; onClick: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
-    el.style.fontSize = `${fitFontSize(baseSize, (px) => { el.style.fontSize = `${px}px`; return el.scrollHeight <= box.height + 1 && el.scrollWidth <= box.width + 1; })}px`;
-  }, [text, box.width, box.height, baseSize]);
+    const fits = (px: number) => {
+      el.style.fontSize = `${px}px`;
+      return el.scrollHeight <= maxHeight + 1 && el.scrollWidth <= maxWidth + 1;
+    };
+    el.style.fontSize = `${fitFontSize(baseSize, fits)}px`;
+  }, [text, maxWidth, maxHeight, baseSize, lineHeight]);
   const color = bg ?? [255, 255, 255];
   return (
     <div
       ref={ref}
       className={`tp-text ${stale ? 'stale' : ''} ${manual ? 'manual' : ''} ${streaming ? 'streaming' : ''} ${selected ? 'sel' : ''}`}
-      style={{ ...box, background: `rgb(${color[0]},${color[1]},${color[2]})`, color: textColorFor(color), textAlign: centered ? 'center' : undefined }}
+      style={{ left: cover.left, top: cover.top, width: maxWidth, minHeight: cover.height, maxHeight, lineHeight, background: `rgb(${color[0]},${color[1]},${color[2]})`, color: textColorFor(color) }}
       title={text}
+      data-base={baseSize.toFixed(1)}
       onClick={(e) => { if (!window.getSelection()?.toString()) { e.stopPropagation(); onClick(); } }}
     >
       {text}

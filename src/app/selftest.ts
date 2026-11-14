@@ -414,6 +414,10 @@ async function pdfLayout(res: Record<string, unknown>) {
     overlays: texts.length,
     overflowing: texts.filter((t) => t.scrollHeight > t.clientHeight + 2 || t.scrollWidth > t.clientWidth + 2).length,
     fontPx: sizes.length ? { min: Math.min(...sizes), median: sizes.slice().sort((a, b) => a - b)[Math.floor(sizes.length / 2)], max: Math.max(...sizes) } : null,
+    // distinct font sizes on the anchor page (body text should share one size)
+    fontBuckets: Object.fromEntries([...new Set(sizes.map((x) => x.toFixed(1)))].map((k) => [k, sizes.filter((x) => x.toFixed(1) === k).length])),
+    lineHeights: [...new Set(texts.map((t) => (parseFloat(getComputedStyle(t).lineHeight) / parseFloat(getComputedStyle(t).fontSize)).toFixed(2)))],
+    shrunk: texts.filter((t) => Number(t.dataset.base ?? 0) - parseFloat(getComputedStyle(t).fontSize) > 0.3).length,
     slotsLeft: document.querySelectorAll('.tp-slot').length,
     failed: document.querySelectorAll('.tp-slot.failed').length,
     horizontalScroll: pane ? pane.scrollWidth > pane.clientWidth + 1 : null,

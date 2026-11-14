@@ -93,7 +93,7 @@
 .pdf-page .textLayer ::selection { background: rgba(0, 100, 255, .25); }
 .pdf-hl { position: absolute; background: var(--highlight); mix-blend-mode: multiply; pointer-events: none; border-radius: 2px; }
 .pdf-page .page-badge { position: absolute; top: 6px; right: 6px; }
-.tp-text { position: absolute; overflow: hidden; line-height: 1.22; font-family: -apple-system, "Apple SD Gothic Neo", "Helvetica Neue", sans-serif; word-break: keep-all; overflow-wrap: anywhere; cursor: pointer; border-radius: 1px; }
+.tp-text { position: absolute; overflow: hidden; box-sizing: border-box; font-family: -apple-system, "Apple SD Gothic Neo", "Helvetica Neue", sans-serif; word-break: keep-all; overflow-wrap: anywhere; cursor: pointer; border-radius: 1px; }
 .tp-text.sel { outline: 2px solid var(--focus); outline-offset: 1px; z-index: 2; }
 .tp-text.stale { box-shadow: inset 2px 0 0 #c98a1b; }
 .tp-text.manual { box-shadow: inset 2px 0 0 var(--ok); }
