@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-translation-batch-status"
+description = "Enables the translation_batch_status command without any pre-configured scope."
+commands.allow = ["translation_batch_status"]
+
+[[permission]]
+identifier = "deny-translation-batch-status"
+description = "Denies the translation_batch_status command without any pre-configured scope."
+commands.deny = ["translation_batch_status"]

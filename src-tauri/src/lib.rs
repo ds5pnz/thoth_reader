@@ -70,6 +70,13 @@ macro_rules! app_handlers {
             commands::translation::reader_set_viewport,
             commands::translation::translation_request,
             commands::translation::translation_cancel,
+            commands::translation::translation_batch_start,
+            commands::translation::translation_batch_cancel,
+            commands::translation::translation_batch_status,
+            commands::export::export_translation,
+            commands::pdf_out::export_pdf_begin,
+            commands::pdf_out::export_pdf_page,
+            commands::pdf_out::export_pdf_end,
             commands::translation::reader_set_mode,
             commands::translation::translation_pause,
             commands::translation::reader_switch_profile,
@@ -155,6 +162,7 @@ pub fn run() {
                 library_assets: Default::default(),
                 epub_prepare: Default::default(),
                 import_lock: Default::default(),
+                pdf_exports: Default::default(),
             });
             app.manage(core.clone());
             tauri::async_runtime::spawn(document::epub::backfill_library(core.clone()));

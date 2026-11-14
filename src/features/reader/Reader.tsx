@@ -10,6 +10,8 @@ import { clearDrafts } from '../translation/TranslationCell';
 import { NotesPanel, SelectionToolbar, useAnnotations, useHighlightPainter } from '../annotations/annotations';
 import { findAll } from '../annotations/quote';
 import { PdfThumbnails } from '../../document/pdf/Thumbnails';
+import { TranslateExportDialog } from '../export/TranslateExportDialog';
+import { formatEta } from '../export/range';
 import type { ContentResolvers } from './SafeContentView';
 import type { Block } from '../../ipc/generated/Block';
 import type { ReaderAnchor } from '../../ipc/generated/ReaderAnchor';
@@ -30,7 +32,7 @@ import './reader.css';
 type PendingSwitch = { run: () => void } | null;
 
 export function Reader({ documentId, onClose, onSettings }: { documentId: string; onClose: () => void; onSettings: () => void }) {
-  const { model, sessionRef, loadSection, refreshSections, setGeneration, setBlockDisplay, resync, setSession } = useReaderSession(documentId);
+  const { model, sessionRef, loadSection, refreshSections, setGeneration, setBlockDisplay, resync, setSession, setBatch } = useReaderSession(documentId);
   const { settings, set } = useSettings();
   const toast = useToast();
   const [mode, setModeState] = useState<ReflowMode>(settings.readingMode ?? 'parallel');
@@ -299,6 +301,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   };
 
   const [bookmarksVersion, setBookmarksVersion] = useState(0);
+  const [exportOpen, setExportOpen] = useState(false);
   // Highlights and notes
   const readerRef = useRef<HTMLDivElement>(null);
   const annotations = useAnnotations(session?.documentId, targetLanguage);
@@ -476,6 +479,11 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           <span className="arrow" aria-hidden="true">→</span>
           <span className="flag">{flagOf(targetLanguage) ?? targetLanguage}</span>
         </span>
+        <button className={`btn ghost tx-open ${model.batch?.state === 'running' ? 'running' : ''}`} onClick={() => setExportOpen(true)} title="범위 번역 · 내보내기">
+          {model.batch?.state === 'running'
+            ? `번역 ${model.batch.total > 0 ? Math.round(((model.batch.done + model.batch.failed + model.batch.skipped) / model.batch.total) * 100) : 0}% · ${formatEta(model.batch.etaSeconds)}`
+            : '내보내기'}
+        </button>
         <button className={`btn icon ${paused ? 'active' : 'ghost'}`} onClick={() => void togglePause()} aria-pressed={paused} aria-label={paused ? '자동 번역 재개' : '자동 번역 일시정지'} title={paused ? '자동 번역 재개' : '자동 번역 일시정지'}>
           {paused ? <IconPlay /> : <IconPause />}
         </button>
@@ -567,6 +575,16 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       </div>
       {historyFor && (
         <HistoryDialog sessionId={session.sessionId} block={historyFor} targetLanguage={targetLanguage} onClose={() => setHistoryFor(null)} onApplied={() => void call('reader_get_snapshot', { sessionId: session.sessionId, afterSequence: 0, blockIds: [historyFor.id] }).then((r) => { const d = (r as { display: Parameters<typeof setBlockDisplay>[0][] }).display[0]; if (d) setBlockDisplay(d); })} />
+      )}
+      {exportOpen && (
+        <TranslateExportDialog
+          session={session}
+          sections={model.sections}
+          batch={model.batch}
+          onBatch={setBatch}
+          currentPage={(() => { if (pdfRef.current) return pdfRef.current.currentPage(); const l = currentAnchor()?.location; return l?.kind === 'pdf' ? l.pageIndex : l?.kind === 'epub' ? l.spineIndex : 0; })()}
+          onClose={() => setExportOpen(false)}
+        />
       )}
       {pwPrompt && <PasswordDialog reason={pwPrompt.reason} onDone={(v) => { pwPrompt.resolve(v); setPwPrompt(null); }} />}
       {pendingSwitch && (

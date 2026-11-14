@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-translation-batch-cancel"
+description = "Enables the translation_batch_cancel command without any pre-configured scope."
+commands.allow = ["translation_batch_cancel"]
+
+[[permission]]
+identifier = "deny-translation-batch-cancel"
+description = "Denies the translation_batch_cancel command without any pre-configured scope."
+commands.deny = ["translation_batch_cancel"]

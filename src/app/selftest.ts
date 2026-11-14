@@ -104,6 +104,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'features') await featuresCheck(res);
       if (cfg.scenario === 'viewer') await viewerCheck(res);
       if (cfg.scenario === 'annotate') await annotateCheck(res, isPdf);
+      if (cfg.scenario === 'export') await exportCheck(res, isPdf);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -972,4 +973,55 @@ async function annotateCheck(res: Record<string, unknown>, isPdf: boolean) {
   [...document.querySelectorAll<HTMLButtonElement>('.note-item button')].find((b) => b.textContent === '삭제')?.click();
   out.deletedMs = await waitFor(() => document.querySelectorAll('.note-item').length === 0 && size('thoth-yellow') === 0, 4000);
   void blockId;
+}
+
+/** Range translation with progress, then every export format (files land in a test dir). */
+async function exportCheck(res: Record<string, unknown>, isPdf: boolean) {
+  const out: Record<string, unknown> = {};
+  res.export = out;
+  await sleep(isPdf ? 6000 : 2500); // let a few pages/chapters be extracted
+  [...document.querySelectorAll<HTMLButtonElement>('button.tx-open')][0]?.click();
+  await waitFor(() => !!document.querySelector('.tx-dialog'), 4000);
+  const dlg = () => document.querySelector<HTMLElement>('.tx-dialog')!;
+  const inDlg = (text: string) => [...dlg().querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === text);
+  const setVal = (el: HTMLInputElement | HTMLSelectElement, v: string) => {
+    const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, 'value')!.set!.call(el, v);
+    el.dispatchEvent(new Event(el instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
+  };
+  out.chapters = dlg().querySelectorAll('.tx-scope input[type="radio"]').length === 3;
+  // a small range
+  const range = dlg().querySelector<HTMLInputElement>('.tx-pages')!;
+  range.focus();
+  setVal(range, isPdf ? '5-9' : '2-3');
+  await sleep(300);
+  out.summary = dlg().querySelector('.tx-summary')?.textContent;
+  inDlg('이 범위 번역')?.click();
+  const seen: number[] = [];
+  let sawEta = false;
+  const t0 = performance.now();
+  for (let i = 0; i < 600; i++) {
+    const txt = dlg().querySelector('.batch-line .batch-text')?.textContent ?? '';
+    const m = /(\d+)%/.exec(txt);
+    if (m) { const v = Number(m[1]); if (seen[seen.length - 1] !== v) seen.push(v); }
+    if (/약 \d+|1분 미만/.test(dlg().textContent ?? '')) sawEta = true;
+    if (/번역을 마쳤습니다|멈췄습니다|중지했습니다/.test(dlg().textContent ?? '')) break;
+    await sleep(200);
+  }
+  out.batch = { ms: Math.round(performance.now() - t0), steps: seen.length, last: seen[seen.length - 1], monotonic: seen.every((v, i) => i === 0 || v >= seen[i - 1]!), sawEta, endText: (/번역을 마쳤습니다/.test(dlg().textContent ?? '') ? 'done' : 'other'), line: dlg().querySelector('.batch-line .batch-text')?.textContent };
+  out.toolbarChip = document.querySelector('button.tx-open')?.textContent;
+  // exports
+  const formats = isPdf ? ['pdf-sbs', 'pdf', 'html', 'markdown', 'text'] : ['pdf', 'html'];
+  const done: Record<string, unknown> = {};
+  for (const f of formats) {
+    setVal(dlg().querySelector<HTMLSelectElement>('.tx-row select')!, f);
+    await sleep(200);
+    const t1 = performance.now();
+    const before = document.querySelectorAll('.toast').length;
+    (inDlg('내보내기') ?? inDlg('지금까지 번역된 만큼 내보내기'))?.click();
+    const ms = await waitFor(() => !dlg().querySelector('.tx-actions button:disabled') && !inDlg('취소') && performance.now() - t1 > 400, 120000);
+    done[f] = { ms, error: dlg().querySelector('.badge.danger')?.textContent ?? null, toasts: document.querySelectorAll('.toast').length - before };
+  }
+  out.formats = done;
+  inDlg('닫기')?.click();
 }

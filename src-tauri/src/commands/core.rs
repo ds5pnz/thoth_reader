@@ -25,6 +25,7 @@ pub struct AppCore {
     pub epub_prepare: tokio::sync::Mutex<()>,
     /// Serializes imports (duplicate check + insert).
     pub import_lock: tokio::sync::Mutex<()>,
+    pub pdf_exports: crate::commands::pdf_out::PdfExports,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]

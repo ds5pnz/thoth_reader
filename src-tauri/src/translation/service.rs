@@ -77,6 +77,8 @@ struct Entry {
     force: bool,
     cancel: CancellationToken,
     not_before: Option<Instant>,
+    /// Queued by a batch run: not dropped when it leaves the viewport.
+    pinned: bool,
 }
 
 #[derive(Default)]
@@ -104,6 +106,8 @@ pub struct TranslationService {
     shutdown: CancellationToken,
     /// Providers stopped after 401/403 until the user re-checks auth.
     auth_blocked: Mutex<HashSet<String>>,
+    /// One range-translation run per session (session id -> run).
+    batches: Mutex<HashMap<String, Arc<Batch>>>,
     pub http_attempts: AtomicU64,
     jitter: Arc<dyn Fn() -> f64 + Send + Sync>,
 }
@@ -121,6 +125,7 @@ impl TranslationService {
             notify: Notify::new(),
             shutdown: CancellationToken::new(),
             auth_blocked: Mutex::new(HashSet::new()),
+            batches: Mutex::new(HashMap::new()),
             http_attempts: AtomicU64::new(0),
             jitter: Arc::new(crate::providers::random_jitter),
         })
@@ -478,6 +483,7 @@ impl TranslationService {
             force,
             cancel,
             not_before: None,
+            pinned: false,
         });
         drop(q);
         s.emit_for_generation(generation, "job_state", Some(&job.id), Some(&b.id), serde_json::json!({"state": "QUEUED", "priority": prio as i64}));
@@ -491,7 +497,7 @@ impl TranslationService {
     async fn evict_lowest(&self, s: &Session) {
         let victim = {
             let q = self.queue.lock().unwrap();
-            q.waiting.values().filter(|e| e.session.id == s.id && e.priority != Priority::P0).max_by_key(|e| (e.priority, e.order)).map(|e| e.cache_key.clone())
+            q.waiting.values().filter(|e| e.session.id == s.id && e.priority != Priority::P0 && !e.pinned).max_by_key(|e| (e.priority, e.order)).map(|e| e.cache_key.clone())
         };
         if let Some(k) = victim {
             self.drop_waiting(&k, "QUEUE_LIMIT").await;
@@ -508,7 +514,7 @@ impl TranslationService {
 
     /// Waiting P1/P2 jobs that left the visible/prefetch area are cancelled; running ones are not.
     async fn prune_session_waiting(&self, s: &Session, keep: &HashSet<String>) {
-        let drop: Vec<String> = self.queue.lock().unwrap().waiting.values().filter(|e| e.session.id == s.id && e.priority != Priority::P0 && !keep.contains(&e.cache_key)).map(|e| e.cache_key.clone()).collect();
+        let drop: Vec<String> = self.queue.lock().unwrap().waiting.values().filter(|e| e.session.id == s.id && e.priority != Priority::P0 && !e.pinned && !keep.contains(&e.cache_key)).map(|e| e.cache_key.clone()).collect();
         for k in drop {
             self.drop_waiting(&k, "OUT_OF_VIEW").await;
         }
@@ -888,6 +894,292 @@ impl TranslationService {
     pub fn queue_stats(&self) -> serde_json::Value {
         let q = self.queue.lock().unwrap();
         serde_json::json!({"waiting": q.waiting.len(), "running": q.running.len()})
+    }
+}
+
+// ---------------------------------------------------------------- range translation
+
+/// Progress of a "translate this range" run. Counts are paragraphs (translation units);
+/// the time estimate is based on characters, which track the work far better.
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BatchStatus {
+    /// running | done | cancelled | stopped
+    pub state: String,
+    pub sections_total: u32,
+    pub sections_done: u32,
+    /// Sections whose text is not extracted yet (their paragraphs are not in `total`).
+    pub sections_waiting: u32,
+    pub total: u32,
+    /// Translated now or already translated before.
+    pub done: u32,
+    pub failed: u32,
+    /// Not translatable (code, figures, excluded, manually edited…).
+    pub skipped: u32,
+    pub eta_seconds: Option<u32>,
+    #[ts(type = "number")]
+    pub started_at: i64,
+    pub message: Option<String>,
+}
+
+struct Batch {
+    cancel: CancellationToken,
+    status: Mutex<BatchStatus>,
+}
+
+const BATCH_WINDOW: usize = 4;
+
+impl TranslationService {
+    pub fn batch_status(&self, s: &Session) -> Option<BatchStatus> {
+        self.batches.lock().unwrap().get(&s.id).map(|b| b.status.lock().unwrap().clone())
+    }
+
+    pub fn batch_cancel(&self, s: &Session) -> bool {
+        match self.batches.lock().unwrap().get(&s.id) {
+            Some(b) => {
+                b.cancel.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Translate every translatable paragraph of `section_ids` (in reading order) with the
+    /// session's current profile. Returns at once; progress arrives as `batch_progress` events.
+    pub async fn batch_start(self: &Arc<Self>, s: &Arc<Session>, section_ids: Vec<String>) -> AppResult<BatchStatus> {
+        if s.state.lock().unwrap().source_language.is_none() {
+            return Err(AppError::invalid("원문 언어를 먼저 설정해 주세요."));
+        }
+        let profile = self.session_profile(s).await?.ok_or_else(|| AppError::new(ErrorCode::ProviderUnavailable, "번역 Provider와 모델을 먼저 설정해 주세요."))?;
+        self.provider_for(&profile.profile.provider_id).await?;
+        let ex = s.extraction()?;
+        let wanted: HashSet<String> = section_ids.into_iter().collect();
+        let rows: Vec<extraction::SectionRow> = extraction::list_sections(&self.db.reader, &ex).await?.into_iter().filter(|x| wanted.contains(&x.id)).collect();
+        if rows.is_empty() {
+            return Err(AppError::invalid("번역할 범위가 비어 있습니다."));
+        }
+        // Paragraph counts of everything already extracted are known up front, so the
+        // percentage does not jump backwards as the run reaches later sections.
+        let known: HashMap<String, u32> = rows.iter().filter(|x| x.state == "ready").map(|x| (x.id.clone(), x.block_count.max(0) as u32)).collect();
+        let known_total: u32 = known.values().sum();
+        let sections: Vec<String> = rows.into_iter().map(|x| x.id).collect();
+        if let Some(old) = self.batches.lock().unwrap().get(&s.id) {
+            old.cancel.cancel();
+        }
+        let status = BatchStatus {
+            state: "running".into(),
+            sections_total: sections.len() as u32,
+            sections_done: 0,
+            sections_waiting: sections.len() as u32 - known.len() as u32,
+            total: known_total,
+            done: 0,
+            failed: 0,
+            skipped: 0,
+            eta_seconds: None,
+            started_at: now_ms(),
+            message: None,
+        };
+        let batch = Arc::new(Batch { cancel: s.cancel_token().child_token(), status: Mutex::new(status.clone()) });
+        self.batches.lock().unwrap().insert(s.id.clone(), batch.clone());
+        let (me, s2) = (self.clone(), s.clone());
+        let generation = s.generation();
+        tokio::spawn(async move {
+            let end = me.batch_run(&s2, generation, &profile, &ex, sections, known, &batch).await;
+            let snapshot = {
+                let mut st = batch.status.lock().unwrap();
+                st.eta_seconds = None;
+                match end {
+                    Ok(()) if batch.cancel.is_cancelled() => st.state = "cancelled".into(),
+                    Ok(()) => st.state = "done".into(),
+                    Err(e) => {
+                        st.state = "stopped".into();
+                        st.message = Some(e.message.clone());
+                    }
+                }
+                st.clone()
+            };
+            s2.emit("batch_progress", None, None, serde_json::to_value(&snapshot).unwrap_or_default());
+        });
+        Ok(status)
+    }
+
+    async fn batch_run(self: &Arc<Self>, s: &Arc<Session>, generation: u64, profile: &ProfileContext, ex: &str, sections: Vec<String>, known: HashMap<String, u32>, batch: &Arc<Batch>) -> AppResult<()> {
+        // In flight: block id -> (block, characters, re-queue attempts)
+        let mut flying: HashMap<String, (Block, u64, u32)> = HashMap::new();
+        let mut translated_chars: u64 = 0; // work actually done by this run
+        let mut remaining_chars: u64 = 0; // known work still ahead (queued + in flight)
+        let mut counted: HashSet<String> = HashSet::new(); // sections already added to the totals
+        let mut work_started: Option<Instant> = None;
+        let mut last_emit = Instant::now() - Duration::from_secs(5);
+        let mut pending: std::collections::VecDeque<String> = sections.into_iter().collect();
+        let mut stalled_since: Option<Instant> = None;
+        let mut queue: std::collections::VecDeque<Block> = std::collections::VecDeque::new();
+
+        loop {
+            if batch.cancel.is_cancelled() {
+                return Ok(());
+            }
+            if s.generation() != generation {
+                return Err(AppError::invalid("번역 설정이 바뀌어 일괄 번역을 멈췄습니다."));
+            }
+            // 1. Bring in the next sections whose text is ready.
+            while queue.len() < BATCH_WINDOW * 4 {
+                let Some(sec) = pending.front().cloned() else { break };
+                let state: Option<String> = sqlx::query_scalar("select state from sections where id = ?").bind(&sec).fetch_optional(&self.db.reader).await?;
+                match state.as_deref() {
+                    Some("ready") => {
+                        pending.pop_front();
+                        stalled_since = None;
+                        let before = counted.len();
+                        let mut after: Option<u32> = None;
+                        loop {
+                            let page = extraction::blocks_of_section(&self.db.reader, ex, &sec, after, 500).await?;
+                            let Some(last) = page.last() else { break };
+                            after = Some(last.ordinal);
+                            let n = page.len();
+                            for b in page {
+                                if counted.insert(b.id.clone()) {
+                                    remaining_chars += b.source_text.chars().count() as u64;
+                                    queue.push_back(b);
+                                }
+                            }
+                            if n < 500 {
+                                break;
+                            }
+                        }
+                        let added = (counted.len() - before) as u32;
+                        let mut st = batch.status.lock().unwrap();
+                        st.sections_done += 1;
+                        match known.get(&sec) {
+                            // counted up front: only correct a difference
+                            Some(n) => st.total = (st.total + added).saturating_sub(*n),
+                            None => {
+                                st.total += added;
+                                st.sections_waiting = st.sections_waiting.saturating_sub(1);
+                            }
+                        }
+                    }
+                    Some("failed") | None => {
+                        pending.pop_front();
+                        let mut st = batch.status.lock().unwrap();
+                        st.sections_done += 1;
+                        if !known.contains_key(&sec) {
+                            st.sections_waiting = st.sections_waiting.saturating_sub(1);
+                        }
+                    }
+                    // Text extraction (PDF pages, EPUB chapters) is still running: wait for it,
+                    // but not forever.
+                    _ => {
+                        let since = *stalled_since.get_or_insert_with(Instant::now);
+                        if queue.is_empty() && flying.is_empty() && since.elapsed() > Duration::from_secs(600) {
+                            return Err(AppError::invalid("본문 추출이 끝나지 않아 일괄 번역을 멈췄습니다."));
+                        }
+                        break;
+                    }
+                }
+            }
+            // 2. Fill the window.
+            while flying.len() < BATCH_WINDOW {
+                let Some(b) = queue.pop_front() else { break };
+                let chars = b.source_text.chars().count() as u64;
+                let finished = |st: &mut BatchStatus, kind: u8| match kind {
+                    0 => st.done += 1,
+                    1 => st.skipped += 1,
+                    _ => st.failed += 1,
+                };
+                let already = self.display_for_blocks(s, std::slice::from_ref(&b)).await?.pop().map(|d| matches!(d.status.as_str(), "current" | "manual")).unwrap_or(false);
+                if already {
+                    remaining_chars = remaining_chars.saturating_sub(chars);
+                    finished(&mut batch.status.lock().unwrap(), 0);
+                    continue;
+                }
+                match self.demand(s, generation, profile, &b, Priority::P1, false).await {
+                    Ok(Demand::CacheHit) => {
+                        remaining_chars = remaining_chars.saturating_sub(chars);
+                        finished(&mut batch.status.lock().unwrap(), 0);
+                    }
+                    Ok(Demand::Queued(k)) | Ok(Demand::Running(k)) => {
+                        if let Some(e) = self.queue.lock().unwrap().waiting.get_mut(&k) {
+                            e.pinned = true;
+                        }
+                        work_started.get_or_insert_with(Instant::now);
+                        flying.insert(b.id.clone(), (b, chars, 0));
+                        self.notify.notify_one();
+                    }
+                    Ok(Demand::Skipped(_)) => {
+                        remaining_chars = remaining_chars.saturating_sub(chars);
+                        finished(&mut batch.status.lock().unwrap(), 1);
+                    }
+                    Err(_) => {
+                        remaining_chars = remaining_chars.saturating_sub(chars);
+                        finished(&mut batch.status.lock().unwrap(), 2);
+                    }
+                }
+            }
+            if flying.is_empty() && queue.is_empty() && pending.is_empty() {
+                return Ok(());
+            }
+            // 3. See what finished.
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(400)) => {}
+                _ = batch.cancel.cancelled() => return Ok(()),
+            }
+            let blocks: Vec<Block> = flying.values().map(|v| v.0.clone()).collect();
+            if !blocks.is_empty() {
+                for d in self.display_for_blocks(s, &blocks).await? {
+                    let Some((b, chars, tries)) = flying.get(&d.block_id).cloned() else { continue };
+                    if matches!(d.status.as_str(), "current" | "manual") {
+                        flying.remove(&d.block_id);
+                        translated_chars += chars;
+                        remaining_chars = remaining_chars.saturating_sub(chars);
+                        batch.status.lock().unwrap().done += 1;
+                    } else if d.job.is_none() {
+                        // No active job any more: failed, or dropped by a queue limit.
+                        let retry = if tries < 2 { self.demand(s, generation, profile, &b, Priority::P1, false).await.ok() } else { None };
+                        match retry {
+                            Some(Demand::Queued(k)) | Some(Demand::Running(k)) => {
+                                if let Some(e) = self.queue.lock().unwrap().waiting.get_mut(&k) {
+                                    e.pinned = true;
+                                }
+                                flying.insert(d.block_id.clone(), (b, chars, tries + 1));
+                                self.notify.notify_one();
+                            }
+                            Some(Demand::CacheHit) => {
+                                flying.remove(&d.block_id);
+                                translated_chars += chars;
+                                remaining_chars = remaining_chars.saturating_sub(chars);
+                                batch.status.lock().unwrap().done += 1;
+                            }
+                            _ => {
+                                flying.remove(&d.block_id);
+                                remaining_chars = remaining_chars.saturating_sub(chars);
+                                batch.status.lock().unwrap().failed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            // 4. Estimate and report (at most twice a second).
+            if last_emit.elapsed() >= Duration::from_millis(500) {
+                last_emit = Instant::now();
+                let snapshot = {
+                    let mut st = batch.status.lock().unwrap();
+                    st.eta_seconds = match work_started {
+                        Some(t0) if translated_chars >= 400 && t0.elapsed() >= Duration::from_secs(5) => {
+                            let rate = translated_chars as f64 / t0.elapsed().as_secs_f64(); // chars / s
+                            // Pages not extracted yet are assumed to look like the ones seen so far.
+                            let seen = (st.sections_total - st.sections_waiting).max(1) as f64;
+                            let unseen = (translated_chars + remaining_chars) as f64 / seen * st.sections_waiting as f64;
+                            Some(((remaining_chars as f64 + unseen) / rate.max(0.1)).round().min(359_999.0) as u32)
+                        }
+                        _ => None,
+                    };
+                    st.clone()
+                };
+                s.emit_for_generation(generation, "batch_progress", None, None, serde_json::to_value(&snapshot).unwrap_or_default());
+            }
+        }
     }
 }
 

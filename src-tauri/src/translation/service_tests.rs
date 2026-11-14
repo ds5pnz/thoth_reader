@@ -522,3 +522,53 @@ async fn page_break_halves_are_translated_together() {
         assert!(body.contains("PPU does <pb/> three more"), "{body}");
     }
 }
+
+/// Range translation: every paragraph of the chosen sections is translated once, progress is
+/// reported, and scrolling elsewhere (viewport pruning) does not drop the batch's jobs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn batch_translates_a_range_and_reports_progress() {
+    let f = fixture(12, MockConfig::default()).await;
+    let sec = f.blocks[0].section_id.clone();
+    let st = f.svc.batch_start(&f.s, vec![sec]).await.unwrap();
+    assert_eq!(st.state, "running");
+    // an unrelated viewport report must not cancel batch work
+    let g = f.s.generation();
+    f.svc.set_viewport(&f.s, g, 1, vec![], true).await.unwrap();
+    for _ in 0..600 {
+        if f.svc.batch_status(&f.s).map(|b| b.state != "running").unwrap_or(false) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let end = f.svc.batch_status(&f.s).unwrap();
+    assert_eq!((end.state.as_str(), end.total, end.done, end.failed), ("done", 12, 12, 0), "{end:?}");
+    assert_eq!(end.sections_waiting, 0);
+    for b in &f.blocks {
+        assert!(generated_text(&f.db, &b.id).await.is_some());
+    }
+    assert_eq!(f.mock.calls(), 12, "one request per paragraph");
+    // running it again finds everything done without new requests
+    f.svc.batch_start(&f.s, vec![f.blocks[0].section_id.clone()]).await.unwrap();
+    for _ in 0..300 {
+        if f.svc.batch_status(&f.s).map(|b| b.state != "running").unwrap_or(false) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(f.svc.batch_status(&f.s).unwrap().done, 12);
+    assert_eq!(f.mock.calls(), 12);
+    // cancel stops a run
+    let f2 = fixture(30, MockConfig { first_chunk_delay: Duration::from_millis(80), ..MockConfig::default() }).await;
+    f2.svc.batch_start(&f2.s, vec![f2.blocks[0].section_id.clone()]).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(f2.svc.batch_cancel(&f2.s));
+    for _ in 0..300 {
+        if f2.svc.batch_status(&f2.s).map(|b| b.state != "running").unwrap_or(false) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let c = f2.svc.batch_status(&f2.s).unwrap();
+    assert_eq!(c.state, "cancelled");
+    assert!(c.done < 30);
+}

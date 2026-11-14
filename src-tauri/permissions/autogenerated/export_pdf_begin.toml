@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-export-pdf-begin"
+description = "Enables the export_pdf_begin command without any pre-configured scope."
+commands.allow = ["export_pdf_begin"]
+
+[[permission]]
+identifier = "deny-export-pdf-begin"
+description = "Denies the export_pdf_begin command without any pre-configured scope."
+commands.deny = ["export_pdf_begin"]

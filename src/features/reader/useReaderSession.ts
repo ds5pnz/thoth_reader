@@ -1,5 +1,6 @@
 // Reader session lifecycle: open with a session Channel, apply ordered events
 // (ignoring stale generation / old sequence), resync from DB snapshots (spec §8.3).
+import type { BatchStatus } from '../../ipc/generated/BatchStatus';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Channel } from '@tauri-apps/api/core';
 import { call, errorMessage } from '../../ipc/client';
@@ -31,11 +32,14 @@ export interface ReaderModel {
   jobs: Map<string, JobView>;
   previews: Map<string, string>;
   indexProgress: { ready: number; failed: number; total: number } | null;
+  /** Latest state of a range-translation run in this session. */
+  batch: BatchStatus | null;
 }
 
 export function useReaderSession(documentId: string) {
   const [session, setSession] = useState<ReaderSessionDto | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [batch, setBatch] = useState<BatchStatus | null>(null);
   const [sections, setSections] = useState<SectionRow[]>([]);
   const [blocks, setBlocks] = useState<Map<string, Block[]>>(new Map());
   const [display, setDisplay] = useState<Map<string, BlockDisplay>>(new Map());
@@ -157,6 +161,10 @@ export function useReaderSession(documentId: string) {
         void refreshSections();
         break;
       }
+      case 'batch_progress': {
+        setBatch(p as unknown as BatchStatus);
+        break;
+      }
       case 'session_closed':
         break;
     }
@@ -213,6 +221,6 @@ export function useReaderSession(documentId: string) {
     setSession(next);
   }, []);
 
-  const model: ReaderModel = useMemo(() => ({ session, error, sections, blocks, display, jobs, previews, indexProgress }), [session, error, sections, blocks, display, jobs, previews, indexProgress]);
-  return { model, sessionRef, loadSection, refreshSections, setGeneration, setBlockDisplay, resync, setSession: updateSession };
+  const model: ReaderModel = useMemo(() => ({ session, error, sections, blocks, display, jobs, previews, indexProgress, batch }), [session, error, sections, blocks, display, jobs, previews, indexProgress, batch]);
+  return { model, sessionRef, loadSection, refreshSections, setGeneration, setBlockDisplay, resync, setSession: updateSession, setBatch };
 }

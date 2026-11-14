@@ -61,6 +61,54 @@ pub async fn translation_request(core: Core<'_>, window: WebviewWindow, meta: Co
 #[derive(Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct BatchStartArgs {
+    pub session_id: String,
+    pub section_ids: Vec<String>,
+}
+
+/// Translate a chosen range (pages, chapters or the whole book) in the background.
+#[tauri::command]
+pub async fn translation_batch_start(core: Core<'_>, window: WebviewWindow, meta: CommandMeta, args: BatchStartArgs) -> Result<Wire, ()> {
+    let r = async {
+        let s = core.sessions.get(&args.session_id, window.label())?;
+        core.db.ensure_writable()?;
+        crate::commands::core::check_ids(&args.section_ids, 100_000, "sectionIds")?;
+        core.translation.batch_start(&s, args.section_ids).await
+    }
+    .await;
+    Ok(respond(&meta, r))
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct BatchArgs {
+    pub session_id: String,
+}
+
+#[tauri::command]
+pub async fn translation_batch_cancel(core: Core<'_>, window: WebviewWindow, meta: CommandMeta, args: BatchArgs) -> Result<Wire, ()> {
+    let r = async {
+        let s = core.sessions.get(&args.session_id, window.label())?;
+        Ok(serde_json::json!({"cancelled": core.translation.batch_cancel(&s)}))
+    }
+    .await;
+    Ok(respond(&meta, r))
+}
+
+#[tauri::command]
+pub async fn translation_batch_status(core: Core<'_>, window: WebviewWindow, meta: CommandMeta, args: BatchArgs) -> Result<Wire, ()> {
+    let r = async {
+        let s = core.sessions.get(&args.session_id, window.label())?;
+        Ok(serde_json::json!({"status": core.translation.batch_status(&s)}))
+    }
+    .await;
+    Ok(respond(&meta, r))
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct TranslationCancelArgs {
     pub session_id: String,
     pub job_id: String,

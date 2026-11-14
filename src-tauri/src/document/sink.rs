@@ -18,7 +18,7 @@ pub struct StreamEnvelope {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub block_id: Option<String>,
     #[serde(rename = "type")]
-    #[ts(rename = "type", type = "'job_state' | 'translation_delta' | 'translation_committed' | 'index_progress' | 'session_closed' | 'import_progress'")]
+    #[ts(rename = "type", type = "'job_state' | 'translation_delta' | 'translation_committed' | 'index_progress' | 'session_closed' | 'import_progress' | 'batch_progress'")]
     pub kind: String,
     #[ts(type = "Record<string, unknown>")]
     pub payload: serde_json::Value,
