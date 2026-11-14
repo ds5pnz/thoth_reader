@@ -14,7 +14,7 @@ import { detectRunningElements, applyRunningUpdates } from './running';
 import { sha256Hex } from '../../domain/canonicalJson';
 import type { PdfPageResult } from './types';
 
-type Env = { THOTH_CORPUS?: string; THOTH_CORPUS_PAGES?: string; THOTH_CORPUS_REPORT?: string };
+type Env = { THOTH_CORPUS_ONLY?: string; THOTH_CORPUS?: string; THOTH_CORPUS_PAGES?: string; THOTH_CORPUS_REPORT?: string };
 const env = ((globalThis as { process?: { env: Env } }).process?.env ?? {}) as Env;
 const ROOT = env.THOTH_CORPUS;
 const MAX_PAGES = Number(env.THOTH_CORPUS_PAGES ?? 40);
@@ -46,10 +46,12 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
     const fs = await nodeFs();
     const pdfjs = await loadPdfjsLegacy();
     const files = fs.readdirSync(ROOT!).filter((f) => f.toLowerCase().endsWith('.pdf')).sort();
+    const only = env.THOTH_CORPUS_ONLY ? Number(env.THOTH_CORPUS_ONLY) : null;
     const report: Record<string, unknown>[] = [];
     let idx = 0;
     for (const f of files) {
       idx += 1;
+      if (only != null && idx !== only) continue;
       const label = `pdf-${String(idx).padStart(2, '0')}`; // file names are not written to the report
       const t0 = performance.now();
       const row: Record<string, unknown> = { label, bytes: fs.statSync(`${ROOT}/${f}`).size };
@@ -61,14 +63,16 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
         const pages = samplePages(doc.numPages, MAX_PAGES);
         const results: PdfPageResult[] = [];
         let failedPages = 0;
+        const pageErrors: string[] = [];
         for (const p of pages) {
           try {
             const page = await doc.getPage(p + 1);
             const input = await buildPageInput(page);
             results.push(await extractPage(input, 'corpus', { sha256Hex }));
             page.cleanup();
-          } catch {
+          } catch (pe) {
             failedPages += 1;
+            if (pageErrors.length < 3) pageErrors.push(`${(pe as Error).name}: ${String((pe as Error).message).slice(0, 160)}`);
           }
         }
         applyRunningUpdates(results, detectRunningElements(results));
@@ -100,6 +104,7 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
           pagesTotal: doc.numPages,
           pagesSampled: pages.length,
           failedPages,
+          pageErrors,
           scanPages,
           emptyPages,
           blocks: results.reduce((a, r) => a + r.blocks.length, 0),

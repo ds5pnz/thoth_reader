@@ -218,13 +218,24 @@ describe('quality reasons (spec §4.1)', () => {
     expect(res.blocks[0]!.quality.level).toBe('medium');
   });
 
-  it('a full-page image with a text layer (OCR) is likely_scan but still readable', async () => {
+  it('a full-page image with an invisible text layer (OCR) is likely_scan, readable, manual_only', async () => {
     const res = await extractPage(
-      pageInput(para([filler(1, 90), filler(2, 90) + '.'], 72, 700), { imageCount: 1, imageRects: [{ x: 0, y: 0, width: 612, height: 792 }] }),
+      pageInput(para([filler(1, 90), filler(2, 90) + '.'], 72, 700), { imageCount: 1, imageRects: [{ x: 0, y: 0, width: 612, height: 792 }], invisibleText: true }),
       'ext',
       deps,
     );
     expect(res.diagnostics.reasons).toContain('likely_scan');
     expect(res.blocks[0]!.quality.level).toBe('medium');
+    expect(res.blocks[0]!.translationPolicy).toBe('manual_only');
+  });
+
+  it('a full-bleed background image with visible text is not a scan', async () => {
+    const res = await extractPage(
+      pageInput(para([filler(1, 90), filler(2, 90) + '.'], 72, 700), { imageCount: 1, imageRects: [{ x: 0, y: 0, width: 612, height: 792 }] }),
+      'ext',
+      deps,
+    );
+    expect(res.diagnostics.reasons).not.toContain('likely_scan');
+    expect(res.blocks[0]!.translationPolicy).toBe('auto');
   });
 });

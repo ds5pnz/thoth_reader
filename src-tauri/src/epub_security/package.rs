@@ -271,7 +271,15 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
         .ok_or_else(|| unsupported("container_invalid"))?;
     let full_path = rootfile.attr_local("full-path").unwrap_or("");
     let (fp, _) = split_href(full_path);
-    let opf_path = resolve_decoded("", &fp).ok_or_else(|| unsupported("opf_path_invalid"))?;
+    let mut opf_path = resolve_decoded("", &fp).ok_or_else(|| unsupported("opf_path_invalid"))?;
+    if !zip.contains(&opf_path) {
+        // Recovery for a broken container.xml: exactly one package document in the archive.
+        let opfs: Vec<String> = zip.names().into_iter().filter(|n| n.to_ascii_lowercase().ends_with(".opf")).collect();
+        if opfs.len() == 1 {
+            opf_path = opfs[0].clone();
+            b.restr.insert("rootfile_mismatch".into());
+        }
+    }
     let opf_bytes = zip.read(&opf_path)?.ok_or_else(|| unsupported("opf_missing"))?;
     let opf = parse_xml_doc(&opf_bytes, false, "opf_invalid")?;
     if opf.name != "package" {

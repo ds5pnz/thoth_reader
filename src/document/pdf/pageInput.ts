@@ -13,6 +13,7 @@ export const PDF_OPS = {
   save: 10,
   restore: 11,
   transform: 12,
+  setTextRenderingMode: 38,
   paintFormXObjectBegin: 74,
   paintFormXObjectEnd: 75,
   paintImageMaskXObject: 83,
@@ -67,7 +68,8 @@ function asMatrix(v: unknown): Matrix | null {
 }
 
 /** Count image painting operators and compute unit-square placements under the CTM. */
-export function analyzeOperatorList(fnArray: ArrayLike<number>, argsArray: ArrayLike<unknown>): { imageCount: number; imageRects: PdfImageRect[] } {
+export function analyzeOperatorList(fnArray: ArrayLike<number>, argsArray: ArrayLike<unknown>): { imageCount: number; imageRects: PdfImageRect[]; invisibleText: boolean } {
+  let invisibleText = false;
   let ctm: Matrix = IDENTITY;
   const stack: Matrix[] = [];
   let imageCount = 0;
@@ -75,6 +77,7 @@ export function analyzeOperatorList(fnArray: ArrayLike<number>, argsArray: Array
   for (let i = 0; i < fnArray.length; i++) {
     const fn = fnArray[i];
     const args = argsArray[i] as unknown[] | null | undefined;
+    if (fn === PDF_OPS.setTextRenderingMode && Array.isArray(args) && args[0] === 3) invisibleText = true;
     switch (fn) {
       case PDF_OPS.save:
         stack.push(ctm);
@@ -115,7 +118,7 @@ export function analyzeOperatorList(fnArray: ArrayLike<number>, argsArray: Array
         }
     }
   }
-  return { imageCount, imageRects };
+  return { imageCount, imageRects, invisibleText };
 }
 
 interface FontLike {
@@ -133,10 +136,11 @@ export async function buildPageInput(page: PDFPageProxy, opts: PageInputOptions 
   const viewport = page.getViewport({ scale: 1 });
   let imageCount = 0;
   let imageRects: PdfImageRect[] = [];
+  let invisibleText = false;
   if (opts.operatorList !== false) {
     // The operator list also makes PDF.js resolve the page fonts into commonObjs.
     const ops = await page.getOperatorList();
-    ({ imageCount, imageRects } = analyzeOperatorList(ops.fnArray, ops.argsArray));
+    ({ imageCount, imageRects, invisibleText } = analyzeOperatorList(ops.fnArray, ops.argsArray));
   }
   const tc = await page.getTextContent({ includeMarkedContent: false });
   const items: PdfTextItemLike[] = [];
@@ -191,6 +195,7 @@ export async function buildPageInput(page: PDFPageProxy, opts: PageInputOptions 
     styles,
     imageCount,
     imageRects,
+    invisibleText,
     structTree,
   };
 }

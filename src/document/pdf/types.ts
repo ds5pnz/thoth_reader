@@ -49,6 +49,8 @@ export interface PdfPageInput {
   styles: Record<string, PdfTextStyleLike>;
   /** Number of image painting operators on the page (scan detection). */
   imageCount: number;
+  /** Text painted with render mode 3 (invisible) — the signature of an OCR layer over a scan. */
+  invisibleText?: boolean;
   /** Image placements, when the caller could compute them. */
   imageRects?: PdfImageRect[];
   structTree?: PdfStructNodeLike | null;

@@ -107,7 +107,9 @@ export function analyzePage(input: PdfPageInput): PageAnalysis {
   }
   const pageMissingRatio = layout.totalChars ? layout.missingUnicodeChars / layout.totalChars : 0;
   if (layout.missingUnicodeChars > 0) pageReasons.add('missing_unicode');
-  const ocrLayer = realChars > 0 && imageCoverage >= 0.85;
+  // Scan + OCR layer: near-full-page image AND invisible text. A designed page with a
+  // full-bleed background image and visible text is not a scan.
+  const ocrLayer = realChars > 0 && imageCoverage >= 0.85 && input.invisibleText === true;
   if (ocrLayer) pageReasons.add('likely_scan');
   if (realChars > 0 && input.imageCount > 0 && realChars < pageArea * 0.0004) pageReasons.add('low_text_density');
 
@@ -170,6 +172,8 @@ function finalizeQuality(d: DraftBlock, pageMissing: boolean, minorOrientation: 
   if (PRESERVE_KINDS.has(d.kind)) d.policy = 'preserve';
   else if (d.roles.some((r) => r === ROLE_RUNNING_HEADER || r === ROLE_RUNNING_FOOTER || r === ROLE_PAGE_NUMBER)) d.policy = 'preserve';
   else if (d.level === 'low') d.policy = 'manual_only';
+  // OCR text over a scan is readable but never auto-translated (spec §4.2).
+  else if (d.reasons.has('likely_scan')) d.policy = 'manual_only';
   else if (minorOrientation) d.policy = 'manual_only';
   else d.policy = 'auto';
 }

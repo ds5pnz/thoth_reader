@@ -654,3 +654,28 @@ fn error_codes_are_stable() {
     assert_eq!(e.code, ErrorCode::UnsupportedFormat);
     assert_eq!(e.details.get("reason").and_then(|v| v.as_str()), Some("not_a_zip"));
 }
+
+/// Real-world broken container.xml: rootfile path points to a missing OPF, but the archive has
+/// exactly one package document. It opens with a `rootfile_mismatch` restriction.
+#[test]
+fn rootfile_mismatch_recovers_single_opf() {
+    use super::fixtures::*;
+    let bytes = EpubBuilder::empty()
+        .stored("mimetype", b"application/epub+zip")
+        .file("META-INF/container.xml", container_xml("OEBPS/wrong.opf").as_bytes())
+        .file("OEBPS/content.opf", opf3("T", &[("c1", "text/c1.xhtml", "application/xhtml+xml", "")], &["c1"], "", "").as_bytes())
+        .file("OEBPS/text/c1.xhtml", xhtml("C", "", "<p>Hello</p>").as_bytes())
+        .build();
+    let b = build_bytes(&bytes, &EpubLimits::default());
+    let pkg = b.result.expect("recovered");
+    assert!(pkg.restrictions.iter().any(|r| r == "rootfile_mismatch"));
+    // Two OPFs => ambiguous => still rejected.
+    let bytes2 = EpubBuilder::empty()
+        .stored("mimetype", b"application/epub+zip")
+        .file("META-INF/container.xml", container_xml("OEBPS/wrong.opf").as_bytes())
+        .file("OEBPS/a.opf", opf3("T", &[("c1", "text/c1.xhtml", "application/xhtml+xml", "")], &["c1"], "", "").as_bytes())
+        .file("OEBPS/b.opf", opf3("T", &[("c1", "text/c1.xhtml", "application/xhtml+xml", "")], &["c1"], "", "").as_bytes())
+        .file("OEBPS/text/c1.xhtml", xhtml("C", "", "<p>Hello</p>").as_bytes())
+        .build();
+    assert!(build_bytes(&bytes2, &EpubLimits::default()).result.is_err());
+}

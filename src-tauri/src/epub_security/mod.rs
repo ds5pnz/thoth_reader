@@ -41,7 +41,7 @@ pub const RULES_VERSION: &str = "epub-rules/1";
 pub const EPUBJS_VERSION: &str = "0.3.93";
 
 /// Content-Security-Policy injected into every canonical content document head.
-pub const CONTENT_CSP: &str = "default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; img-src 'self' blob:; font-src 'self'; style-src 'self' 'unsafe-inline'";
+pub const CONTENT_CSP: &str = "default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; img-src 'self' blob: thoth-doc:; font-src 'self' thoth-doc:; style-src 'self' 'unsafe-inline' thoth-doc:";
 
 /// Hard input limits (spec §5.1). There is intentionally no "unlimited" option.
 #[derive(Debug, Clone, PartialEq, Eq)]

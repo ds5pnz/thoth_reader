@@ -156,3 +156,82 @@ async fn index_sections(core: Arc<AppCore>, s: Arc<Session>, ex_id: String, doc_
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod corpus {
+    //! Local corpus harness: `THOTH_CORPUS=/path cargo test --lib epub_corpus -- --ignored --nocapture`.
+    //! Reads the user's EPUBs in place (never copied into the repo); the report holds statistics only.
+    use crate::domain::{derive_section_id, TranslationPolicy};
+    use crate::epub_security::{self, EpubLimits};
+    use std::collections::BTreeMap;
+
+    #[test]
+    #[ignore]
+    fn epub_corpus() {
+        let Ok(root) = std::env::var("THOTH_CORPUS") else { return };
+        let mut files: Vec<_> = std::fs::read_dir(&root).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().map(|x| x.eq_ignore_ascii_case("epub")).unwrap_or(false)).collect();
+        files.sort();
+        let mut rows = vec![];
+        for (i, f) in files.iter().enumerate() {
+            let label = format!("epub-{:02}", i + 1);
+            let out = tempfile::tempdir().unwrap();
+            let t0 = std::time::Instant::now();
+            let mut row = serde_json::json!({"label": label, "bytes": std::fs::metadata(f).map(|m| m.len()).unwrap_or(0)});
+            match epub_security::build_safe_package(f, out.path(), &EpubLimits::default()) {
+                Err(e) => {
+                    row["error"] = serde_json::json!(format!("{} {}", e.code.as_str(), e.details.get("reason").map(|v| v.to_string()).unwrap_or_default()));
+                }
+                Ok(pkg) => {
+                    let build_ms = t0.elapsed().as_millis();
+                    let (mut blocks, mut failed, mut chars, mut auto_chars) = (0usize, 0usize, 0usize, 0usize);
+                    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+                    let mut policies: BTreeMap<String, usize> = BTreeMap::new();
+                    let mut bad_cfi = 0usize;
+                    for it in &pkg.spine {
+                        let xhtml = std::fs::read_to_string(out.path().join(&it.safe_href)).unwrap_or_default();
+                        let sid = derive_section_id("corpus", it.index, &it.safe_href);
+                        match epub_security::extract_blocks(&xhtml, it.index, &it.idref, &it.safe_href, &pkg.canonical_revision, "corpus", &sid) {
+                            Ok(bs) => {
+                                for b in &bs {
+                                    blocks += 1;
+                                    *kinds.entry(b.kind.as_str().into()).or_default() += 1;
+                                    *policies.entry(b.translation_policy.as_str().into()).or_default() += 1;
+                                    chars += b.source_text.chars().count();
+                                    if b.translation_policy == TranslationPolicy::Auto {
+                                        auto_chars += b.source_text.chars().count();
+                                    }
+                                    if let crate::domain::SourceLocation::Epub { cfi_range, .. } = &b.location {
+                                        if !cfi_range.starts_with("epubcfi(/6/") || cfi_range.matches(',').count() != 2 {
+                                            bad_cfi += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => failed += 1,
+                        }
+                    }
+                    let restrictions: Vec<String> = pkg.restrictions.iter().map(|r| r.split(':').next().unwrap_or("").to_string()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+                    row["spine"] = serde_json::json!(pkg.spine.len());
+                    row["tocEntries"] = serde_json::json!(pkg.toc.len());
+                    row["resources"] = serde_json::json!(pkg.resources.len());
+                    row["restrictions"] = serde_json::json!(restrictions);
+                    row["restrictionCount"] = serde_json::json!(pkg.restrictions.len());
+                    row["failedSections"] = serde_json::json!(failed);
+                    row["blocks"] = serde_json::json!(blocks);
+                    row["kinds"] = serde_json::json!(kinds);
+                    row["policies"] = serde_json::json!(policies);
+                    row["badCfi"] = serde_json::json!(bad_cfi);
+                    row["autoCoverage"] = serde_json::json!(if chars > 0 { (auto_chars as f64 / chars as f64 * 1000.0).round() / 1000.0 } else { 0.0 });
+                    row["language"] = serde_json::json!(pkg.language);
+                    row["buildMs"] = serde_json::json!(build_ms);
+                    row["totalMs"] = serde_json::json!(t0.elapsed().as_millis());
+                }
+            }
+            println!("{row}");
+            rows.push(row);
+        }
+        let out = std::env::var("THOTH_CORPUS_REPORT").unwrap_or_else(|_| "../reports/corpus-epub.json".into());
+        let _ = std::fs::create_dir_all(std::path::Path::new(&out).parent().unwrap());
+        std::fs::write(&out, serde_json::to_string_pretty(&serde_json::json!({"documents": rows})).unwrap()).unwrap();
+    }
+}

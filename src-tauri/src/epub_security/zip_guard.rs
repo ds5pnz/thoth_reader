@@ -176,6 +176,13 @@ impl SafeZip {
         self.nfc_index.get(&nfc).and_then(|raw| self.index.get(raw).copied())
     }
 
+    /// Names of all (validated) file entries.
+    pub(crate) fn names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.index.keys().cloned().collect();
+        v.sort();
+        v
+    }
+
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.lookup(name).is_some()
     }
