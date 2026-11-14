@@ -136,7 +136,7 @@ pub struct WireError {
     pub code: String,
     pub message: String,
     pub retryable: bool,
-    #[ts(type = "Record<string, string | number | boolean> | undefined")]
+    #[ts(optional, type = "Record<string, string | number | boolean>")]
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub details: BTreeMap<String, serde_json::Value>,
 }

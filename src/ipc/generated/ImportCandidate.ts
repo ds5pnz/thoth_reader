@@ -4,4 +4,4 @@ export type ImportCandidate = { importToken: string,
 /**
  * File name only, never the full path.
  */
-fileName: string, byteSize: bigint, };
+fileName: string, byteSize: number, };

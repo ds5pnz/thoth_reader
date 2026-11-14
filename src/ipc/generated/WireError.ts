@@ -3,4 +3,4 @@
 /**
  * Wire shape of `CommandResult.error`.
  */
-export type WireError = { code: string, message: string, retryable: boolean, details: Record<string, string | number | boolean> | undefined, };
+export type WireError = { code: string, message: string, retryable: boolean, details?: Record<string, string | number | boolean>, };

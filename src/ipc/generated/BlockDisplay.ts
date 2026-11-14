@@ -3,7 +3,7 @@ import type { DisplayRevision } from "./DisplayRevision";
 import type { JobBrief } from "./JobBrief";
 import type { TranslationPolicy } from "./TranslationPolicy";
 
-export type BlockDisplay = { blockId: string, effectivePolicy: TranslationPolicy, userOverride: TranslationPolicy | null, preferenceVersion: bigint, headVersion: bigint, 
+export type BlockDisplay = { blockId: string, effectivePolicy: TranslationPolicy, userOverride: TranslationPolicy | null, preferenceVersion: number, headVersion: number, 
 /**
  * none | current | stale | manual | excluded
  */

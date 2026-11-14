@@ -5,4 +5,4 @@ export type SearchPage = { hits: Array<SearchHit>, nextCursor: number | null,
 /**
  * "trigram" (≥3 chars) or "substring" (1–2 chars)
  */
-method: string, indexedSections: bigint, totalSections: bigint, };
+method: string, indexedSections: number, totalSections: number, };
