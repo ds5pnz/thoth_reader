@@ -9,6 +9,7 @@ import type { CellActions } from '../translation/TranslationCell';
 import { clearDrafts } from '../translation/TranslationCell';
 import { NotesPanel, SelectionToolbar, useAnnotations, useHighlightPainter } from '../annotations/annotations';
 import { findAll } from '../annotations/quote';
+import { PdfThumbnails } from '../../document/pdf/Thumbnails';
 import type { ContentResolvers } from './SafeContentView';
 import type { Block } from '../../ipc/generated/Block';
 import type { ReaderAnchor } from '../../ipc/generated/ReaderAnchor';
@@ -38,7 +39,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const [historyFor, setHistoryFor] = useState<Block | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
-  const [sidebarTab, setSidebarTabState] = useState<'toc' | 'search' | 'bookmarks' | 'notes'>('toc');
+  const [sidebarTab, setSidebarTabState] = useState<'toc' | 'search' | 'bookmarks' | 'notes' | 'pages'>('toc');
   // Sidebar visibility is a per-device convenience (not document data): localStorage.
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
     try { return localStorage.getItem('thoth.sidebarOpen') !== '0'; } catch { return true; }
@@ -51,7 +52,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     }));
   }, []);
   /** Choosing a tab (search shortcut, new bookmark) always reveals the sidebar. */
-  const setSidebarTab = useCallback((t: 'toc' | 'search' | 'bookmarks' | 'notes') => {
+  const setSidebarTab = useCallback((t: 'toc' | 'search' | 'bookmarks' | 'notes' | 'pages') => {
     setSidebarTabState(t);
     setSidebarOpen(true);
     try { localStorage.setItem('thoth.sidebarOpen', '1'); } catch { /* storage unavailable */ }
@@ -503,6 +504,21 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           tab={sidebarTab}
           bookmarksVersion={bookmarksVersion}
           onFindQuery={setFindQuery}
+          pagesPanel={isPdf ? (
+            <PdfThumbnails
+              session={session}
+              currentPage={() => {
+                if (pdfRef.current) return pdfRef.current.currentPage();
+                const l = currentAnchor()?.location;
+                return l?.kind === 'pdf' ? l.pageIndex : 0;
+              }}
+              onPage={(i) => {
+                if (pdfRef.current) { pdfRef.current.scrollToPage(i); return; }
+                const sec = model.sections.find((x) => Number(x.ordinal) === i);
+                if (sec) { userAnchor.current = null; void loadSection(sec.id); reflowRef.current?.scrollToSection(sec.id); }
+              }}
+            />
+          ) : undefined}
           notes={<NotesPanel items={annotations.items} onJump={(blockId, sectionId) => void revealBlock(blockId, sectionId)} onUpdate={(a, patch) => void annotations.update(a, patch)} onRemove={(a) => void annotations.remove(a)} />}
           onTab={setSidebarTab}
           session={session}

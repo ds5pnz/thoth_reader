@@ -10,12 +10,14 @@ import type { ReaderModel } from './useReaderSession';
 
 type TocEntry = { label: string; spineIndex: number; fragment?: string | null; children?: TocEntry[] };
 
-export function Sidebar({ tab, onTab, session, model, onJump, onSection, currentAnchor, bookmarksVersion = 0, notes, onFindQuery }: {
+export function Sidebar({ tab, onTab, session, model, onJump, onSection, currentAnchor, bookmarksVersion = 0, notes, pagesPanel, onFindQuery }: {
   onFindQuery?: (q: string) => void;
   notes?: React.ReactNode;
+  /** PDF page thumbnails (absent for EPUB). */
+  pagesPanel?: React.ReactNode;
   bookmarksVersion?: number;
-  tab: 'toc' | 'search' | 'bookmarks' | 'notes';
-  onTab: (t: 'toc' | 'search' | 'bookmarks' | 'notes') => void;
+  tab: 'toc' | 'search' | 'bookmarks' | 'notes' | 'pages';
+  onTab: (t: 'toc' | 'search' | 'bookmarks' | 'notes' | 'pages') => void;
   session: ReaderSessionDto;
   model: ReaderModel;
   onJump: (blockId: string, sectionId?: string) => void;
@@ -26,6 +28,7 @@ export function Sidebar({ tab, onTab, session, model, onJump, onSection, current
     <aside className="sidebar" id="reader-sidebar" aria-label="탐색">
       <div className="seg side-tabs" role="tablist">
         <button role="tab" aria-selected={tab === 'toc'} aria-pressed={tab === 'toc'} onClick={() => onTab('toc')}>목차</button>
+        {pagesPanel && <button role="tab" aria-selected={tab === 'pages'} aria-pressed={tab === 'pages'} onClick={() => onTab('pages')}>쪽</button>}
         <button role="tab" aria-selected={tab === 'search'} aria-pressed={tab === 'search'} onClick={() => onTab('search')}>검색</button>
         <button role="tab" aria-selected={tab === 'bookmarks'} aria-pressed={tab === 'bookmarks'} onClick={() => onTab('bookmarks')}>북마크</button>
         <button role="tab" aria-selected={tab === 'notes'} aria-pressed={tab === 'notes'} onClick={() => onTab('notes')}>메모</button>
@@ -34,6 +37,7 @@ export function Sidebar({ tab, onTab, session, model, onJump, onSection, current
         {tab === 'toc' && <Toc session={session} model={model} onSection={onSection} />}
         {tab === 'search' && <Search session={session} onJump={onJump} onFindQuery={onFindQuery} />}
         {tab === 'notes' && notes}
+        {tab === 'pages' && pagesPanel}
         {tab === 'bookmarks' && <Bookmarks session={session} onJump={onJump} currentAnchor={currentAnchor} version={bookmarksVersion} />}
       </div>
     </aside>

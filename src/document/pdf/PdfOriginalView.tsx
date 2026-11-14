@@ -4,7 +4,7 @@
 // that block's own region. Both pages share one scroll container, so they always line up.
 // The original page is never modified; everything is an overlay positioned from the stored
 // PDF-space rects through the PDF.js viewport.
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PDFDocumentProxy, PDFPageProxy, PageViewport } from 'pdfjs-dist';
 import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
 import type { Block } from '../../ipc/generated/Block';
@@ -78,13 +78,20 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   const canvases = useRef(new Map<number, HTMLCanvasElement>());
   const itemSizes = useRef(new Map<number, ItemSize[]>());
   // Fit to width: one page in original mode, two pages side by side otherwise.
+  // Two-page spread (original view only): the cover stands alone, then pages pair up.
+  const [spreadPref, setSpreadPref] = useState(() => { try { return localStorage.getItem('thoth.pdfSpread') === '1'; } catch { return false; } });
+  const spread = spreadPref && mode === 'original';
+  const toggleSpread = useCallback(() => setSpreadPref((v) => { try { localStorage.setItem('thoth.pdfSpread', v ? '0' : '1'); } catch { /* private mode */ } return !v; }), []);
+  // Night pages: the page itself (canvas, overlays, highlights) is shown inverted.
+  const [night, setNight] = useState(() => { try { return localStorage.getItem('thoth.pdfNight') === '1'; } catch { return false; } });
+  const toggleNight = useCallback(() => setNight((v) => { try { localStorage.setItem('thoth.pdfNight', v ? '0' : '1'); } catch { /* private mode */ } return !v; }), []);
   const fitScale = useMemo(() => {
     const bw = bases[0]?.bw ?? 0;
     if (!bw || !paneWidth) return 1;
-    const cols = mode === 'original' ? 1 : 2;
+    const cols = mode === 'original' && !spread ? 1 : 2;
     const avail = (paneWidth - GUTTER * (cols + 1)) / cols;
     return Math.max(0.3, Math.min(MAX_SCALE, Math.round((avail / bw) * 100) / 100));
-  }, [bases, paneWidth, mode]);
+  }, [bases, paneWidth, mode, spread]);
   // User zoom multiplies the fit-to-width scale; wider pages scroll horizontally.
   const [zoom, setZoomState] = useState(readZoom);
   const setZoom = useCallback((next: number | ((z: number) => number)) => {
@@ -387,6 +394,13 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     },
   }), [anchorId, scrollToBlockImpl, model.sections, pages, blocksByPage, scrollToPage, curPage]);
 
+  const pageRows = useMemo(() => {
+    if (!spread) return pages.map((p) => [p]);
+    const rows: PageMeta[][] = [];
+    if (pages[0]) rows.push([pages[0]]);
+    for (let i = 1; i < pages.length; i += 2) rows.push(pages.slice(i, i + 2));
+    return rows;
+  }, [pages, spread]);
   const sectionStateByPage = useMemo(() => new Map(model.sections.map((s) => [Number(s.ordinal), s.state] as const)), [model.sections]);
   // Pages that left the live window give their canvas (already zeroed) and sizes back.
   useEffect(() => {
@@ -401,12 +415,14 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   void syncScroll; // both pages share one scroller: nothing to synchronise
   return (
     <div className="pdf-split only">
-      <div ref={pagesRef} className={`pdf-pages ${mode === 'original' ? 'single' : 'dual'}`} onScroll={onScroll} tabIndex={0} aria-label="PDF 페이지">
-        {pages.map((pm) => {
-          const blocks = blocksByPage.get(pm.index) ?? NO_BLOCKS;
-          const isLive = live.has(pm.index);
-          return (
-            <div key={pm.index} className="pdf-row" style={{ gap: GUTTER, height: pm.height, marginBottom: GUTTER, padding: `0 ${GUTTER}px` }}>
+      <div ref={pagesRef} className={`pdf-pages ${mode === 'original' ? 'single' : 'dual'} ${night ? 'night' : ''}`} onScroll={onScroll} tabIndex={0} aria-label="PDF 페이지">
+        {pageRows.map((row) => (
+          <div key={row[0]!.index} className="pdf-row" style={{ gap: spread ? 2 : GUTTER, height: Math.max(...row.map((x) => x.height)), marginBottom: GUTTER, padding: `0 ${GUTTER}px` }}>
+            {row.map((pm) => {
+              const blocks = blocksByPage.get(pm.index) ?? NO_BLOCKS;
+              const isLive = live.has(pm.index);
+              return (
+                <Fragment key={pm.index}>
               <PdfPage
                 doc={doc}
                 meta={pm}
@@ -433,9 +449,11 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
                   onPick={(b) => { setAnchorId(b.id); setSelectedId(b.id); }}
                 />
               )}
-            </div>
-          );
-        })}
+                </Fragment>
+              );
+            })}
+          </div>
+        ))}
       </div>
       {pages.length > 0 && (
         <PdfControls
@@ -448,6 +466,10 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
           onZoomIn={() => zoomStep(1)}
           onZoomOut={() => zoomStep(-1)}
           onZoomReset={() => setZoom(1)}
+          spread={mode === 'original' ? spreadPref : null}
+          onSpread={toggleSpread}
+          night={night}
+          onNight={toggleNight}
         />
       )}
       {selected && mode !== 'original' && (
@@ -464,7 +486,8 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   );
 });
 
-function PdfControls({ page, total, zoom, canGoBack, onPage, onBack, onZoomIn, onZoomOut, onZoomReset }: {
+function PdfControls({ page, total, zoom, canGoBack, onPage, onBack, onZoomIn, onZoomOut, onZoomReset, spread, onSpread, night, onNight }: {
+  spread: boolean | null; onSpread: () => void; night: boolean; onNight: () => void;
   page: number; total: number; zoom: number; canGoBack: boolean; onPage: (index: number) => void; onBack: () => void; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
@@ -493,6 +516,14 @@ function PdfControls({ page, total, zoom, canGoBack, onPage, onBack, onZoomIn, o
       <button className="btn icon ghost" onClick={onZoomOut} disabled={zoom <= 0.5} title="축소 (⌘−)" aria-label="축소">−</button>
       <button className="btn ghost pdf-zoom" onClick={onZoomReset} title="폭에 맞춤 (⌘0)" aria-label={`배율 ${Math.round(zoom * 100)}%, 폭에 맞춤으로 되돌리기`}>{Math.round(zoom * 100)}%</button>
       <button className="btn icon ghost" onClick={onZoomIn} disabled={zoom >= 4} title="확대 (⌘+)" aria-label="확대">+</button>
+      <span className="pdf-controls-sep" aria-hidden="true" />
+      <button className={`btn ghost ${night ? 'active' : ''}`} onClick={onNight} aria-pressed={night} title="어두운 페이지 (색 반전)">야간</button>
+      {spread !== null && (
+        <>
+          <span className="pdf-controls-sep" aria-hidden="true" />
+          <button className={`btn ghost ${spread ? 'active' : ''}`} onClick={onSpread} aria-pressed={spread} title="두 쪽 펼침 보기">{spread ? '두 쪽' : '한 쪽'}</button>
+        </>
+      )}
     </div>
   );
 }

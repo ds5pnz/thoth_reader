@@ -883,6 +883,26 @@ async function viewerCheck(res: Record<string, unknown>) {
     followed = { linksOnPage: links.length, from, to, moved: to !== from, backTo: pageNo() };
   }
   out.link = followed;
+  // two-page spread, night pages, thumbnails
+  const ctl = (text: string) => [...document.querySelectorAll<HTMLButtonElement>('.pdf-controls button')].find((b) => b.textContent === text);
+  ctl('한 쪽')?.click();
+  await sleep(900);
+  const rowsWithTwo = [...document.querySelectorAll('.pdf-row')].filter((r) => r.querySelectorAll('.pdf-page[data-page]').length === 2).length;
+  out.spread = { rowsWithTwo, firstRowPages: document.querySelector('.pdf-row')?.querySelectorAll('.pdf-page[data-page]').length, hScroll: pane.scrollWidth > pane.clientWidth + 1 };
+  ctl('두 쪽')?.click();
+  await sleep(600);
+  ctl('야간')?.click();
+  await sleep(300);
+  out.night = getComputedStyle(document.querySelector('.pdf-page')!).filter.includes('invert');
+  ctl('야간')?.click();
+  if (!document.querySelector('#reader-sidebar')) document.querySelector<HTMLButtonElement>('button[aria-controls="reader-sidebar"]')?.click();
+  await sleep(300);
+  clickButton('쪽');
+  const thumbMs = await waitFor(() => document.querySelectorAll('.thumb-img img').length >= 3, 15000);
+  const before = pageNo();
+  document.querySelector<HTMLButtonElement>('.thumb[data-thumb="11"]')?.click();
+  await sleep(900);
+  out.thumbs = { total: document.querySelectorAll('.thumb').length, renderedMs: thumbMs, rendered: document.querySelectorAll('.thumb-img img').length, jumpFrom: before, jumpTo: pageNo(), currentMarked: !!document.querySelector('.thumb.current') };
 }
 
 /** Highlights, notes and search tinting in the real webview. Counts only. */
