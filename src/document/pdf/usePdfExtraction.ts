@@ -57,6 +57,12 @@ async function commitPage(session: ReaderSessionDto, token: string, sectionId: s
   await call('extraction_finalize_section', { sessionId: session.sessionId, extractionToken: token, sectionId, expectedCount: blocks.length, checksum: await blocksChecksum(blocks), failed: false });
 }
 
+/** Page the reader is currently looking at, per session (set by the PDF view). */
+const extractionFocus = new Map<string, number>();
+export function setExtractionFocus(sessionId: string, pageIndex: number) {
+  extractionFocus.set(sessionId, pageIndex);
+}
+
 export function usePdfExtraction(session: ReaderSessionDto | null, refreshSections: () => Promise<unknown>, onSession: (s: ReaderSessionDto) => void) {
   const started = useRef<string | null>(null);
   const latest = useRef({ session, refreshSections, onSession });
@@ -91,13 +97,24 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
         });
         // Ramp batch size: the restore page is published alone so reflow shows it fast;
         // later batches are larger (running header detection needs ≥3 pages per batch).
-        let i = 0;
         let batchNo = 0;
-        while (i < pending.length && !cancelled) {
-          const size = batchNo === 0 ? 1 : batchNo === 1 ? 3 : BATCH_PAGES;
+        let lastFocus = -1;
+        while (pending.length > 0 && !cancelled) {
+          // Follow the reader: when they jump elsewhere, extract around that page next
+          // (forward first), so a random page does not wait for the whole book.
+          const focus = extractionFocus.get(session.sessionId) ?? restorePage;
+          const jumped = focus !== lastFocus;
+          if (jumped) {
+            lastFocus = focus;
+            pending.sort((a, b) => {
+              const ka = a.page >= focus ? a.page - focus : 1e6 + (focus - a.page);
+              const kb = b.page >= focus ? b.page - focus : 1e6 + (focus - b.page);
+              return ka - kb;
+            });
+          }
+          const size = batchNo === 0 || jumped ? 1 : batchNo === 1 ? 3 : BATCH_PAGES;
           batchNo += 1;
-          const chunk = pending.slice(i, i + size);
-          i += size;
+          const chunk = pending.splice(0, size);
           const inputs: PdfPageInput[] = [];
           for (const p of chunk) {
             const page = await doc.getPage(p.page + 1);
@@ -126,12 +143,12 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
             });
           }
           // Yield to keep the UI responsive between batches (low priority remainder).
-          await new Promise((r) => setTimeout(r, batchNo <= 2 ? 0 : 30));
+          await new Promise((r) => setTimeout(r, batchNo <= 2 || jumped ? 0 : 30));
         }
       } finally {
         releaseSessionPdf(session);
       }
     })().catch(() => {});
-    return () => { cancelled = true; client.dispose(); };
+    return () => { cancelled = true; client.dispose(); extractionFocus.delete(session.sessionId); };
   }, [sessionId]);
 }

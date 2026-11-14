@@ -9,6 +9,25 @@ import json, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]); DELAY = int(sys.argv[2]) / 1000 if len(sys.argv) > 2 else 0.05
+# "filler": answer with synthetic Hangul of realistic length (layout audits) instead of an echo.
+MODE = sys.argv[3] if len(sys.argv) > 3 else "echo"
+import re
+WORDS = ["가나다", "라마", "바사아자", "차카", "타파하", "거너더러", "머버", "서어저처", "커터", "퍼허고노", "도로모", "보소", "오조초코", "토포호"]
+TOKEN = re.compile("[\u27e6\u27ea\u2983\u3016][A-Z]+\\d+[\u27e7\u27eb\u2984\u3017]")
+
+def filler(src: str) -> str:
+    """Hangul text ~0.62x the source length in characters; placeholders are kept verbatim."""
+    tokens = TOKEN.findall(src)
+    plain = TOKEN.sub("", src)
+    target = max(2, round(len(plain) * 0.62))
+    out, n, i = [], 0, len(plain)
+    while n < target:
+        w = WORDS[i % len(WORDS)]; out.append(w); n += len(w) + 1; i += 3
+    for k, t in enumerate(tokens):
+        out.insert(min(len(out), (k + 1) * max(1, len(out) // (len(tokens) + 1))), t)
+    text = " ".join(out)
+    return text + ("." if plain.rstrip().endswith((".", "!", "?", ":")) else "")
+
 COUNT = {"chat": 0, "models": 0}
 
 class H(BaseHTTPRequestHandler):
@@ -38,10 +57,12 @@ class H(BaseHTTPRequestHandler):
             segs = [{"id": "s0", "text": user}]
         structured = "response_format" in req
         if structured:
-            reply = json.dumps({"segments": [{"id": s["id"], "text": "[번역] " + s["text"]} for s in segs]}, ensure_ascii=False)
+            reply = json.dumps({"segments": [{"id": s["id"], "text": (filler(s["text"]) if MODE == "filler" else "[번역] " + s["text"])} for s in segs]}, ensure_ascii=False)
         else:
-            reply = "[번역] " + (segs[0]["text"] if segs else "")
-        print(json.dumps({"chat": COUNT["chat"], "stream": bool(req.get("stream")), "structured": structured}), flush=True)
+            src = segs[0]["text"] if segs else ""
+            reply = filler(src) if MODE == "filler" else "[번역] " + src
+        if COUNT["chat"] % 200 == 1:
+            print(json.dumps({"chat": COUNT["chat"], "stream": bool(req.get("stream")), "structured": structured}), flush=True)
         if not req.get("stream"):
             return self._json(200, {"choices": [{"index": 0, "message": {"role": "assistant", "content": reply}, "finish_reason": "stop"}]})
         self.send_response(200); self.send_header("Content-Type", "text/event-stream")

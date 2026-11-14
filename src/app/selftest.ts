@@ -55,7 +55,7 @@ function epubFrameText(): number {
 }
 
 export async function runSelftest() {
-  const cfg = await call<{ candidates: ImportCandidate[]; provider: string | null; model: string | null; slowMs: number | null; scenario: string | null; page?: number | null }>('debug_selftest_files').catch(() => ({ candidates: [], provider: null, model: null, slowMs: null, scenario: null, page: null }));
+  const cfg = await call<{ candidates: ImportCandidate[]; provider: string | null; model: string | null; slowMs: number | null; scenario: string | null; page?: number | null; only?: string | null }>('debug_selftest_files').catch(() => ({ candidates: [], provider: null, model: null, slowMs: null, scenario: null, page: null, only: null }));
   WAIT = cfg.slowMs ?? 30000;
   (globalThis as { __thothPdfPage?: number }).__thothPdfPage = cfg.page ?? 0;
   const cands = cfg.candidates;
@@ -63,12 +63,16 @@ export async function runSelftest() {
   if (cfg.provider) await setupProvider(cfg.provider, cfg.model);
   await log('info', `selftest start: ${cands.length} files`);
   await sleep(500);
+  const only = (cfg.only ?? '').split(',').filter(Boolean).map(Number);
   for (const [i, c] of cands.entries()) {
+    if (only.length && !only.includes(i + 1)) continue;
     const label = `doc-${i + 1}`;
     const t0 = performance.now();
     let r: ImportResult;
     try {
-      r = await call<ImportResult>('document_import', { importToken: c.importToken });
+      // Long runs outlive the 10-minute import token: take a fresh one for this file.
+      const fresh = await call<{ candidates: ImportCandidate[] }>('debug_selftest_files').catch(() => null);
+      r = await call<ImportResult>('document_import', { importToken: fresh?.candidates[i]?.importToken ?? c.importToken });
     } catch (e) {
       await log('result', { label, stage: 'import', error: String((e as Error).message) });
       continue;
@@ -88,6 +92,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'style') await styleRun(res);
       if (cfg.scenario === 'chrome') await chromeCheck(res);
       if (cfg.scenario === 'pdflayout') await pdfLayout(res);
+      if (cfg.scenario === 'audit') await layoutAudit(res, i);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -406,6 +411,7 @@ async function pdfLayout(res: Record<string, unknown>) {
   });
   const texts = [...document.querySelectorAll<HTMLElement>('.tp-text')];
   const sizes = texts.map((t) => parseFloat(getComputedStyle(t).fontSize));
+  res.perBlock = [...document.querySelectorAll<HTMLElement>('.pdf-row')].filter((r) => r.querySelector(`.pdf-page[data-page="${page}"]`)).flatMap((r) => [...r.querySelectorAll<HTMLElement>('.tp-text')]).map((t) => ({ k: t.dataset.kind, base: t.dataset.base, font: parseFloat(getComputedStyle(t).fontSize).toFixed(1), cover: (t.dataset.cover ?? '').split(',').slice(2).map((x) => Math.round(Number(x))).join('x'), max: t.dataset.max, client: `${t.clientWidth}x${t.clientHeight}`, scroll: `${t.scrollWidth}x${t.scrollHeight}`, fb: t.classList.contains('fallback'), chars: (t.textContent ?? '').length }));
   res.pdfLayout = {
     paneWidth: pane?.clientWidth,
     liveRows: pairs.length,
@@ -434,4 +440,100 @@ async function pdfLayout(res: Record<string, unknown>) {
   texts[0]?.click();
   await sleep(300);
   res.popover = { open: !!document.querySelector('.pdf-pop'), hasMenu: !!document.querySelector('.pdf-pop .tcell-menu button') };
+}
+
+/** Deterministic PRNG so audits are reproducible. */
+function mulberry32(a: number) {
+  return () => { a |= 0; a = (a + 0x6d2b79f5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+
+/**
+ * Layout audit of the translated page on random pages (numbers only, no document text).
+ * Per page it reports blocks whose translation overlaps another block, is clipped, had to
+ * shrink a lot, leaves its page, or could not be placed.
+ */
+async function layoutAudit(res: Record<string, unknown>, docIndex: number) {
+  clickButton('원본');
+  clickButton('병렬');
+  await waitFor(() => canvases() > 0, 20000);
+  const pane = document.querySelector<HTMLElement>('.pdf-pages');
+  const total = document.querySelectorAll('.pdf-page[data-page]').length;
+  const perDoc = Number((globalThis as { __thothPdfPage?: number }).__thothPdfPage || 10);
+  const rnd = mulberry32(1000 + docIndex);
+  const picks = new Set<number>();
+  while (picks.size < Math.min(perDoc, Math.max(1, total - 6))) picks.add(3 + Math.floor(rnd() * Math.max(1, total - 6)));
+  const pages: Record<string, unknown>[] = [];
+  for (const pi of [...picks].sort((a, b) => a - b)) {
+    const orig = document.querySelector<HTMLElement>(`.pdf-page[data-page="${pi}"]`);
+    if (!pane || !orig) continue;
+    pane.scrollTop += orig.getBoundingClientRect().top - pane.getBoundingClientRect().top - 8;
+    userScroll(pane);
+    const row = orig.parentElement!;
+    const tp = () => row.querySelector<HTMLElement>('.pdf-page.translated');
+    // settle: raster copied, blocks present (or page has none), nothing waiting or streaming
+    await waitFor(() => !!tp()?.querySelector('canvas') && tp()!.querySelector<HTMLCanvasElement>('canvas')!.width > 0, 20000);
+    const t0 = performance.now();
+    let last = -1; let stable = 0;
+    while (performance.now() - t0 < 45000) {
+      await sleep(400);
+      const n = tp()?.querySelectorAll('.tp-text').length ?? 0;
+      const busy = tp()?.querySelectorAll('.tp-slot.busy').length ?? 0;
+      if (n === last && busy === 0 && (n > 0 || performance.now() - t0 > 6000)) { stable += 1; if (stable >= 3) break; } else stable = 0;
+      last = n;
+    }
+    const page = tp();
+    if (!page) continue;
+    const pr = page.getBoundingClientRect();
+    const fallbacks = page.querySelectorAll('.tp-text.fallback').length;
+    const texts = [...page.querySelectorAll<HTMLElement>('.tp-text:not(.fallback)')];
+    const rects = texts.map((t) => t.getBoundingClientRect());
+    const overlaps: number[] = [];
+    const detail: unknown[] = [];
+    const cov = (t: HTMLElement) => (t.dataset.cover ?? '0,0,0,0').split(',').map(Number) as [number, number, number, number];
+    let coverOverlaps = 0;
+    let nestedPairs = 0;
+    for (let a = 0; a < rects.length; a++) for (let b = a + 1; b < rects.length; b++) {
+      const w = Math.min(rects[a]!.right, rects[b]!.right) - Math.max(rects[a]!.left, rects[b]!.left);
+      const h = Math.min(rects[a]!.bottom, rects[b]!.bottom) - Math.max(rects[a]!.top, rects[b]!.top);
+      // A small block fully inside a larger one (equation number, label) is drawn on top.
+      const areaA = rects[a]!.width * rects[a]!.height, areaB = rects[b]!.width * rects[b]!.height;
+      const nested = w > 2 && h > 2 && w * h >= Math.min(areaA, areaB) * 0.85 && Math.min(areaA, areaB) < Math.max(areaA, areaB) * 0.25;
+      if (nested) { nestedPairs += 1; continue; }
+      if (w > 2 && h > 2) {
+        overlaps.push(Math.round(w * h));
+        const ca = cov(texts[a]!), cb = cov(texts[b]!);
+        const cw = Math.min(ca[0] + ca[2], cb[0] + cb[2]) - Math.max(ca[0], cb[0]);
+        const ch = Math.min(ca[1] + ca[3], cb[1] + cb[3]) - Math.max(ca[1], cb[1]);
+        const src = cw > 2 && ch > 2; // the original block regions already overlap
+        if (src) coverOverlaps += 1;
+        const g = (i: number, c: number[]) => ({ k: texts[i]!.dataset.kind, cover: c.map(Math.round), box: [Math.round(rects[i]!.left - pr.left), Math.round(rects[i]!.top - pr.top), Math.round(rects[i]!.width), Math.round(rects[i]!.height)] });
+        if (detail.length < 4) detail.push({ src, w: Math.round(w), h: Math.round(h), a: g(a, ca), b: g(b, cb) });
+      }
+    }
+    const clipDetail = texts.filter((t) => t.scrollHeight > t.clientHeight + 2 || t.scrollWidth > t.clientWidth + 2).slice(0, 3).map((t) => ({ k: t.dataset.kind, sw: t.scrollWidth, cw: t.clientWidth, sh: t.scrollHeight, ch: t.clientHeight, base: t.dataset.base, font: getComputedStyle(t).fontSize, cover: cov(t).map(Math.round) }));
+    const fontOf = (t: HTMLElement) => parseFloat(getComputedStyle(t).fontSize);
+    const ratio = texts.map((t) => fontOf(t) / Math.max(1, Number(t.dataset.base ?? fontOf(t))));
+    pages.push({
+      page: pi,
+      overlays: texts.length,
+      slots: page.querySelectorAll('.tp-slot').length,
+      failed: page.querySelectorAll('.tp-slot.failed').length,
+      overlapPairs: overlaps.length,
+      nestedPairs,
+      fallbacks,
+      coverOverlaps,
+      detail,
+      clipDetail,
+      autoSlots: page.querySelectorAll('.tp-slot[data-policy="auto"]').length,
+      overlapArea: overlaps.reduce((x, y) => x + y, 0),
+      clipped: texts.filter((t) => t.scrollHeight > t.clientHeight + 2 || t.scrollWidth > t.clientWidth + 2).length,
+      shrunk: ratio.filter((r) => r < 0.9).length,
+      tiny: ratio.filter((r) => r < 0.6).length,
+      minRatio: ratio.length ? Number(Math.min(...ratio).toFixed(2)) : null,
+      offPage: rects.filter((r) => r.left < pr.left - 1 || r.right > pr.right + 1 || r.top < pr.top - 1 || r.bottom > pr.bottom + 1).length,
+      fontKinds: new Set(texts.map((t) => fontOf(t).toFixed(1))).size,
+      pageW: Math.round(pr.width),
+    });
+  }
+  res.audit = { totalPages: total, pages };
 }

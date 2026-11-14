@@ -51,12 +51,16 @@ export function blockBox(b: Pick<Block, 'location'>, viewport: ViewportLike & { 
   const real = items ? dominantItemHeight(b, items) : null;
   const scale = viewport.scale ?? 1;
   // Hangul glyphs fill the em box more than Latin x-height text: slightly smaller reads equal.
-  const fontSize = real != null ? real * scale * 0.92 : heights[0]! * 0.74;
+  // Some PDFs report item heights larger than the real em size, so never exceed what the
+  // original line geometry allows (line pitch for paragraphs, line box for single lines).
+  const pitch0 = gaps.length ? gaps[Math.floor(gaps.length / 2)]! : 0;
+  const geomCap = pitch0 > 0 ? pitch0 / 1.2 : heights[0]! * 0.8;
+  const fontSize = Math.min(real != null ? real * scale * 0.92 : heights[0]! * 0.74, geomCap);
   return {
     left, top, width: right - left, height: bottom - top,
     fontSize: Math.max(5, fontSize),
     lines: css.length,
-    pitch: gaps.length ? gaps[Math.floor(gaps.length / 2)]! : 0,
+    pitch: pitch0,
   };
 }
 
@@ -138,7 +142,34 @@ export function fitFontSize(base: number, fits: (px: number) => boolean): number
     const mid = (lo + hi) / 2;
     if (fits(mid)) lo = mid; else hi = mid;
   }
-  return Math.round(lo * 10) / 10;
+  // Round *down* and confirm: rounding up could step past the largest size that fits.
+  let out = Math.floor(lo * 10) / 10;
+  while (out > MIN_FONT_PX && !fits(out)) out = Math.round((out - 0.1) * 10) / 10;
+  return Math.max(MIN_FONT_PX, out);
+}
+
+/**
+ * Adjacent blocks' line boxes often overlap by a few pixels (ascent/descent exceed the line
+ * pitch). Trim the upper block to end where the lower one starts so their overlays do not
+ * overlap; the lower block's opaque box covers the shared strip. Larger overlaps (nested or
+ * side-by-side geometry) are left alone. Returns new boxes in the same order.
+ */
+export function resolveVerticalOverlaps<T extends { box: BlockBox }>(items: readonly T[]): T[] {
+  const out = items.map((x) => ({ ...x, box: { ...x.box } }));
+  const order = out.map((_, i) => i).sort((a, b) => out[a]!.box.top - out[b]!.box.top);
+  for (let i = 0; i < order.length; i++) {
+    const a = out[order[i]!]!.box;
+    for (let j = i + 1; j < order.length; j++) {
+      const b = out[order[j]!]!.box;
+      if (b.top >= a.top + a.height) break;
+      const overlapW = Math.min(a.left + a.width, b.left + b.width) - Math.max(a.left, b.left);
+      const overlapH = a.top + a.height - b.top;
+      if (overlapW <= 2 || overlapH <= 0 || b.top <= a.top) continue;
+      const lineA = a.height / Math.max(1, a.lines);
+      if (overlapH <= Math.max(lineA * 0.75, 4) && b.top - a.top >= lineA * 0.5) a.height = b.top - a.top;
+    }
+  }
+  return out;
 }
 
 /** Most common colour among samples taken around a block (quantised), i.e. its background. */

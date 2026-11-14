@@ -17,12 +17,12 @@ pub async fn debug_selftest_files(core: State<'_, Arc<AppCore>>, meta: CommandMe
     let provider = std::env::var("THOTH_SELFTEST_PROVIDER").ok();
     let model = std::env::var("THOTH_SELFTEST_MODEL").ok();
     let slow_ms = std::env::var("THOTH_SELFTEST_WAIT_MS").ok().and_then(|v| v.parse::<u64>().ok());
-    Ok(respond(&meta, Ok(serde_json::json!({"candidates": cands, "provider": provider, "model": model, "slowMs": slow_ms, "scenario": std::env::var("THOTH_SELFTEST_SCENARIO").ok(), "page": std::env::var("THOTH_SELFTEST_PAGE").ok().and_then(|v| v.parse::<u32>().ok())}))))
+    Ok(respond(&meta, Ok(serde_json::json!({"candidates": cands, "provider": provider, "model": model, "slowMs": slow_ms, "scenario": std::env::var("THOTH_SELFTEST_SCENARIO").ok(), "page": std::env::var("THOTH_SELFTEST_PAGE").ok().and_then(|v| v.parse::<u32>().ok()), "only": std::env::var("THOTH_SELFTEST_ONLY").ok()}))))
 }
 
 #[tauri::command]
 pub async fn debug_log(meta: CommandMeta, level: String, message: String) -> Result<Wire, ()> {
-    let msg: String = message.chars().take(4000).collect();
+    let msg: String = message.chars().take(200_000).collect();
     println!("[webview:{level}] {msg}");
     Ok(respond(&meta, Ok(serde_json::json!({}))))
 }

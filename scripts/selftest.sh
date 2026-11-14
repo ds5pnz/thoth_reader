@@ -10,7 +10,7 @@ for p in $(lsof -tiTCP:1420 -sTCP:LISTEN 2>/dev/null); do kill "$p"; done
 sleep 1
 [ "${THOTH_SELFTEST_KEEP:-}" = "1" ] || rm -rf "$DATA"
 THOTH_DATA_DIR="$DATA" THOTH_SELFTEST="$FILES" npx tauri dev > "$LOG" 2>&1 &
-for _ in $(seq 1 400); do
+for _ in $(seq 1 ${THOTH_SELFTEST_TICKS:-400}); do
   grep -qE 'selftest done|error\[|panicked|terminated with a non-zero' "$LOG" && break
   sleep 3
 done

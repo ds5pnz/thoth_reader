@@ -13,7 +13,8 @@ import { TranslationCell, type CellActions } from '../../features/translation/Tr
 import { pdfRectToCss, cssPointToPdf, hitTest } from './coords';
 import { isVisible, pickAnchor, ScrollOrigin, attachUserIntent, Debouncer, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
 import { openSessionPdf, releaseSessionPdf } from './sessionPdf';
-import { blockBox, expandBox, fitFontSize, harmonizeFontSizes, pickBackground, textColorFor, type BlockBox, type ItemSize, type Rgb } from './translatedPage';
+import { setExtractionFocus } from './usePdfExtraction';
+import { blockBox, expandBox, fitFontSize, harmonizeFontSizes, resolveVerticalOverlaps, pickBackground, textColorFor, type BlockBox, type ItemSize, type Rgb } from './translatedPage';
 
 export interface PdfOriginalHandle {
   getAnchor: () => { blockId: string; ratio: number } | null;
@@ -23,9 +24,12 @@ export interface PdfOriginalHandle {
   anchorErrorPx: (blockId: string, ratio: number) => number | null;
 }
 
+const NO_BLOCKS: Block[] = [];
 const MAX_LIVE_CANVASES = 5;
 const MAX_SCALE = 1.8;
 const GUTTER = 16;
+/** Below this share of the original size a fitted translation is not worth showing. */
+const MIN_READABLE_RATIO = 0.6;
 
 /** Sizes are kept at scale 1; `viewport` is derived for the current fit-to-width scale. */
 type PageBase = { index: number; bw: number; bh: number; proxy: PDFPageProxy | null };
@@ -124,6 +128,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     });
     near.sort((a, b) => a.d - b.d);
     const next = new Set(near.slice(0, MAX_LIVE_CANVASES).map((x) => x.i));
+    if (near[0]) setExtractionFocus(session.sessionId, near[0].i);
     setLive((prev) => (prev.size === next.size && [...next].every((x) => prev.has(x)) ? prev : next));
     for (const i of next) { const sid = sectionByPage.get(i); if (sid) loadSection(sid); }
     // Measure real viewports for live pages (rotation/crop may differ per page).
@@ -137,7 +142,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
         }
       }
     }
-  }, [pages, doc, sectionByPage, loadSection]);
+  }, [pages, doc, sectionByPage, loadSection, session.sessionId]);
 
   // Visibility: viewport ∩ block rects (same rule as the reflow view).
   const report = useCallback(() => {
@@ -287,7 +292,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     <div className="pdf-split only">
       <div ref={pagesRef} className={`pdf-pages ${mode === 'original' ? 'single' : 'dual'}`} onScroll={onScroll} tabIndex={0} aria-label="PDF 페이지">
         {pages.map((pm) => {
-          const blocks = blocksByPage.get(pm.index) ?? [];
+          const blocks = blocksByPage.get(pm.index) ?? NO_BLOCKS;
           const isLive = live.has(pm.index);
           return (
             <div key={pm.index} className="pdf-row" style={{ gap: GUTTER, height: pm.height, marginBottom: GUTTER }}>
@@ -306,7 +311,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
                 <TranslatedPage
                   meta={pm}
                   live={isLive}
-                  blocks={blocks.filter(translatable)}
+                  blocks={blocks}
                   model={model}
                   source={canvases.current.get(pm.index) ?? null}
                   items={itemSizes.current.get(pm.index) ?? null}
@@ -413,11 +418,14 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [fit, setFit] = useState<Map<string, { bg: Rgb; width: number; height: number }>>(new Map());
   const vp = meta.viewport;
-  const boxes = useMemo(() => (vp ? blocks.map((b) => ({ b, id: b.id, box: blockBox(b, vp, items) })).filter((x): x is { b: Block; id: string; box: BlockBox } => !!x.box) : []), [blocks, vp, items]);
+  const tblocks = useMemo(() => blocks.filter((b) => !b.roles.includes('running_header') && !b.roles.includes('running_footer') && b.sourceText.trim().length > 0), [blocks]);
+  const boxes = useMemo(() => (vp ? resolveVerticalOverlaps(tblocks.map((b) => ({ b, id: b.id, box: blockBox(b, vp, items) })).filter((x): x is { b: Block; id: string; box: BlockBox } => !!x.box)) : []), [tblocks, vp, items]);
   const fonts = useMemo(() => harmonizeFontSizes(boxes), [boxes]);
 
-  // Copy the original raster (cheaper than rendering the page twice), sample each block's
-  // background, and grow each block's region into the empty space around it.
+  // Copy the original raster (cheaper than rendering the page twice). Pixels are read once
+  // per render of the page, not on every React update.
+  const raster = useRef<{ img: ImageData; k: number } | null>(null);
+  const [rasterVersion, setRasterVersion] = useState(0);
   useEffect(() => {
     const c = canvasRef.current;
     if (!live || !c || !source || source.width === 0) return;
@@ -426,12 +434,20 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
     const ctx = c.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
     ctx.drawImage(source, 0, 0);
-    const k = meta.width > 0 ? c.width / meta.width : 1;
-    const img = ctx.getImageData(0, 0, c.width, c.height);
+    raster.current = { img: ctx.getImageData(0, 0, c.width, c.height), k: meta.width > 0 ? c.width / meta.width : 1 };
+    setRasterVersion((v) => v + 1);
+    return () => { raster.current = null; c.width = 0; c.height = 0; };
+  }, [live, source, version, meta.width]);
+
+  // Sample each block's background and grow its region into the empty space around it.
+  useEffect(() => {
+    const r = raster.current;
+    if (!r || boxes.length === 0) return;
+    const { img, k } = r;
     const at = (xCss: number, yCss: number): Rgb => {
-      const x = Math.min(c.width - 1, Math.max(0, Math.round(xCss * k)));
-      const y = Math.min(c.height - 1, Math.max(0, Math.round(yCss * k)));
-      const i = (y * c.width + x) * 4;
+      const x = Math.min(img.width - 1, Math.max(0, Math.round(xCss * k)));
+      const y = Math.min(img.height - 1, Math.max(0, Math.round(yCss * k)));
+      const i = (y * img.width + x) * 4;
       return [img.data[i]!, img.data[i + 1]!, img.data[i + 2]!];
     };
     const all = boxes.map((x) => x.box);
@@ -441,17 +457,15 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
       const pts: Rgb[] = [];
       for (const [fx, fy] of [[0, 0], [1, 0], [0, 1], [1, 1], [0.5, 0], [0.5, 1], [0, 0.5], [1, 0.5]] as const) pts.push(at(box.left - 2 + fx * (box.width + 4), box.top - 2 + fy * (box.height + 4)));
       const bg = pickBackground(pts);
-      const grown = expandBox(img, k, box, bg, all, pageRight);
-      next.set(b.id, { bg, ...grown });
+      next.set(b.id, { bg, ...expandBox(img, k, box, bg, all, pageRight) });
     }
     setFit(next);
-    return () => { c.width = 0; c.height = 0; };
-  }, [live, source, version, boxes, meta.width]);
+  }, [rasterVersion, boxes, meta.width]);
 
   return (
     <div className="pdf-page translated" style={{ width: meta.width, height: meta.height }} lang={targetLanguage} aria-label={`번역 페이지 ${meta.index + 1}`}>
       {live ? <canvas ref={canvasRef} aria-hidden="true" /> : null}
-      {live && boxes.map(({ b, box }) => {
+      {live && [...boxes].sort((x, y) => y.box.width * y.box.height - x.box.width * x.box.height).map(({ b, box }) => {
         const d = model.display.get(b.id);
         const job = model.jobs.get(b.id);
         const preview = model.previews.get(b.id);
@@ -461,7 +475,7 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
         const slot = { left: box.left - 1, top: box.top - 1, width: box.width + 2, height: box.height + 2 };
         if (!text && !preview) {
           return (
-            <button key={b.id} type="button" className={`tp-slot ${busy ? 'busy' : ''} ${job?.state === 'FAILED' ? 'failed' : ''} ${b.id === highlightBlockId ? 'sel' : ''}`} style={slot} onClick={() => onPick(b)} aria-label={busy ? '번역 중인 문단' : job?.state === 'FAILED' ? '번역에 실패한 문단' : '아직 번역되지 않은 문단'} />
+            <button key={b.id} type="button" data-policy={b.translationPolicy} className={`tp-slot ${busy ? 'busy' : ''} ${job?.state === 'FAILED' ? 'failed' : ''} ${b.id === highlightBlockId ? 'sel' : ''}`} style={slot} onClick={() => onPick(b)} aria-label={busy ? '번역 중인 문단' : job?.state === 'FAILED' ? '번역에 실패한 문단' : '아직 번역되지 않은 문단'} />
           );
         }
         const fontSize = fonts.get(b.id) ?? box.fontSize;
@@ -469,6 +483,7 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
           <FitText
             key={b.id}
             text={text || preview || ''}
+            kind={`${b.kind}/${box.lines}`}
             cover={slot}
             maxWidth={(f?.width ?? box.width) + 2}
             maxHeight={(f?.height ?? box.height) + 2}
@@ -490,10 +505,13 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
 
 /** Translated text for one block. It always covers the original text region (`cover`) and
  *  may use the free space up to maxWidth/maxHeight; the font shrinks only if that is not enough. */
-function FitText({ text, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, stale, manual, streaming, selected, onClick }: {
-  text: string; cover: { left: number; top: number; width: number; height: number }; maxWidth: number; maxHeight: number; baseSize: number; lineHeight: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; onClick: () => void;
+function FitText({ text, kind, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, stale, manual, streaming, selected, onClick }: {
+  text: string; kind: string; cover: { left: number; top: number; width: number; height: number }; maxWidth: number; maxHeight: number; baseSize: number; lineHeight: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; onClick: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // When the region is too small for a readable translation (diagram labels, tight table
+  // cells) the original stays visible instead; the translation is one click away.
+  const [fallback, setFallback] = useState(false);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
@@ -501,16 +519,35 @@ function FitText({ text, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, s
       el.style.fontSize = `${px}px`;
       return el.scrollHeight <= maxHeight + 1 && el.scrollWidth <= maxWidth + 1;
     };
-    el.style.fontSize = `${fitFontSize(baseSize, fits)}px`;
+    const refit = () => {
+      const px = fitFontSize(baseSize, fits);
+      el.style.fontSize = `${px}px`;
+      const unreadable = px < baseSize * MIN_READABLE_RATIO || !fits(px);
+      el.style.fontSize = `${px}px`;
+      setFallback((prev) => (prev === unreadable ? prev : unreadable));
+    };
+    refit();
+    // Line breaks can change after the first layout (late font activation for Hangul,
+    // sub-pixel width settling): check again on the next frame and once fonts are ready.
+    let alive = true;
+    const again = () => { if (alive && (el.scrollHeight > maxHeight + 1 || el.scrollWidth > maxWidth + 1)) refit(); };
+    const raf = requestAnimationFrame(again);
+    const timer = window.setTimeout(again, 300);
+    void document.fonts?.ready.then(again);
+    return () => { alive = false; cancelAnimationFrame(raf); window.clearTimeout(timer); };
   }, [text, maxWidth, maxHeight, baseSize, lineHeight]);
   const color = bg ?? [255, 255, 255];
   return (
     <div
       ref={ref}
-      className={`tp-text ${stale ? 'stale' : ''} ${manual ? 'manual' : ''} ${streaming ? 'streaming' : ''} ${selected ? 'sel' : ''}`}
-      style={{ left: cover.left, top: cover.top, width: maxWidth, minHeight: cover.height, maxHeight, lineHeight, background: `rgb(${color[0]},${color[1]},${color[2]})`, color: textColorFor(color) }}
+      className={`tp-text ${fallback ? 'fallback' : ''} ${stale ? 'stale' : ''} ${manual ? 'manual' : ''} ${streaming ? 'streaming' : ''} ${selected ? 'sel' : ''}`}
+      style={{ left: cover.left, top: cover.top, width: maxWidth, minHeight: cover.height, maxHeight, lineHeight, background: fallback ? 'transparent' : `rgb(${color[0]},${color[1]},${color[2]})`, color: fallback ? 'transparent' : textColorFor(color) }}
+      aria-label={fallback ? `번역: ${text}` : undefined}
       title={text}
       data-base={baseSize.toFixed(1)}
+      data-cover={`${cover.left.toFixed(1)},${cover.top.toFixed(1)},${cover.width.toFixed(1)},${cover.height.toFixed(1)}`}
+      data-kind={kind}
+      data-max={`${maxWidth.toFixed(0)}x${maxHeight.toFixed(0)}`}
       onClick={(e) => { if (!window.getSelection()?.toString()) { e.stopPropagation(); onClick(); } }}
     >
       {text}

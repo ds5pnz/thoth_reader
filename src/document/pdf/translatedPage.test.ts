@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { blockBox, dominantItemHeight, expandBox, fitFontSize, harmonizeFontSizes, pickBackground, textColorFor, MIN_FONT_PX, type BlockBox } from './translatedPage';
+import { blockBox, dominantItemHeight, expandBox, fitFontSize, harmonizeFontSizes, resolveVerticalOverlaps, pickBackground, textColorFor, MIN_FONT_PX, type BlockBox } from './translatedPage';
 
 // Identity-like viewport: PDF y grows upward on a 100x200 page.
 const vp = {
@@ -25,6 +25,8 @@ describe('translated page helpers', () => {
     const fitted = fitFontSize(12, (px) => px <= 7.3);
     expect(fitted).toBeLessThanOrEqual(7.3);
     expect(fitted).toBeGreaterThan(7);
+    // never rounds up past the largest fitting size
+    for (const limit of [7.26, 7.31, 9.99, 5.05]) expect(fitFontSize(12, (px) => px <= limit)).toBeLessThanOrEqual(limit);
     expect(fitFontSize(12, () => false)).toBe(MIN_FONT_PX);
   });
   it('picks the dominant background and a readable text colour', () => {
@@ -57,5 +59,19 @@ describe('translated page helpers', () => {
     expect(10 + g.width).toBeLessThan(150);        // …but not across it
     expect(10 + g.height).toBeLessThanOrEqual(58); // stops above the next block
     expect(g.height).toBeGreaterThan(30);
+  });
+  it('caps the font by the original line pitch when item heights are inflated', () => {
+    const b = { location: { kind: 'pdf' as const, pageIndex: 0, viewBox: [0, 0, 100, 200], rotation: 0, rects: [{ x: 10, y: 150, width: 80, height: 14 }, { x: 10, y: 138, width: 80, height: 14 }], itemRanges: [{ itemIndex: 0, startU16: 0, endU16: 40 }] } };
+    const box = blockBox(b, { ...(vp as object), scale: 1 } as never, [{ h: 14, n: 40 }])!;
+    expect(box.pitch).toBe(12);
+    expect(box.fontSize).toBe(10); // pitch / 1.2, not 14 * 0.92
+  });
+  it('trims small vertical overlaps between stacked blocks only', () => {
+    const mk = (top: number, height: number, lines: number, left = 0, width = 100): BlockBox => ({ left, top, width, height, fontSize: 8, lines, pitch: 12 });
+    const r = resolveVerticalOverlaps([{ box: mk(0, 59, 4) }, { box: mk(53, 33, 2) }, { box: mk(200, 30, 2) }, { box: mk(205, 30, 2, 300) }, { box: mk(400, 100, 8) }, { box: mk(420, 20, 1) }]);
+    expect(r[0]!.box.height).toBe(53);   // trimmed to the next block's top
+    expect(r[1]!.box.height).toBe(33);
+    expect(r[2]!.box.height).toBe(30);   // side by side: untouched
+    expect(r[4]!.box.height).toBe(100);  // nested/large overlap: untouched
   });
 });

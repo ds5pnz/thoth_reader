@@ -117,3 +117,7 @@
 .btn.icon { padding: 5px; width: 28px; height: 28px; justify-content: center; }
 .btn.icon.active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .btn.icon.attention { color: var(--warn); }
+
+/* region too small for a readable translation: keep the original, mark it, translate on click */
+.tp-text.fallback { overflow: hidden; border-bottom: 1px dotted rgba(31, 95, 107, .8); -webkit-user-select: none; user-select: none; }
+.tp-text.fallback.stale, .tp-text.fallback.manual { box-shadow: none; }
