@@ -96,8 +96,11 @@ fn serve_file(path: &Path, mime: &str, method: &str, range: Option<&str>, extra:
         },
         None => None,
     };
+    // Cap a ranged response to keep memory bounded: a 206 may legally cover less than was
+    // asked for, and PDF.js asks for 64 KiB chunks anyway.
+    const MAX_CHUNK: u64 = 16 * 1024 * 1024;
     let (status, start, end) = match parsed {
-        Some((s, e)) => (206, s, e),
+        Some((s, e)) => (206, s, e.min(s.saturating_add(MAX_CHUNK - 1))),
         None => (200, 0, len.saturating_sub(1)),
     };
     let count = if len == 0 { 0 } else { end - start + 1 };
@@ -107,11 +110,6 @@ fn serve_file(path: &Path, mime: &str, method: &str, range: Option<&str>, extra:
     headers.push(("Content-Length", count.to_string()));
     if method == "HEAD" || count == 0 {
         return AssetResponse { status, headers, body: Vec::new() };
-    }
-    // Cap a single response to keep memory bounded; PDF.js requests ranges anyway.
-    const MAX_CHUNK: u64 = 16 * 1024 * 1024;
-    if status == 200 && count > MAX_CHUNK && mime == "application/pdf" {
-        // Full GET of a large PDF: still allowed but streamed into memory once.
     }
     let mut body = vec![0u8; count as usize];
     if f.seek(SeekFrom::Start(start)).is_err() || f.read_exact(&mut body).is_err() {

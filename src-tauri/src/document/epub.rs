@@ -114,21 +114,22 @@ fn library_meta(pkg: &epub_security::SafePackage, has_cover: bool) -> serde_json
 /// metadata and the cover (once per `LIBRARY_META_VERSION`). Safe to call from import, from
 /// the startup backfill and from `document_open`; builds are serialized.
 pub async fn prepare_package(core: &Arc<AppCore>, doc_id: &str) -> AppResult<Prepared> {
+    // Fast path without the build lock: an already prepared book must open immediately even
+    // while other books are being sanitized.
+    if let Some(p) = prepared_if_ready(core, doc_id).await? {
+        return Ok(p);
+    }
     let _guard = core.epub_prepare.lock().await;
+    if let Some(p) = prepared_if_ready(core, doc_id).await? {
+        return Ok(p);
+    }
     let doc = documents::get(&core.db.reader, doc_id).await?.ok_or_else(|| AppError::not_found("문서"))?;
     let managed = core.paths.resolve(&doc.managed_path).ok_or_else(|| AppError::internal("문서 경로 오류"))?;
-    let versions = versions_json();
-    let config = serde_json::json!({});
-    let ex_id = derive_extraction_id(&doc.id, &versions, &config);
-    let config_hash = canonical_sha256(&serde_json::json!({"versions": versions, "config": config}));
+    let (ex_id, config_hash, versions) = extraction_identity(&doc.id);
     let derived = core.paths.derived_dir(&ex_id);
     let state = extraction::ensure_extraction(&core.db.writer, &ex_id, &doc.id, &config_hash, &versions).await?;
-    let package_ready = derived.join("package.opf").exists();
-    let meta_ready = doc.metadata.get("libraryMeta").and_then(|v| v.as_i64()) == Some(LIBRARY_META_VERSION);
+    let package_ready = package_complete(core, &doc, &ex_id).await?;
     let prepared = Prepared { extraction_id: ex_id.clone(), derived: derived.clone(), state };
-    if package_ready && meta_ready {
-        return Ok(prepared);
-    }
 
     core.db.ensure_writable()?;
     let staging = core.paths.derived.join(format!(".staging-{}", new_uuid()));
@@ -140,8 +141,8 @@ pub async fn prepare_package(core: &Arc<AppCore>, doc_id: &str) -> AppResult<Pre
         Ok::<_, AppError>((pkg, cover))
     })
     .await
-    .map_err(|_| AppError::internal("EPUB 처리 작업이 중단되었습니다."))?;
-    let (pkg, cover) = match built {
+    .map_err(|_| AppError::internal("EPUB 처리 작업이 중단되었습니다."));
+    let (pkg, cover) = match built.and_then(|r| r) {
         Ok(p) => p,
         Err(e) => {
             let _ = std::fs::remove_dir_all(&staging);
@@ -156,47 +157,110 @@ pub async fn prepare_package(core: &Arc<AppCore>, doc_id: &str) -> AppResult<Pre
             return Err(e);
         }
     };
+    // Everything below must not leave the staging copy behind.
+    let r = publish_package(core, &doc, &ex_id, &derived, &staging, package_ready, pkg, cover).await;
+    if r.is_err() || package_ready {
+        let _ = std::fs::remove_dir_all(&staging);
+    }
+    r.map(|_| prepared)
+}
+
+fn extraction_identity(doc_id: &str) -> (String, String, serde_json::Value) {
+    let versions = versions_json();
+    let config = serde_json::json!({});
+    let ex_id = derive_extraction_id(doc_id, &versions, &config);
+    let config_hash = canonical_sha256(&serde_json::json!({"versions": versions, "config": config}));
+    (ex_id, config_hash, versions)
+}
+
+/// The package counts as published only when its files, its metadata and its sections all
+/// exist: sections and metadata are written before the directory is renamed into place.
+async fn package_complete(core: &Arc<AppCore>, doc: &documents::DocumentRow, ex_id: &str) -> AppResult<bool> {
+    if !core.paths.derived_dir(ex_id).join("package.opf").exists() {
+        return Ok(false);
+    }
+    if doc.metadata.get("canonicalRevision").and_then(|v| v.as_str()) != Some(epub_security::canonical_revision().as_str()) {
+        return Ok(false);
+    }
+    let n: i64 = sqlx::query_scalar("select count(*) from sections where extraction_id = ?").bind(ex_id).fetch_one(&core.db.reader).await?;
+    Ok(n > 0)
+}
+
+async fn prepared_if_ready(core: &Arc<AppCore>, doc_id: &str) -> AppResult<Option<Prepared>> {
+    let doc = documents::get(&core.db.reader, doc_id).await?.ok_or_else(|| AppError::not_found("문서"))?;
+    let (ex_id, config_hash, _) = extraction_identity(&doc.id);
+    if doc.metadata.get("libraryMeta").and_then(|v| v.as_i64()) != Some(LIBRARY_META_VERSION) || !package_complete(core, &doc, &ex_id).await? {
+        return Ok(None);
+    }
+    let state: Option<String> = sqlx::query_scalar("select state from extractions where document_id = ? and config_hash = ?")
+        .bind(&doc.id)
+        .bind(&config_hash)
+        .fetch_optional(&core.db.reader)
+        .await?;
+    Ok(state.map(|state| Prepared { derived: core.paths.derived_dir(&ex_id), extraction_id: ex_id, state }))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn publish_package(
+    core: &Arc<AppCore>,
+    doc: &documents::DocumentRow,
+    ex_id: &str,
+    derived: &std::path::Path,
+    staging: &std::path::Path,
+    package_ready: bool,
+    pkg: epub_security::SafePackage,
+    cover: Option<Vec<u8>>,
+) -> AppResult<()> {
+    // The document may have been deleted while the package was being built.
+    if documents::get(&core.db.reader, &doc.id).await?.is_none() {
+        return Err(AppError::not_found("문서"));
+    }
+    if !package_ready {
+        let resources: serde_json::Map<String, serde_json::Value> =
+            pkg.resources.iter().map(|r| (r.resource_id.clone(), serde_json::json!(r.safe_href))).collect();
+        let mut meta = serde_json::json!({
+            "title": pkg.title,
+            "toc": pkg.toc,
+            "resources": resources,
+            "restrictions": pkg.restrictions,
+            "canonicalRevision": pkg.canonical_revision,
+        });
+        if doc.metadata.get("sourceLanguage").is_none() {
+            if let Some(l) = pkg.language.as_deref().map(|l| l.trim()).filter(|l| crate::commands::core::check_lang(l).is_ok()) {
+                meta["sourceLanguage"] = serde_json::json!(l);
+            }
+        }
+        // Sections + metadata first, the directory rename last: a crash in between leaves no
+        // `package.opf`, so the next open simply rebuilds (section inserts are idempotent).
+        let mut tx = core.db.writer.begin().await?;
+        for it in &pkg.spine {
+            let loc = format!("spine:{}:{}", it.index, it.safe_href);
+            let sid = derive_section_id(ex_id, it.index, &loc);
+            sqlx::query("insert into sections(id, extraction_id, ordinal, locator_json, state) values (?,?,?,?, 'pending') on conflict(id) do nothing")
+                .bind(&sid)
+                .bind(ex_id)
+                .bind(it.index as i64)
+                .bind(serde_json::json!({"kind": "epub", "spineIndex": it.index, "href": it.safe_href, "idref": it.idref, "linear": it.linear}).to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        sqlx::query("update documents set metadata_json = json_patch(metadata_json, ?) where id = ?")
+            .bind(meta.to_string())
+            .bind(&doc.id)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        if derived.exists() {
+            let _ = std::fs::remove_dir_all(derived);
+        }
+        std::fs::rename(staging, derived)?;
+    }
     let has_cover = match cover {
         Some(b) => store_cover(&core.paths, &doc.id, &b),
         None => false,
     };
     documents::merge_metadata(&core.db.writer, &doc.id, &library_meta(&pkg, has_cover)).await?;
-    if package_ready {
-        let _ = std::fs::remove_dir_all(&staging);
-        return Ok(prepared);
-    }
-    if derived.exists() {
-        let _ = std::fs::remove_dir_all(&derived);
-    }
-    std::fs::rename(&staging, &derived)?;
-    let resources: serde_json::Map<String, serde_json::Value> =
-        pkg.resources.iter().map(|r| (r.resource_id.clone(), serde_json::json!(r.safe_href))).collect();
-    let mut meta = serde_json::json!({
-        "title": pkg.title,
-        "toc": pkg.toc,
-        "resources": resources,
-        "restrictions": pkg.restrictions,
-        "canonicalRevision": pkg.canonical_revision,
-    });
-    if doc.metadata.get("sourceLanguage").is_none() {
-        if let Some(l) = pkg.language.as_deref().map(|l| l.trim()).filter(|l| crate::commands::core::check_lang(l).is_ok()) {
-            meta["sourceLanguage"] = serde_json::json!(l);
-        }
-    }
-    documents::merge_metadata(&core.db.writer, &doc.id, &meta).await?;
-    for it in &pkg.spine {
-        let loc = format!("spine:{}:{}", it.index, it.safe_href);
-        let sid = derive_section_id(&ex_id, it.index, &loc);
-        extraction::ensure_section(
-            &core.db.writer,
-            &sid,
-            &ex_id,
-            it.index,
-            &serde_json::json!({"kind": "epub", "spineIndex": it.index, "href": it.safe_href, "idref": it.idref, "linear": it.linear}),
-        )
-        .await?;
-    }
-    Ok(prepared)
+    Ok(())
 }
 
 /// Harvest covers/metadata for EPUBs imported before this existed (or just imported).

@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { ModalBackdrop } from '../../app/Modal';
 import { call, errorMessage, mutate } from '../../ipc/client';
 import { useReaderSession, trackClose } from './useReaderSession';
 import { ReflowView, type ReflowHandle, type ReflowMode } from './ReflowView';
 import { Sidebar } from './Sidebar';
 import { HistoryDialog } from '../translation/HistoryDialog';
 import type { CellActions } from '../translation/TranslationCell';
+import { clearDrafts } from '../translation/TranslationCell';
 import type { ContentResolvers } from './SafeContentView';
 import type { Block } from '../../ipc/generated/Block';
 import type { ReaderAnchor } from '../../ipc/generated/ReaderAnchor';
@@ -172,7 +174,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const anchorTimer = useRef<number | null>(null);
   const onScrolled = useCallback(() => {
     if (anchorTimer.current) window.clearTimeout(anchorTimer.current);
-    anchorTimer.current = window.setTimeout(() => { const a = measureAnchor(); if (a) userAnchor.current = a; }, 160);
+    anchorTimer.current = window.setTimeout(() => { anchorTimer.current = null; const a = measureAnchor(); if (a) userAnchor.current = a; }, 160);
     if (saveTimer.current) window.clearTimeout(saveTimer.current);
     saveTimer.current = window.setTimeout(() => void savePosition(), 500);
   }, [savePosition, measureAnchor]);
@@ -220,6 +222,14 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   /** Mode switch keeps the same source block (spec FR02). */
   const switchView = useCallback((apply: () => void) => {
     const run = () => {
+      // A scroll that ended <160 ms ago has not been measured yet: do it now, before the
+      // layout changes, or the switch would restore the position from before that scroll.
+      if (anchorTimer.current) {
+        window.clearTimeout(anchorTimer.current);
+        anchorTimer.current = null;
+        const m = measureAnchor();
+        if (m) userAnchor.current = m;
+      }
       const a = currentAnchor();
       apply();
       if (a?.blockId) {
@@ -239,7 +249,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     };
     if (dirty.current.size > 0) setPendingSwitch({ run });
     else run();
-  }, [currentAnchor]);
+  }, [currentAnchor, measureAnchor]);
 
   switchViewRef.current = switchView;
   useShortcut('mod+\\', toggleSidebar);
@@ -284,12 +294,13 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     else await doClose();
   };
 
+  const [bookmarksVersion, setBookmarksVersion] = useState(0);
   useShortcut('mod+d', () => {
     const s = sessionRef.current;
     const a = currentAnchor();
     if (!s || !a) return;
     void mutate('bookmark_put', { documentId: s.documentId, bookmarkId: null, anchor: a, label: new Date().toLocaleString('ko-KR') })
-      .then(() => { toast({ kind: 'info', text: '북마크를 추가했습니다.' }); setSidebarTab('bookmarks'); })
+      .then(() => { toast({ kind: 'info', text: '북마크를 추가했습니다.' }); setSidebarTab('bookmarks'); setBookmarksVersion((v) => v + 1); })
       .catch((e) => toast({ kind: 'error', text: errorMessage(e) }));
   });
   useShortcut('mod+f', () => setSidebarTab('search'));
@@ -460,6 +471,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       <div className="reader-body">
         {sidebarOpen && <Sidebar
           tab={sidebarTab}
+          bookmarksVersion={bookmarksVersion}
           onTab={setSidebarTab}
           session={session}
           model={model}
@@ -510,21 +522,21 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       )}
       {pwPrompt && <PasswordDialog reason={pwPrompt.reason} onDone={(v) => { pwPrompt.resolve(v); setPwPrompt(null); }} />}
       {pendingSwitch && (
-        <div className="modal-backdrop" role="alertdialog" aria-modal="true" aria-labelledby="unsaved-title">
+        <ModalBackdrop role="alertdialog" aria-labelledby="unsaved-title" onClose={() => setPendingSwitch(null)}>
           <div className="modal" style={{ width: 420 }}>
             <header><h2 id="unsaved-title">저장하지 않은 수정이 있습니다</h2></header>
             <div className="body"><p>편집 중인 번역을 저장할까요?</p></div>
             <footer>
               <button className="btn" onClick={() => setPendingSwitch(null)}>계속 편집</button>
-              <button className="btn danger" onClick={() => { dirty.current.clear(); const p = pendingSwitch; setPendingSwitch(null); p.run(); }}>폐기</button>
+              <button className="btn danger" onClick={() => { dirty.current.clear(); clearDrafts(); const p = pendingSwitch; setPendingSwitch(null); p.run(); }}>폐기</button>
               <button className="btn primary" onClick={async () => {
                 const flushes = [...dirty.current.values()];
                 const results = await Promise.all(flushes.map((f) => f()));
-                if (results.every(Boolean)) { dirty.current.clear(); const p = pendingSwitch; setPendingSwitch(null); p.run(); }
+                if (results.every(Boolean)) { dirty.current.clear(); clearDrafts(); const p = pendingSwitch; setPendingSwitch(null); p.run(); }
               }}>저장</button>
             </footer>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
     </div>
   );
@@ -547,7 +559,7 @@ function SourceLanguagePrompt({ onPick }: { onPick: (lang: string) => void }) {
 function PasswordDialog({ reason, onDone }: { reason: string; onDone: (v: string | null) => void }) {
   const [v, setV] = useState('');
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="pw-title">
+    <ModalBackdrop role="dialog" aria-labelledby="pw-title" onClose={() => onDone(null)}>
       <form className="modal" style={{ width: 380 }} onSubmit={(e) => { e.preventDefault(); onDone(v); }}>
         <header><h2 id="pw-title">PDF 암호</h2></header>
         <div className="body">
@@ -559,6 +571,6 @@ function PasswordDialog({ reason, onDone }: { reason: string; onDone: (v: string
           <button type="submit" className="btn primary">열기</button>
         </footer>
       </form>
-    </div>
+    </ModalBackdrop>
   );
 }

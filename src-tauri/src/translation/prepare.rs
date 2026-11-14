@@ -251,14 +251,26 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
             (pb.map(|x| x.source_text), hb.map(|x| x.source_text))
         }
     };
-    let context = if prev.is_none() && heading.is_none() { PromptContext::empty() } else { PromptContext::build(heading.as_deref(), prev.as_deref()) };
+    let mut context = if prev.is_none() && heading.is_none() { PromptContext::empty() } else { PromptContext::build(heading.as_deref(), prev.as_deref()) };
     let lower = b.source_text.to_lowercase();
     let glossary: Vec<GlossaryEntry> = p.glossary.iter().filter(|g| !g.source.is_empty() && lower.contains(&g.source.to_lowercase())).cloned().collect();
     let glossary_hash = prompt::glossary_hash(&p.glossary_version, &glossary);
 
-    let overhead = 600 + crate::translation::splitter::estimate_tokens(&context.to_json().to_string());
     let max_out = p.options.max_output_tokens.unwrap_or_else(|| p.context_limit.map(|l| (l / 3).clamp(256, 8192)).unwrap_or(4096));
-    let budget = if p.context_limit.is_some() { SplitBudget::for_model(p.context_limit, overhead, max_out)? } else { SplitBudget::default() };
+    let budget_for = |c: &PromptContext| SplitBudget::for_model(p.context_limit, 600 + crate::translation::splitter::estimate_tokens(&c.to_json().to_string()), max_out);
+    let budget = if p.context_limit.is_none() {
+        SplitBudget::default()
+    } else {
+        match budget_for(&context) {
+            Ok(b) => b,
+            // A long previous paragraph (CJK especially) can eat a small model's whole window:
+            // translate without the optional context rather than not at all.
+            Err(_) => {
+                context = PromptContext::empty();
+                budget_for(&context)?
+            }
+        }
+    };
     // Inline emphasis (bold/italic) travels as paired tags inside the text to translate.
     let marks = super::inline_marks::analyze(b);
     let text_in: &str = match &marks {
@@ -361,9 +373,30 @@ async fn document_sha(db: &Db, document_id: &str) -> AppResult<String> {
 /// Validate + restore one part's output. Err = INVALID_OUTPUT reason (never retried).
 pub fn validate_part(pj: &PreparedJob, index: usize, out: &TranslationOutput) -> Result<String, String> {
     let part = pj.parts.get(index).ok_or("part_index")?;
+    // Some reasoning models put their scratchpad in the content itself.
+    let stripped;
+    let out = match strip_leading_think(&out.text) {
+        Some(t) => {
+            stripped = TranslationOutput { text: t.to_string(), finish_reason: out.finish_reason.clone(), sent_bytes: out.sent_bytes, usage: out.usage.clone() };
+            &stripped
+        }
+        None => out,
+    };
     let v = validation::validate_output(out, pj.response_format, &[ExpectedSegment { id: SEGMENT_ID, protected: &part.protected }], &pj.target_language)
         .map_err(|e| e.reason().to_string())?;
     v.segments.into_iter().next().map(|s| s.text.trim().to_string()).ok_or_else(|| "no_segment".to_string())
+}
+
+/// `<think>…</think>answer` → `answer`. Only a block at the very start is removed, so a
+/// translation that merely mentions the tag is untouched.
+pub fn strip_leading_think(text: &str) -> Option<&str> {
+    let t = text.trim_start();
+    for (open, close) in [("<think>", "</think>"), ("<thinking>", "</thinking>")] {
+        if let Some(rest) = t.strip_prefix(open) {
+            return rest.find(close).map(|i| rest[i + close.len()..].trim_start());
+        }
+    }
+    None
 }
 
 /// Final stored text + emphasis ranges for a completed job.

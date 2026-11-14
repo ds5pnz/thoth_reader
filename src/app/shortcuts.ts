@@ -16,16 +16,21 @@ export function matches(e: KeyboardEvent, combo: string): boolean {
   const alt = parts.includes('alt');
   if (mod !== (e.metaKey || e.ctrlKey)) return false;
   if (shift !== e.shiftKey || alt !== e.altKey) return false;
-  return e.key.toLowerCase() === key || (key === ',' && e.key === ',');
+  if (e.key.toLowerCase() === key) return true;
+  // Physical-key fallback: with a Korean input source Cmd+D arrives as 'ㅇ', '\\' as '₩'.
+  const code = key.length === 1 && key >= 'a' && key <= 'z' ? `Key${key.toUpperCase()}` : key === '\\' ? 'Backslash' : key === ',' ? 'Comma' : null;
+  return code !== null && e.code === code;
 }
 
-export function useShortcut(combo: string, handler: (e: KeyboardEvent) => void, opts: { allowInInputs?: boolean; enabled?: boolean } = {}) {
+export function useShortcut(combo: string, handler: (e: KeyboardEvent) => void, opts: { allowInInputs?: boolean; enabled?: boolean; allowInModal?: boolean } = {}) {
   const ref = useRef(handler);
   ref.current = handler;
   useEffect(() => {
     if (opts.enabled === false) return;
     const onKey = (e: KeyboardEvent) => {
       if (!matches(e, combo)) return;
+      // A modal dialog owns the keyboard: nothing behind it reacts.
+      if (!opts.allowInModal && document.querySelector('[aria-modal="true"]')) return;
       if (!opts.allowInInputs && isEditing(document.activeElement) && !combo.startsWith('mod+')) return;
       // Mod-shortcuts other than save also yield to an active editor.
       if (!opts.allowInInputs && isEditing(document.activeElement) && combo !== 'mod+,' ) return;
@@ -34,5 +39,5 @@ export function useShortcut(combo: string, handler: (e: KeyboardEvent) => void, 
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [combo, opts.allowInInputs, opts.enabled]);
+  }, [combo, opts.allowInInputs, opts.enabled, opts.allowInModal]);
 }

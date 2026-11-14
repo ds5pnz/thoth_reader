@@ -100,6 +100,20 @@ pub async fn mark_section_failed(pool: &SqlitePool, section_id: &str) -> AppResu
     Ok(())
 }
 
+/// Like [`mark_section_failed`] for callers that only hold an extraction token: the section
+/// must belong to that extraction.
+pub async fn mark_section_failed_in(pool: &SqlitePool, extraction_id: &str, section_id: &str) -> AppResult<()> {
+    let owned: Option<i64> = sqlx::query_scalar("select 1 from sections where id = ? and extraction_id = ?")
+        .bind(section_id)
+        .bind(extraction_id)
+        .fetch_optional(pool)
+        .await?;
+    if owned.is_none() {
+        return Err(AppError::not_found("섹션"));
+    }
+    mark_section_failed(pool, section_id).await
+}
+
 /// Validate one block against its section/extraction and size/shape limits.
 pub fn validate_block(b: &Block, extraction_id: &str, section_id: &str) -> AppResult<()> {
     if !is_valid_id(&b.id) || b.extraction_id != extraction_id || b.section_id != section_id {
@@ -166,6 +180,8 @@ pub fn validate_parents(blocks: &[Block]) -> AppResult<()> {
 }
 
 /// Idempotent staging of one batch. Same index + checksum => existing success; different => reject.
+const MAX_SECTION_BATCHES: u32 = 2048;
+
 pub async fn stage_batch(
     pool: &SqlitePool,
     extraction_id: &str,
@@ -175,6 +191,10 @@ pub async fn stage_batch(
 ) -> AppResult<(String, usize)> {
     if blocks.len() > MAX_BATCH_BLOCKS {
         return Err(AppError::limit("batch는 최대 100개 블록입니다."));
+    }
+    // A section is one page or one chapter: bound how much a caller can stage for it.
+    if batch_index >= MAX_SECTION_BATCHES {
+        return Err(AppError::limit("섹션당 batch 수가 너무 많습니다."));
     }
     let payload = serde_json::to_string(blocks)?;
     if payload.len() > MAX_BATCH_BYTES {

@@ -240,16 +240,20 @@ pub async fn recover(db: &Db, paths: &AppPaths) -> AppResult<()> {
                     misc::delete_document_rows(&db.writer, &doc_id).await?;
                 }
                 remove_document_files(paths, &manifest);
+                crate::document::epub::remove_cover(paths, &doc_id);
                 misc::fileop_set_state(&db.writer, &id, "complete").await?;
             }
             _ => {}
         }
     }
-    // Orphan temp files without a journal.
-    if let Ok(rd) = std::fs::read_dir(&paths.documents) {
-        for e in rd.flatten() {
-            if e.file_name().to_string_lossy().starts_with(".tmp-") {
-                let _ = std::fs::remove_file(e.path());
+    // Orphan temp files without a journal (nothing else is running yet at startup).
+    for (dir, prefix) in [(&paths.documents, ".tmp-"), (&paths.covers, ".tmp-"), (&paths.derived, ".staging-")] {
+        if let Ok(rd) = std::fs::read_dir(dir) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with(prefix) {
+                    let p = e.path();
+                    let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
+                }
             }
         }
     }
@@ -304,7 +308,12 @@ pub async fn delete_document(db: &Db, paths: &AppPaths, document_id: &str) -> Ap
         "sha256": doc.sha256,
     });
     let op = misc::fileop_begin(&db.writer, document_id, "delete", &manifest).await?;
-    misc::delete_document_rows(&db.writer, document_id).await?;
+    if let Err(e) = misc::delete_document_rows(&db.writer, document_id).await {
+        // Rolled back: nothing to redo. A `planned` row would make the next start delete a
+        // book the user was told is still there.
+        let _ = misc::fileop_set_state(&db.writer, &op, "failed").await;
+        return Err(e);
+    }
     misc::fileop_set_state(&db.writer, &op, "db_committed").await?;
     remove_document_files(paths, &manifest);
     crate::document::epub::remove_cover(paths, document_id);

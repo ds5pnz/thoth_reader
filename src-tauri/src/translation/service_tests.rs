@@ -389,3 +389,49 @@ async fn t14_crash_during_stream_then_restart() {
     assert_eq!(m.text, "저장된 수정본");
     crate::storage::integrity_check(&db2.writer).await.unwrap();
 }
+
+/// A block whose job failed is not re-sent by viewport reports (scrolling); only an explicit
+/// request retries it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn failed_block_is_not_auto_resent() {
+    let f = fixture(1, MockConfig::default()).await;
+    let b0 = f.blocks[0].id.clone();
+    f.mock.script([MockStep::Succeed { text: Some("{\"segments\":[]}".into()) }]);
+    let g = f.s.generation();
+    f.svc.set_viewport(&f.s, g, 1, vec![b0.clone()], true).await.unwrap();
+    let db = f.db.clone();
+    for _ in 0..300 {
+        let st: Option<String> = sqlx::query_scalar("select state from translation_jobs where block_id = ?").bind(&b0).fetch_optional(&db.reader).await.unwrap();
+        if st.as_deref() == Some("FAILED") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(f.mock.calls(), 1);
+    for seq in 2..12 {
+        f.svc.set_viewport(&f.s, g, seq, vec![b0.clone()], true).await.unwrap();
+    }
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(f.mock.calls(), 1, "scrolling must not re-send a failed block");
+    let jobs: i64 = sqlx::query_scalar("select count(*) from translation_jobs where block_id = ?").bind(&b0).fetch_one(&f.db.reader).await.unwrap();
+    assert_eq!(jobs, 1);
+    // explicit retry goes through and succeeds
+    f.svc.request(&f.s, &b0, false).await.unwrap();
+    for _ in 0..300 {
+        if generated_text(&f.db, &b0).await.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(generated_text(&f.db, &b0).await.is_some());
+    assert_eq!(f.mock.calls(), 2);
+}
+
+#[test]
+fn leading_think_block_is_stripped() {
+    use super::prepare::strip_leading_think;
+    assert_eq!(strip_leading_think("<think>hmm\nlong</think>\n\n번역문"), Some("번역문"));
+    assert_eq!(strip_leading_think("  <thinking>x</thinking>답"), Some("답"));
+    assert_eq!(strip_leading_think("번역 <think>x</think>"), None);
+    assert_eq!(strip_leading_think("<think>never closed"), None);
+}

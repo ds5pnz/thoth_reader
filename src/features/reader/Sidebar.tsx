@@ -9,7 +9,8 @@ import type { ReaderModel } from './useReaderSession';
 
 type TocEntry = { label: string; spineIndex: number; fragment?: string | null; children?: TocEntry[] };
 
-export function Sidebar({ tab, onTab, session, model, onJump, onSection, currentAnchor }: {
+export function Sidebar({ tab, onTab, session, model, onJump, onSection, currentAnchor, bookmarksVersion = 0 }: {
+  bookmarksVersion?: number;
   tab: 'toc' | 'search' | 'bookmarks';
   onTab: (t: 'toc' | 'search' | 'bookmarks') => void;
   session: ReaderSessionDto;
@@ -28,7 +29,7 @@ export function Sidebar({ tab, onTab, session, model, onJump, onSection, current
       <div className="side-body">
         {tab === 'toc' && <Toc session={session} model={model} onSection={onSection} />}
         {tab === 'search' && <Search session={session} onJump={onJump} />}
-        {tab === 'bookmarks' && <Bookmarks session={session} onJump={onJump} currentAnchor={currentAnchor} />}
+        {tab === 'bookmarks' && <Bookmarks session={session} onJump={onJump} currentAnchor={currentAnchor} version={bookmarksVersion} />}
       </div>
     </aside>
   );
@@ -124,10 +125,10 @@ function Search({ session, onJump }: { session: ReaderSessionDto; onJump: (block
   );
 }
 
-function Bookmarks({ session, onJump, currentAnchor }: { session: ReaderSessionDto; onJump: (blockId: string) => void; currentAnchor: () => ReaderAnchor | null }) {
+function Bookmarks({ session, onJump, currentAnchor, version }: { session: ReaderSessionDto; onJump: (blockId: string) => void; currentAnchor: () => ReaderAnchor | null; version: number }) {
   const [items, setItems] = useState<BookmarkRow[]>([]);
   const load = async () => { setItems(await call<BookmarkRow[]>('bookmark_list', { documentId: session.documentId }).catch(() => [])); };
-  useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { void load(); }, [version]); // eslint-disable-line react-hooks/exhaustive-deps
   const add = async () => {
     const a = currentAnchor();
     if (!a) return;

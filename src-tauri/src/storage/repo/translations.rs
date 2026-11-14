@@ -387,7 +387,7 @@ pub async fn apply_revision(pool: &SqlitePool, revision_id: &str, current_source
     let applied_id;
     let n = if rev.origin == "generated" {
         applied_id = rev.id.clone();
-        sqlx::query("update translation_heads set manual_revision_id = null, generated_revision_id = ?, version = version + 1, updated_at = ? where block_id = ? and target_language = ? and version = ?")
+        let n = sqlx::query("update translation_heads set manual_revision_id = null, generated_revision_id = ?, version = version + 1, updated_at = ? where block_id = ? and target_language = ? and version = ?")
             .bind(&rev.id)
             .bind(now_ms())
             .bind(&rev.block_id)
@@ -395,7 +395,20 @@ pub async fn apply_revision(pool: &SqlitePool, revision_id: &str, current_source
             .bind(expected_version)
             .execute(&mut *tx)
             .await?
-            .rows_affected()
+            .rows_affected();
+        // Keep the cache on the chosen revision, or the next viewport pass would select the
+        // newer one for the same cache key again and silently undo this choice.
+        if let Some(key) = &rev.cache_key {
+            sqlx::query("update translation_cache set revision_id = ?, last_accessed_at = ? where cache_key = ? and block_id = ? and target_language = ?")
+                .bind(&rev.id)
+                .bind(now_ms())
+                .bind(key)
+                .bind(&rev.block_id)
+                .bind(&rev.target_language)
+                .execute(&mut *tx)
+                .await?;
+        }
+        n
     } else {
         let parent = head.manual_revision_id.clone().or(head.generated_revision_id.clone());
         applied_id = revision_insert(&mut tx, &rev.block_id, &rev.target_language, &rev.source_hash, "restore", None, parent.as_deref(), None, &rev.text, &serde_json::json!({"restoredFrom": rev.id})).await?;

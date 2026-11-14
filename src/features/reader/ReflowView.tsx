@@ -98,6 +98,7 @@ export const ReflowView = forwardRef<ReflowHandle, {
 
   // Visibility reporting: compute from the rendered rows (viewport ∩ row boxes).
   const debouncer = useRef(new Debouncer(VISIBLE_DEBOUNCE_MS));
+  const stickyDebouncer = useRef(new Debouncer(VISIBLE_DEBOUNCE_MS));
   const reportVisible = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -177,7 +178,10 @@ export const ReflowView = forwardRef<ReflowHandle, {
     if (origin.current.classify() === 'user') {
       lastUserScroll.current = performance.now();
       onScrolled();
-      debouncer.current.run(() => { captureSticky(); reportVisible(); });
+      // Own timer: visibility reports (IntersectionObserver, new rows) reuse `debouncer` and
+      // would otherwise replace the pending capture, leaving the anchor on the old block.
+      stickyDebouncer.current.run(captureSticky);
+      debouncer.current.run(reportVisible);
     } else {
       debouncer.current.run(reportVisible);
     }

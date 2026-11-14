@@ -679,3 +679,309 @@ fn rootfile_mismatch_recovers_single_opf() {
         .build();
     assert!(build_bytes(&bytes2, &EpubLimits::default()).result.is_err());
 }
+
+// ---------------------------------------------------------------------------
+// Security-review regressions (resource exhaustion, CSS allow-list bypass)
+// ---------------------------------------------------------------------------
+
+fn reason_of(e: &AppError) -> Option<&str> {
+    e.details.get("reason").and_then(|v| v.as_str())
+}
+
+/// One-chapter book whose chapter file is given verbatim (may be tag soup).
+fn raw_chapter(doc: &str) -> Vec<u8> {
+    EpubBuilder::new()
+        .file("OEBPS/content.opf", opf3("T", &[("c1", "text/c1.xhtml", "application/xhtml+xml", "")], &["c1"], "", "").as_bytes())
+        .file("OEBPS/text/c1.xhtml", doc.as_bytes())
+        .build()
+}
+
+/// Finding 1: html5ever tree building is bounded (formatting-element re-creation,
+/// unclosed nesting, canonical re-parse growth).
+#[test]
+fn html_parser_blowups_are_bounded() {
+    use super::dom::{max_attrs_per_tag, parse_html, parse_html_bounded};
+    let started = std::time::Instant::now();
+
+    // 2000 distinct unclosed formatting elements, re-created for each of 50,000
+    // paragraphs: 10^8 nodes when unbounded.
+    let mut soup = String::from("<p>");
+    for i in 0..2000 {
+        soup.push_str(&format!("<b class={i}>"));
+    }
+    soup.push_str(&"<p>x".repeat(50_000));
+    assert!(parse_html(&soup).is_err());
+    let b = build_bytes(&raw_chapter(&soup), &EpubLimits::default());
+    let err = b.result.as_ref().err().expect("rejected");
+    assert_eq!(err.code, ErrorCode::LimitExceeded, "{err:?}");
+    assert_eq!(reason_of(err), Some("markup_too_complex"));
+
+    // Fewer formatting elements stay under the stack limit; the node budget stops
+    // it instead (2,000,000 elements when unbounded; small budget keeps this cheap).
+    let mut soup = String::from("<p>");
+    for i in 0..100 {
+        soup.push_str(&format!("<b class=\"c{i}\">"));
+    }
+    soup.push_str(&"<p>x</p>".repeat(20_000));
+    assert!(parse_html_bounded(&soup, 50_000).is_err());
+    // ... and the same budget does not reject an ordinary document of that size.
+    let plain = format!("<html><body>{}</body></html>", "<p>x <b>y</b></p>".repeat(20_000));
+    let root = parse_html_bounded(&plain, 50_000).expect("plain document parses");
+    assert_eq!(root.find(&|e| e.name == "body").map(|b| b.children.len()), Some(20_000));
+
+    // Hundreds of thousands of unclosed nested elements: quadratic when unbounded.
+    assert!(parse_html(&"<div>".repeat(200_000)).is_err());
+
+    // Well-formed XHTML that only blows up when the canonical output is re-parsed
+    // as HTML (formatting elements wrapped around many paragraphs).
+    let mut body = String::from("<p>");
+    for i in 0..100 {
+        body.push_str(&format!("<b class=\"c{i}\">"));
+    }
+    body.push_str(&"<p>x</p>".repeat(1000));
+    body.push_str(&"</b>".repeat(100));
+    body.push_str("</p>");
+    let b = build_bytes(&one_chapter("", &body, &[]).build(), &EpubLimits::default());
+    let err = b.result.as_ref().err().expect("rejected");
+    assert_eq!(err.code, ErrorCode::LimitExceeded, "{err:?}");
+    assert_eq!(reason_of(err), Some("markup_too_complex"));
+
+    // One tag with a huge number of attributes (quadratic duplicate check in both
+    // tokenizers), as tag soup and as well-formed XHTML.
+    assert_eq!(max_attrs_per_tag("<p a b='x y' c=d e = \"f\"/><q x>"), 4);
+    assert_eq!(max_attrs_per_tag("</p a b c>"), 3);
+    assert_eq!(max_attrs_per_tag("<p a=\"<q b c d e\">"), 4);
+    let attrs: String = (0..100_000).map(|i| format!(" a{i}=\">\"")).collect();
+    assert_eq!(max_attrs_per_tag(&format!("<br><p{attrs}>x")), 100_000);
+    for doc in [format!("<p{attrs}>x<br>"), xhtml("C", "", &format!("<p{attrs}>x</p>"))] {
+        let b = build_bytes(&raw_chapter(&doc), &EpubLimits::default());
+        let err = b.result.as_ref().err().expect("rejected");
+        assert_eq!(err.code, ErrorCode::LimitExceeded, "{err:?}");
+        assert_eq!(reason_of(err), Some("markup_too_complex"));
+    }
+
+    // Tag soup beyond the size accepted by the error-recovering parser.
+    let big = format!("<p>unclosed{}", "<p>paragraph text".repeat(300_000));
+    let b = build_bytes(&raw_chapter(&big), &EpubLimits::default());
+    assert_eq!(b.result.as_ref().err().and_then(reason_of), Some("html_document_too_large"));
+
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "took {:?}", started.elapsed());
+}
+
+/// Finding 2: a bad token nested inside an attribute selector must not vanish and
+/// forge a comment opener that swallows the rest of the stylesheet.
+#[test]
+fn css_bad_token_cannot_forge_comment() {
+    use super::css::{sanitize_style_attr, sanitize_stylesheet};
+    use super::refs::CanonicalPolicy;
+    let pol = CanonicalPolicy { from_spine: None };
+    let src = concat!(
+        "a[b(/url(x y)*)]{color:red}",
+        r#"p{content:"*/)]{} *{position:fixed;z-index:99999;background:url(http://evil/x)} x{color:"}"#
+    );
+    let (out, _) = sanitize_stylesheet(src, &pol);
+    let out = out.unwrap_or_default();
+    assert!(!out.contains("/*"), "{out}");
+    assert!(!out.contains("position:fixed"), "{out}");
+    assert!(!out.contains("evil"), "{out}");
+    assert!(!out.contains("a["), "{out}");
+    // Nested blocks anywhere inside [...] are refused, plain attribute selectors stay.
+    let (out, _) = sanitize_stylesheet(r#"a[x=(y[url(a b)])]{color:red} a[href$=".png"]{color:blue}"#, &pol);
+    assert_eq!(out.as_deref(), Some("a[href$=\".png\"]{color:blue}\n"));
+    // Strings may not carry comment delimiters either.
+    let (out, _) = sanitize_stylesheet(r#"p::before{content:"/*"} q::after{content:"*/";color:red} a[title="/*"]{color:red}"#, &pol);
+    assert_eq!(out.as_deref(), Some("q::after{color:red}\n"));
+    let (attr, _) = sanitize_style_attr("color: red; margin: 1px/url(x y)*2", &pol);
+    assert_eq!(attr.as_deref(), Some("color:red"));
+
+    // End to end through an inline <style>.
+    let head = format!("<style>{}</style>", src.replace('<', ""));
+    let b = build_bytes(&one_chapter(&head, "<p>x</p>", &[]).build(), &EpubLimits::default());
+    b.result.as_ref().expect("builds");
+    assert_output_safe(&b.out);
+    let mut files = Vec::new();
+    all_files(&b.out, &mut files);
+    for f in files {
+        let text = String::from_utf8_lossy(&fs::read(&f).unwrap()).to_string();
+        assert!(!text.contains("/*") && !text.contains("evil"), "{}: {text}", f.display());
+    }
+}
+
+/// Finding 3: missing references are de-duplicated without a quadratic scan and
+/// only a bounded number is reported.
+#[test]
+fn missing_references_are_capped() {
+    use super::css::MAX_MISSING_RECORDED;
+    let mut body = String::new();
+    for i in 0..30_000 {
+        body.push_str(&format!("<img src=\"m{i}.png\" alt=\"\"/>"));
+    }
+    body.push_str("<img src=\"m0.png\" alt=\"\"/><p style=\"background:url(bg.png)\">x</p>");
+    let css = (0..5000).map(|i| format!("p.c{i}{{background:url(n{i}.png)}}")).collect::<String>();
+    let head = format!("<style>{css}</style>");
+    let started = std::time::Instant::now();
+    let b = build_bytes(&one_chapter(&head, &body, &[]).build(), &EpubLimits::default());
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "took {:?}", started.elapsed());
+    let pkg = b.result.as_ref().expect("builds");
+    let missing: Vec<&String> = pkg.restrictions.iter().filter(|r| r.starts_with("missing_resource:")).collect();
+    assert_eq!(missing.len(), MAX_MISSING_RECORDED);
+    assert!(pkg.restrictions.iter().any(|r| r == "missing_resources_truncated"), "{:?}", &pkg.restrictions[..5]);
+    let mut sorted = pkg.restrictions.clone();
+    sorted.sort();
+    sorted.dedup();
+    assert_eq!(sorted, pkg.restrictions);
+
+    // Below the cap nothing changes: every distinct path once, no marker.
+    let b = build_bytes(
+        &one_chapter("", "<img src=\"a.png\" alt=\"\"/><img src=\"a.png\" alt=\"\"/><img src=\"b.png\" alt=\"\"/>", &[]).build(),
+        &EpubLimits::default(),
+    );
+    let pkg = b.result.as_ref().expect("builds");
+    let missing: Vec<&str> =
+        pkg.restrictions.iter().filter(|r| r.starts_with("missing_resource")).map(|s| s.as_str()).collect();
+    assert_eq!(missing, ["missing_resource:OEBPS/text/a.png", "missing_resource:OEBPS/text/b.png"]);
+}
+
+/// Finding 4: all inline `<style>` elements of a document become one bounded resource.
+#[test]
+fn inline_styles_share_one_bounded_resource() {
+    use super::css::MAX_STYLESHEET_BYTES;
+    let css_files = |b: &Built| -> Vec<String> {
+        let pkg = b.result.as_ref().expect("builds");
+        pkg.resources.iter().filter(|r| r.mime == "text/css").map(|r| fs::read_to_string(b.out.join(&r.safe_href)).unwrap()).collect()
+    };
+    let body = format!("<p>x</p>{}", (0..500).map(|i| format!("<style>.b{i}{{color:blue}}</style>")).collect::<String>());
+    let b = build_bytes(
+        &one_chapter("<style>.h1{color:red}</style><style>.h2{color:green}</style>", &body, &[]).build(),
+        &EpubLimits::default(),
+    );
+    let files = css_files(&b);
+    assert_eq!(files.len(), 1, "one resource for 502 <style> elements");
+    assert!(files[0].starts_with(".h1{color:red}\n.h2{color:green}\n.b0{color:blue}\n.b1{color:blue}\n"), "{}", &files[0][..80]);
+    assert!(files[0].ends_with(".b499{color:blue}\n"));
+    let mut r = Vec::new();
+    all_files(&b.out.join("r"), &mut r);
+    assert_eq!(r.len(), 1);
+    let x = read_doc(&b.out, &b.result.as_ref().unwrap().spine[0]);
+    assert_eq!(x.matches("<link ").count(), 1, "{x}");
+    assert!(!b.result.as_ref().unwrap().restrictions.iter().any(|r| r == "inline_style_truncated"));
+
+    // Total size is capped at MAX_STYLESHEET_BYTES; the rest is dropped and reported.
+    let chunk = "p{color:red}".repeat(20_000); // ~260 KiB once sanitized
+    let head = (0..6).map(|i| format!("<style>.k{i}{{top:0}}{chunk}</style>")).collect::<String>();
+    let b = build_bytes(&one_chapter(&head, "<p>x</p>", &[]).build(), &EpubLimits::default());
+    let files = css_files(&b);
+    assert_eq!(files.len(), 1);
+    assert!(files[0].len() <= MAX_STYLESHEET_BYTES, "{}", files[0].len());
+    assert!(files[0].contains(".k0{top:0}") && files[0].contains(".k3{top:0}") && !files[0].contains(".k4{top:0}"));
+    assert!(b.result.as_ref().unwrap().restrictions.iter().any(|r| r == "inline_style_truncated"));
+}
+
+/// Finding 5: a zip64 record is honoured whenever the zip crate would use it (also
+/// when only the directory size/offset is saturated), before anything is allocated.
+#[test]
+fn zip64_declared_entry_count_is_checked() {
+    // ~300 KiB so that the declared count is plausible for the file size.
+    let mut bytes = one_chapter("", "<p>hello</p>", &[]).stored("OEBPS/pad.bin", &vec![0x55u8; 300 * 1024]).build();
+    let eocd = bytes.len() - 22;
+    assert_eq!(&bytes[eocd..eocd + 4], b"PK\x05\x06");
+    let mut tail = bytes.split_off(eocd);
+    let zip64_at = bytes.len() as u64;
+    let declared: u64 = 5000;
+    // zip64 end of central directory record
+    bytes.extend_from_slice(b"PK\x06\x06");
+    bytes.extend_from_slice(&44u64.to_le_bytes());
+    bytes.extend_from_slice(&45u16.to_le_bytes());
+    bytes.extend_from_slice(&45u16.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&declared.to_le_bytes());
+    bytes.extend_from_slice(&declared.to_le_bytes());
+    bytes.extend_from_slice(&(declared * 46).to_le_bytes());
+    bytes.extend_from_slice(&6000u64.to_le_bytes());
+    // zip64 locator
+    bytes.extend_from_slice(b"PK\x06\x07");
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&zip64_at.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    // The 16-bit entry count stays small and honest; only the directory size is saturated.
+    tail[12..16].copy_from_slice(&u32::MAX.to_le_bytes());
+    bytes.extend_from_slice(&tail);
+
+    let limits = EpubLimits { max_entries: 100, ..EpubLimits::default() };
+    let b = build_bytes(&bytes, &limits);
+    let err = b.result.as_ref().err().expect("rejected");
+    assert_eq!(err.code, ErrorCode::LimitExceeded, "{err:?}");
+    assert_eq!(reason_of(err), Some("too_many_entries"));
+
+    // The untouched archive is fine under the same limits.
+    let ok = one_chapter("", "<p>hello</p>", &[]).stored("OEBPS/pad.bin", &vec![0x55u8; 300 * 1024]).build();
+    assert!(build_bytes(&ok, &limits).result.is_ok());
+}
+
+/// Finding 6: SVG `<use>` chains and floods are cut down.
+#[test]
+fn svg_use_chains_and_floods_are_limited() {
+    let svg = |inner: &str| format!("<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 9 9\">{inner}</svg>");
+    // Chain: l1 = 3 x l0, l2 = 3 x l1, ... each level multiplies the shapes.
+    let mut defs = String::from("<defs><rect id=\"l0\" width=\"1\" height=\"1\"/>");
+    for i in 1..=10 {
+        defs.push_str(&format!("<g id=\"l{i}\">{}</g>", format!("<use href=\"#l{}\"/>", i - 1).repeat(3)));
+    }
+    defs.push_str("</defs><use href=\"#l10\"/><use xmlns:xlink=\"http://www.w3.org/1999/xlink\" xlink:href=\"#l1\"/><use href=\"#l0\"/>");
+    let b = build_bytes(&one_chapter("", &svg(&defs), &[]).build(), &EpubLimits::default());
+    let pkg = b.result.as_ref().expect("builds");
+    assert!(pkg.restrictions.iter().any(|r| r == "svg_use_removed"), "{:?}", pkg.restrictions);
+    assert!(!pkg.restrictions.iter().any(|r| r.starts_with("markup_unstable")));
+    let x = read_doc(&b.out, &pkg.spine[0]);
+    // Only references to the plain shape survive: 3 inside l1 and the direct one.
+    assert_eq!(x.matches("<use ").count(), 4, "{x}");
+    assert_eq!(x.matches("<use href=\"#l0\"/>").count(), 4, "{x}");
+
+    // Flood of direct references: capped per document.
+    let flood = format!("<defs><rect id=\"s\" width=\"1\" height=\"1\"/></defs>{}", "<use href=\"#s\"/>".repeat(1500));
+    let b = build_bytes(&one_chapter("", &svg(&flood), &[]).build(), &EpubLimits::default());
+    let pkg = b.result.as_ref().expect("builds");
+    assert!(pkg.restrictions.iter().any(|r| r == "svg_use_removed"));
+    assert_eq!(read_doc(&b.out, &pkg.spine[0]).matches("<use ").count(), 1000);
+
+    // A few references to a large group: capped by total instantiated elements.
+    let big = format!(
+        "<defs><g id=\"big\">{}</g></defs>{}",
+        "<rect width=\"1\" height=\"1\"/>".repeat(30_000),
+        "<use href=\"#big\"/>".repeat(10)
+    );
+    let b = build_bytes(&one_chapter("", &svg(&big), &[]).build(), &EpubLimits::default());
+    let pkg = b.result.as_ref().expect("builds");
+    assert_eq!(read_doc(&b.out, &pkg.spine[0]).matches("<use ").count(), 3);
+
+    // Standalone SVG resources get the same treatment; a benign one is untouched.
+    let res = svg("<g id=\"a\"><use href=\"#b\"/></g><g id=\"b\"><use href=\"#a\"/></g><rect id=\"ok\" width=\"1\" height=\"1\"/><use href=\"#ok\"/>");
+    let b = build_bytes(
+        &one_chapter("", "<p><img src=\"../i.svg\" alt=\"\"/></p>", &[("i.svg", res.as_bytes(), "image/svg+xml")]).build(),
+        &EpubLimits::default(),
+    );
+    let pkg = b.result.as_ref().expect("builds");
+    let r = pkg.resources.iter().find(|r| r.mime == "image/svg+xml").expect("svg resource");
+    let text = fs::read_to_string(b.out.join(&r.safe_href)).unwrap();
+    assert_eq!(text.matches("<use ").count(), 1, "{text}");
+    assert!(text.contains("<use href=\"#ok\"/>"), "{text}");
+}
+
+/// Finding 7: CSS-escaped `url(` in SVG presentation attributes is refused.
+#[test]
+fn svg_paint_rejects_css_escapes() {
+    let body = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9">
+<linearGradient id="grad"><stop offset="0" stop-color="red"/></linearGradient>
+<rect id="a" fill="\75rl(http://evil.example/f)" stroke="\55 RL(//evil.example/s)" width="1" height="1"/>
+<rect id="b" mask="u\72l(http://evil.example/m)" clip-path="\000075rl(http://evil.example/c)" marker-end="ur\6c (http://evil.example/e)"/>
+<rect id="c" fill="url(#grad)" stroke="#fff" width="2" height="2"/></svg>"##;
+    let b = build_bytes(&one_chapter("", body, &[]).build(), &EpubLimits::default());
+    let pkg = b.result.as_ref().expect("builds");
+    assert_output_safe(&b.out);
+    let x = read_doc(&b.out, &pkg.spine[0]);
+    assert!(!x.contains('\\') && !x.contains("evil"), "{x}");
+    assert!(x.contains("<rect id=\"a\" width=\"1\" height=\"1\"/>"), "{x}");
+    assert!(x.contains("<rect id=\"b\"/>"), "{x}");
+    assert!(x.contains("<rect id=\"c\" fill=\"url(#grad)\" stroke=\"#fff\" width=\"2\" height=\"2\"/>"), "{x}");
+}

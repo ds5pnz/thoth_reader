@@ -92,7 +92,11 @@ export function useReaderSession(documentId: string) {
       setBlocks((prev) => new Map(prev).set(sectionId, all));
       setDisplay((prev) => {
         const m = new Map(prev);
-        for (const d of disp) m.set(d.blockId, d);
+        for (const d of disp) {
+          // A commit event that arrived while this request was in flight is newer.
+          const cur = m.get(d.blockId);
+          if (!cur || (cur.headVersion ?? 0) <= (d.headVersion ?? 0)) m.set(d.blockId, d);
+        }
         return m;
       });
     } catch {
@@ -188,7 +192,8 @@ export function useReaderSession(documentId: string) {
   const setGeneration = useCallback((generation: number) => {
     const s = sessionRef.current;
     if (!s) return;
-    const next = { ...s, generation };
+    // Responses of two quick switches can arrive out of order; a generation never goes back.
+    const next = { ...s, generation: Math.max(s.generation, generation) };
     sessionRef.current = next;
     setSession(next);
     setJobs(new Map());

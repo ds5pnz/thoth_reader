@@ -12,7 +12,10 @@ pub async fn snapshot(pool: &SqlitePool, dir: &Path, label: &str) -> AppResult<P
     let tmp = dir.join(format!("{name}.partial"));
     let _ = std::fs::remove_file(&tmp);
     // Path is app-controlled (no user input) but still bind it as a parameter.
-    sqlx::query("VACUUM INTO ?").bind(tmp.to_string_lossy().to_string()).execute(pool).await?;
+    if let Err(e) = sqlx::query("VACUUM INTO ?").bind(tmp.to_string_lossy().to_string()).execute(pool).await {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     std::fs::rename(&tmp, &target)?;
     Ok(target)
 }
@@ -42,6 +45,10 @@ pub fn prune(dir: &Path, keep: usize) {
             }
         }
     }
+}
+
+pub fn has_recovery(dir: &Path) -> bool {
+    std::fs::read_dir(dir).map(|rd| rd.flatten().any(|e| e.file_name().to_string_lossy().ends_with("-recovery.sqlite"))).unwrap_or(false)
 }
 
 pub fn mark_latest_as_recovery(dir: &Path) {

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ModalBackdrop } from '../../app/Modal';
 import { call, errorMessage, mutate } from '../../ipc/client';
 import { useSettings } from '../../app/settings';
 import type { ProviderRow } from '../../ipc/generated/ProviderRow';
@@ -11,7 +12,7 @@ type Tab = 'translation' | 'reading' | 'glossary' | 'data';
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('translation');
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="settings-title" onKeyDown={(e) => { if (e.key === 'Escape') onClose(); }}>
+    <ModalBackdrop role="dialog" aria-labelledby="settings-title" onClose={onClose}>
       <div className="modal settings">
         <header>
           <h2 id="settings-title">설정</h2>
@@ -29,7 +30,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
           {tab === 'data' && <DataSettings />}
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
 

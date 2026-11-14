@@ -39,6 +39,11 @@ function statusOf(d: BlockDisplay | undefined, job: JobView | undefined, autoAct
   return null;
 }
 
+// Unsaved edits live outside the row: rows are virtualized and unmount when scrolled away,
+// and an edit in progress must survive that (and keep the unsaved-changes guard armed).
+const drafts = new Map<string, string>();
+export function clearDrafts() { drafts.clear(); }
+
 export const TranslationCell = memo(function TranslationCell(props: {
   block: Block;
   display: BlockDisplay | undefined;
@@ -51,8 +56,11 @@ export const TranslationCell = memo(function TranslationCell(props: {
   detailed?: boolean;
 }) {
   const { block, display, job, preview, autoActive, targetLanguage, actions, detailed = false } = props;
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState('');
+  const draftKey = `${block.id}|${targetLanguage}`;
+  const [editing, setEditingState] = useState(() => drafts.has(draftKey));
+  const [draft, setDraftState] = useState(() => drafts.get(draftKey) ?? '');
+  const setDraft = (v: string) => { drafts.set(draftKey, v); setDraftState(v); };
+  const setEditing = (on: boolean) => { if (!on) drafts.delete(draftKey); setEditingState(on); };
   const [saving, setSaving] = useState(false);
   const [conflict, setConflict] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -79,7 +87,8 @@ export const TranslationCell = memo(function TranslationCell(props: {
     actions.setDirty(block.id, dirty, dirty ? save : undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dirty, draft]);
-  useEffect(() => () => actions.setDirty(block.id, false), [actions, block.id]);
+  // Scrolled away with an unsaved draft: stay registered so leaving the view still asks.
+  useEffect(() => () => { if (!drafts.has(draftKey)) actions.setDirty(block.id, false); }, [actions, block.id, draftKey]);
 
   const startEdit = () => {
     setDraft(shownText || preview || '');

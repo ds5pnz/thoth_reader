@@ -5,10 +5,12 @@
 //! Output is a new tree containing only allow-listed HTML/SVG/MathML elements and
 //! attributes, with every reference rewritten through a [`UrlPolicy`].
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use super::css::{sanitize_style_attr, sanitize_stylesheet, CssReport};
-use super::dom::{clean_text, parse_html, serialize_document, serialize_fragment, Element, Node, Ns, MAX_DEPTH};
+use super::css::{sanitize_style_attr, sanitize_stylesheet, CssReport, MissingSet, MAX_STYLESHEET_BYTES};
+use super::dom::{
+    clean_text, parse_html, serialize_document, serialize_fragment, Element, HtmlLimit, Node, Ns, MAX_DEPTH,
+};
 use super::paths::is_safe_id;
 use super::refs::{CanonicalPolicy, DropReason, RefUse, Resolved, UrlPolicy};
 use super::CONTENT_CSP;
@@ -26,7 +28,11 @@ pub(crate) struct DocReport {
     pub meta_removed: bool,
     pub mathml_fallback: bool,
     pub rtl: bool,
-    pub missing: Vec<String>,
+    /// Inline `<style>` content beyond [`MAX_STYLESHEET_BYTES`] per document was dropped.
+    pub inline_style_truncated: bool,
+    /// SVG `<use>` elements were dropped (chained references or over the caps).
+    pub svg_use_removed: bool,
+    pub missing: MissingSet,
     pub css: CssReport,
 }
 
@@ -35,11 +41,7 @@ impl DocReport {
         match r {
             DropReason::Remote => self.css.remote_removed = true,
             DropReason::Scheme | DropReason::Invalid | DropReason::Outside => self.unsafe_url_removed = true,
-            DropReason::Missing(p) => {
-                if !self.missing.contains(p) {
-                    self.missing.push(p.clone());
-                }
-            }
+            DropReason::Missing(p) => self.missing.insert(p),
             DropReason::WrongKind => {}
         }
     }
@@ -50,7 +52,9 @@ impl DocReport {
 pub(crate) enum StyleRef {
     /// Canonical href of a sanitized stylesheet resource.
     Link(String),
-    /// Sanitized CSS of an inline `<style>` element (urls relative to `r/`).
+    /// Sanitized CSS of all inline `<style>` elements of the document, concatenated
+    /// in document order (urls relative to `r/`). At most one per document, at the
+    /// position of the first `<style>`.
     Inline(String),
 }
 
@@ -181,9 +185,18 @@ fn short_text(v: &str, max_chars: usize) -> String {
     clean_text(v).chars().take(max_chars).collect()
 }
 
+/// `<use>` elements kept per document.
+const MAX_SVG_USE: usize = 1000;
+/// Total number of elements all kept `<use>` references may instantiate.
+const MAX_SVG_USE_INSTANCES: usize = 100_000;
+
 /// `url(#id)` (with optional whitespace) is the only url form allowed in SVG
 /// presentation attributes.
 fn svg_paint_ok(v: &str) -> bool {
+    // CSS escapes (`\75rl(...)`) would hide a url() from the substring scan below.
+    if v.contains('\\') {
+        return false;
+    }
     let l = v.to_ascii_lowercase();
     if l.contains("javascript:") || l.contains("expression") {
         return false;
@@ -265,6 +278,7 @@ impl<'a> Sanitizer<'a> {
             self.report.rtl = true;
         }
         self.html_children(body_src, &mut body, 1);
+        self.limit_svg_use(&mut body);
         SanitizedDoc { body, lang, dir, title: self.title.take(), styles: std::mem::take(&mut self.styles), report: self.report }
     }
 
@@ -301,10 +315,93 @@ impl<'a> Sanitizer<'a> {
         let css = e.text_content();
         let (out, rep) = sanitize_stylesheet(&css, sp);
         self.report.css.merge(&rep);
-        if let Some(out) = out {
-            if !out.trim().is_empty() {
-                self.styles.push(StyleRef::Inline(out));
+        let Some(out) = out else { return };
+        if out.trim().is_empty() {
+            return;
+        }
+        // All inline styles of a document share one resource, capped in size.
+        let existing = self.styles.iter_mut().find_map(|s| match s {
+            StyleRef::Inline(css) => Some(css),
+            StyleRef::Link(_) => None,
+        });
+        let used = existing.as_ref().map(|c| c.len()).unwrap_or(0);
+        if used.saturating_add(out.len()) > MAX_STYLESHEET_BYTES {
+            self.report.inline_style_truncated = true;
+            return;
+        }
+        match existing {
+            Some(css) => css.push_str(&out),
+            None => self.styles.push(StyleRef::Inline(out)),
+        }
+    }
+
+    /// Bound SVG `<use>` instantiation: no `<use>` may reference a subtree that
+    /// itself contains (or is) a `<use>` (reference chains multiply in the
+    /// renderer), at most [`MAX_SVG_USE`] are kept, and together they may clone at
+    /// most [`MAX_SVG_USE_INSTANCES`] elements. Ids are unique after sanitizing.
+    fn limit_svg_use(&mut self, root: &mut Element) {
+        /// Returns (element count, contains-or-is `<use>`) of `e`'s subtree.
+        fn index(e: &Element, targets: &mut HashMap<String, (usize, bool)>, uses: &mut usize) -> (usize, bool) {
+            let is_use = e.is(Ns::Svg, "use");
+            if is_use {
+                *uses += 1;
             }
+            let mut size = 1usize;
+            let mut has_use = is_use;
+            for c in e.child_elements() {
+                let (s, u) = index(c, targets, uses);
+                size = size.saturating_add(s);
+                has_use |= u;
+            }
+            if let Some(id) = e.attr("id") {
+                targets.insert(id.to_string(), (size, has_use));
+            }
+            (size, has_use)
+        }
+        struct Prune<'t> {
+            targets: &'t HashMap<String, (usize, bool)>,
+            kept: usize,
+            instances: usize,
+            removed: bool,
+        }
+        fn prune(e: &mut Element, st: &mut Prune<'_>) {
+            e.children.retain_mut(|c| {
+                let Node::Element(ch) = c else { return true };
+                if !ch.is(Ns::Svg, "use") {
+                    prune(ch, st);
+                    return true;
+                }
+                let target = ch.attr("href").and_then(|h| h.strip_prefix('#')).and_then(|id| st.targets.get(id));
+                let keep = match target {
+                    // Dangling reference: renders nothing, costs nothing.
+                    None => st.kept < MAX_SVG_USE,
+                    Some((size, has_use)) => {
+                        !has_use
+                            && st.kept < MAX_SVG_USE
+                            && st.instances.saturating_add(*size) <= MAX_SVG_USE_INSTANCES
+                    }
+                };
+                if keep {
+                    st.kept += 1;
+                    st.instances = st.instances.saturating_add(target.map(|t| t.0).unwrap_or(0));
+                    // Children of <use> (title/desc) cannot hold further <use>.
+                    prune(ch, st);
+                } else {
+                    st.removed = true;
+                }
+                keep
+            });
+        }
+        let mut targets = HashMap::new();
+        let mut uses = 0usize;
+        index(root, &mut targets, &mut uses);
+        if uses == 0 {
+            return;
+        }
+        let mut st = Prune { targets: &targets, kept: 0, instances: 0, removed: false };
+        prune(root, &mut st);
+        if st.removed {
+            self.report.svg_use_removed = true;
         }
     }
 
@@ -733,21 +830,28 @@ pub(crate) fn assemble(head: &Head, body: Element) -> Element {
 
 /// Serialize, then re-parse with the HTML parser and re-sanitize until the output
 /// is a fixpoint, so that the XML DOM and the HTML (srcdoc) DOM are identical.
-/// Returns (xhtml, converged).
-pub(crate) fn canonicalize(head: &Head, body: Element, spine_index: u32) -> (String, bool) {
+/// Returns (xhtml, converged), or [`HtmlLimit`] when re-parsing exhausts the HTML
+/// parser budgets or a pass grows the document instead of converging.
+pub(crate) fn canonicalize(head: &Head, body: Element, spine_index: u32) -> Result<(String, bool), HtmlLimit> {
     let mut xhtml = serialize_document(&assemble(head, body));
     for _ in 0..4 {
-        let reparsed = parse_html(&xhtml);
+        let reparsed = parse_html(&xhtml)?;
         let pol = CanonicalPolicy { from_spine: Some(spine_index) };
         let doc = Sanitizer::new(&pol, None).document(&reparsed);
         let next = serialize_document(&assemble(head, doc.body));
         if next == xhtml {
-            return (xhtml, true);
+            return Ok((xhtml, true));
+        }
+        // A re-parse may legitimately reshuffle a little markup, never multiply it.
+        if next.len() > xhtml.len().saturating_mul(2).saturating_add(CANONICAL_GROWTH_SLACK) {
+            return Err(HtmlLimit);
         }
         xhtml = next;
     }
-    (xhtml, false)
+    Ok((xhtml, false))
 }
+
+const CANONICAL_GROWTH_SLACK: usize = 64 * 1024;
 
 /// Sanitize a standalone SVG image resource. Returns serialized XML or None.
 pub(crate) fn sanitize_svg_resource(root: &Element, policy: &dyn UrlPolicy) -> (Option<String>, DocReport) {
@@ -770,7 +874,11 @@ pub(crate) fn sanitize_svg_resource(root: &Element, policy: &dyn UrlPolicy) -> (
     if root.ns != Ns::Svg {
         set_svg(&mut fixed);
     }
-    let out = s.svg_element(&fixed, 0);
+    let mut out = s.svg_element(&fixed, 0);
+    if let Some(svg) = out.as_mut() {
+        // The root itself is never a <use>; everything below it is checked.
+        s.limit_svg_use(svg);
+    }
     let report = s.report.clone();
     match out {
         Some(svg) => {

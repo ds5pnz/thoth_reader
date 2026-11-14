@@ -151,6 +151,7 @@ pub fn run() {
                 allowed_origins: allowed_origins(),
                 library_assets: Default::default(),
                 epub_prepare: Default::default(),
+                import_lock: Default::default(),
             });
             app.manage(core.clone());
             tauri::async_runtime::spawn(document::epub::backfill_library(core.clone()));

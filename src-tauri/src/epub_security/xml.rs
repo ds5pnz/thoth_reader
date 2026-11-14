@@ -4,10 +4,12 @@
 //! document whose DOCTYPE carries an internal subset or ENTITY declaration, so
 //! billion-laughs / external-entity inputs fail cleanly instead of being half-parsed.
 
+use std::collections::HashSet;
+
 use quick_xml::events::Event;
 use quick_xml::Reader;
 
-use super::dom::{Element, Node, Ns, MAX_DEPTH, NS_OPS, NS_XLINK, NS_XML};
+use super::dom::{Element, Node, Ns, MAX_DEPTH, MAX_TAG_ATTRS, NS_OPS, NS_XLINK, NS_XML};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum XmlError {
@@ -257,9 +259,19 @@ impl State {
         }
         let mut scope = Scope { default_ns: None, prefixes: Vec::new() };
         let mut raw_attrs: Vec<(String, String)> = Vec::new();
-        for a in e.attributes() {
+        // quick-xml's own duplicate check is quadratic in the attribute count.
+        let mut attributes = e.attributes();
+        attributes.with_checks(false);
+        let mut seen: HashSet<String> = HashSet::new();
+        for a in attributes {
             let a = a.map_err(|e| XmlError::Malformed(e.to_string()))?;
+            if seen.len() >= MAX_TAG_ATTRS {
+                return Err(XmlError::Malformed("too many attributes".into()));
+            }
             let key: &str = a.key.as_ref();
+            if !seen.insert(key.to_string()) {
+                return Err(XmlError::Malformed("duplicate attribute".into()));
+            }
             let value = unescape_attr(&a.value, html_entities)?;
             if key == "xmlns" {
                 scope.default_ns = Some(value);

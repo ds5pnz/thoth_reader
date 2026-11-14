@@ -142,7 +142,7 @@ fn error_chain(e: &dyn std::error::Error) -> String {
 fn redacted_chain(e: &reqwest::Error) -> String {
     // reqwest includes the URL in Display; ErrWrap omits it so queries/paths never reach logs.
     let mut s = error_chain(&ErrWrap(e));
-    s.truncate(300);
+    crate::diagnostics::truncate_at_char(&mut s, 300);
     crate::diagnostics::redact(&s)
 }
 

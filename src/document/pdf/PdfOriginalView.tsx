@@ -140,7 +140,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
           void doc.getPage(i + 1).then((pg) => {
             const vp = pg.getViewport({ scale: 1 });
             setBases((prev) => prev.map((m) => (m.index === i ? { ...m, proxy: pg, bw: vp.width, bh: vp.height } : m)));
-          });
+          }).catch(() => {});
         }
       }
     }
@@ -285,6 +285,13 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     },
   }), [anchorId, scrollToBlockImpl, model.sections, pages, blocksByPage]);
 
+  const sectionStateByPage = useMemo(() => new Map(model.sections.map((s) => [Number(s.ordinal), s.state] as const)), [model.sections]);
+  // Pages that left the live window give their canvas (already zeroed) and sizes back.
+  useEffect(() => {
+    for (const k of [...canvases.current.keys()]) if (!live.has(k)) { canvases.current.delete(k); itemSizes.current.delete(k); }
+    setRendered((prev) => ([...prev.keys()].every((k) => live.has(k)) ? prev : new Map([...prev].filter(([k]) => live.has(k)))));
+  }, [live]);
+
   if (error) return <div className="banner warn">PDF를 열 수 없습니다: {error}</div>;
 
   const selected = selectedId ? [...blocksByPage.values()].flat().find((b) => b.id === selectedId) ?? null : null;
@@ -304,7 +311,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
                 scale={scale}
                 live={isLive}
                 blocks={blocks}
-                sectionState={model.sections.find((s) => Number(s.ordinal) === pm.index)?.state}
+                sectionState={sectionStateByPage.get(pm.index)}
                 highlightBlockId={hlId}
                 onPick={(b) => { setAnchorId(b.id); setSelectedId(b.id); }}
                 onRendered={(c, items) => { canvases.current.set(pm.index, c); itemSizes.current.set(pm.index, items); setRendered((prev) => new Map(prev).set(pm.index, (prev.get(pm.index) ?? 0) + 1)); }}
@@ -350,11 +357,18 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
   const textRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!live || !doc || !canvasRef.current) return;
+    // Keep the element itself: when the page leaves the live window the <canvas> unmounts in
+    // the same commit and the ref is already null by the time this cleanup runs.
+    const ownCanvas = canvasRef.current;
     let cancelled = false;
     let task: { cancel(): void; promise: Promise<void> } | null = null;
     let page: PDFPageProxy | null = null;
     void (async () => {
-      page = await doc.getPage(meta.index + 1);
+      try {
+        page = await doc.getPage(meta.index + 1);
+      } catch {
+        return; // damaged page object: leave the page blank
+      }
       if (cancelled || !canvasRef.current) return;
       const dpr = window.devicePixelRatio || 1;
       const vp = page.getViewport({ scale: scale * dpr });
@@ -383,7 +397,8 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
       cancelled = true;
       task?.cancel();
       // Free the canvas backing store when the page leaves the live window.
-      if (canvasRef.current) { canvasRef.current.width = 0; canvasRef.current.height = 0; }
+      ownCanvas.width = 0;
+      ownCanvas.height = 0;
       textRef.current?.replaceChildren();
       page?.cleanup();
     };
@@ -399,7 +414,7 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
     if (b) onPick(b);
   };
   return (
-    <div className="pdf-page" data-page={meta.index} style={{ width: meta.width, height: meta.height, ['--scale-factor' as string]: scale }} onClick={onClick}>
+    <div className="pdf-page" data-page={meta.index} style={{ width: meta.width, height: meta.height, ['--scale-factor' as string]: scale, ['--total-scale-factor' as string]: scale }} onClick={onClick}>
       {live ? <canvas ref={canvasRef} aria-hidden="true" /> : null}
       <div ref={textRef} className="textLayer" />
       {hl && hl.location.kind === 'pdf' && meta.viewport && hl.location.rects.map((r, i) => {

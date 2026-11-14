@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ModalBackdrop } from '../../app/Modal';
 import { listen } from '@tauri-apps/api/event';
 import { call, errorMessage, mutate } from '../../ipc/client';
 import type { DocumentRow } from '../../ipc/generated/DocumentRow';
@@ -72,10 +73,13 @@ export function Library({ onOpen, onSettings }: { onOpen: (id: string) => void; 
   const [dragging, setDragging] = useState(false);
   const toast = useToast();
   const polls = useRef(0);
+  const patches = useRef(new Map<string, Record<string, unknown>>());
 
   const load = useCallback(async () => {
     try {
-      setDocs(await fetchAll());
+      const rows = await fetchAll();
+      // A reload that started before a PDF cover was stored must not undo that row.
+      setDocs(rows.map((d) => (patches.current.has(d.id) && d.metadata?.libraryMeta == null ? { ...d, metadata: { ...d.metadata, ...patches.current.get(d.id) } } : d)));
     } catch (e) {
       setDocs((d) => d ?? []);
       toast({ kind: 'error', text: errorMessage(e) });
@@ -88,6 +92,7 @@ export function Library({ onOpen, onSettings }: { onOpen: (id: string) => void; 
   }, [load]);
 
   const patchDoc = useCallback((id: string, patch: Record<string, unknown>) => {
+    patches.current.set(id, patch);
     setDocs((prev) => prev && prev.map((d) => (d.id === id ? { ...d, metadata: { ...d.metadata, ...patch } } : d)));
   }, []);
 
@@ -217,7 +222,7 @@ export function Library({ onOpen, onSettings }: { onOpen: (id: string) => void; 
         </ul>
       )}
       {confirmDelete && (
-        <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="del-title">
+        <ModalBackdrop role="dialog" aria-labelledby="del-title" onClose={() => setConfirmDelete(null)}>
           <div className="modal" style={{ width: 440 }}>
             <header><h2 id="del-title">책을 삭제할까요?</h2></header>
             <div className="body">
@@ -229,7 +234,7 @@ export function Library({ onOpen, onSettings }: { onOpen: (id: string) => void; 
               <button className="btn primary" onClick={() => void doDelete(confirmDelete)}>삭제</button>
             </footer>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
     </div>
   );

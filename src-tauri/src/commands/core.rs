@@ -23,6 +23,8 @@ pub struct AppCore {
     pub library_assets: crate::document::asset::LibraryAssets,
     /// Serializes EPUB safe-package builds (import, backfill and open may race).
     pub epub_prepare: tokio::sync::Mutex<()>,
+    /// Serializes imports (duplicate check + insert).
+    pub import_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Debug, Clone, Deserialize, TS)]

@@ -55,35 +55,122 @@ pub(crate) struct SafeZip {
     total_read: u64,
 }
 
-/// Read the entry count from the End Of Central Directory record (zip64 aware)
-/// without letting the zip crate allocate the whole central directory.
-fn eocd_entry_count(f: &mut File, file_len: u64) -> Option<u64> {
-    let tail_len = file_len.min(65_535 + 22);
-    f.seek(SeekFrom::Start(file_len - tail_len)).ok()?;
+const EOCD_SIG: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+const ZIP64_LOCATOR_SIG: [u8; 4] = [0x50, 0x4b, 0x06, 0x07];
+const ZIP64_EOCD_SIG: [u8; 4] = [0x50, 0x4b, 0x06, 0x06];
+const EOCD_LEN: usize = 22;
+const ZIP64_LOCATOR_LEN: usize = 20;
+const ZIP64_EOCD_LEN: usize = 56;
+/// Minimum size of one central directory record.
+const CD_RECORD_MIN: u64 = 46;
+
+fn le16(b: &[u8], at: usize) -> Option<u64> {
+    let s = b.get(at..at.checked_add(2)?)?;
+    Some(u16::from_le_bytes(s.try_into().ok()?) as u64)
+}
+
+fn le32(b: &[u8], at: usize) -> Option<u64> {
+    let s = b.get(at..at.checked_add(4)?)?;
+    Some(u32::from_le_bytes(s.try_into().ok()?) as u64)
+}
+
+fn le64(b: &[u8], at: usize) -> Option<u64> {
+    let s = b.get(at..at.checked_add(8)?)?;
+    Some(u64::from_le_bytes(s.try_into().ok()?))
+}
+
+/// Check the declared entry count before the zip crate sizes its tables from it.
+///
+/// The crate picks an End Of Central Directory record by scanning backwards (and
+/// may fall back to an earlier signature), and switches to the zip64 record when
+/// the 16-bit count, the 32-bit directory size *or* the 32-bit directory offset
+/// is saturated. So every candidate record in the tail is checked, and for each
+/// one that can go zip64 the 64-bit count is the one that has to be within limits.
+fn check_declared_entries(f: &mut File, file_len: u64, max_entries: u64) -> Result<(), AppError> {
+    let not_zip = || unsupported("not_a_zip");
+    // EOCD + maximum comment, with a margin that covers the crate's slightly wider
+    // search window and a zip64 locator in front of the earliest candidate.
+    let tail_len = file_len.min((EOCD_LEN + 65_536 + 256) as u64);
+    let tail_start = file_len - tail_len;
+    f.seek(SeekFrom::Start(tail_start)).map_err(|_| not_zip())?;
     let mut tail = vec![0u8; tail_len as usize];
-    f.read_exact(&mut tail).ok()?;
-    let pos = (0..tail.len().saturating_sub(21))
-        .rev()
-        .find(|&i| tail[i..i + 4] == [0x50, 0x4b, 0x05, 0x06])?;
-    let total = u16::from_le_bytes([tail[pos + 10], tail[pos + 11]]) as u64;
-    if total != 0xFFFF {
-        return Some(total);
+    f.read_exact(&mut tail).map_err(|_| not_zip())?;
+
+    let mut newest = true;
+    let mut found = false;
+    for pos in (0..tail.len().saturating_sub(EOCD_LEN - 1)).rev() {
+        if tail.get(pos..pos + 4) != Some(&EOCD_SIG[..]) {
+            continue;
+        }
+        let (Some(entries_disk), Some(entries), Some(cd_size), Some(cd_offset)) =
+            (le16(&tail, pos + 8), le16(&tail, pos + 10), le32(&tail, pos + 12), le32(&tail, pos + 16))
+        else {
+            continue;
+        };
+        found = true;
+        let is_newest = std::mem::replace(&mut newest, false);
+
+        // Same decision as the crate: zip64 is used iff a field is saturated and a
+        // zip64 locator directly precedes this record.
+        let may_be_zip64 = entries == 0xFFFF || cd_size == 0xFFFF_FFFF || cd_offset == 0xFFFF_FFFF;
+        let locator = pos
+            .checked_sub(ZIP64_LOCATOR_LEN)
+            .filter(|&loc| may_be_zip64 && tail.get(loc..loc + 4) == Some(&ZIP64_LOCATOR_SIG[..]));
+        let Some(loc) = locator else {
+            // Plain record: the 16-bit count is what the crate allocates for. Only
+            // the record it tries first is authoritative (older ones may be stray
+            // signatures and can never declare more than 65535 entries).
+            if is_newest && entries.max(entries_disk) > max_entries {
+                return Err(limit("too_many_entries"));
+            }
+            continue;
+        };
+        let (Some(loc_disk), Some(rec_off)) = (le32(&tail, loc + 4), le64(&tail, loc + 8)) else { continue };
+        let loc_abs = tail_start + loc as u64;
+        if rec_off >= loc_abs {
+            continue; // the crate rejects this candidate outright
+        }
+        // Whatever zip64 record the crate ends up using lies before the locator and
+        // satisfies `entries * 46 <= record offset`. If that alone keeps the count
+        // within limits the layout does not matter; otherwise the record must be
+        // exactly where the locator says and be the one the crate accepts without
+        // searching for another signature, so that its count can be trusted.
+        let must_pin = loc_abs / CD_RECORD_MIN > max_entries;
+        let mut rec = [0u8; ZIP64_EOCD_LEN];
+        let read_ok = f.seek(SeekFrom::Start(rec_off)).is_ok() && f.read_exact(&mut rec).is_ok();
+        let fields = (
+            le64(&rec, 4),
+            le32(&rec, 16),
+            le32(&rec, 20),
+            le64(&rec, 24),
+            le64(&rec, 32),
+            le64(&rec, 40),
+            le64(&rec, 48),
+        );
+        let (true, (Some(rec_size), Some(disk), Some(cd_disk), Some(n_disk), Some(n), Some(cd_size64), Some(cd_off64))) =
+            (read_ok && rec.get(0..4) == Some(&ZIP64_EOCD_SIG[..]), fields)
+        else {
+            if must_pin {
+                return Err(unsupported("zip64_layout"));
+            }
+            continue;
+        };
+        if n.max(n_disk) > max_entries {
+            return Err(limit("too_many_entries"));
+        }
+        let fits = n.checked_mul(CD_RECORD_MIN).and_then(|v| v.checked_add(cd_off64)).is_some_and(|v| v <= rec_off)
+            && cd_size64 <= file_len;
+        let pinned =
+            rec_size.checked_add(12) == Some(loc_abs - rec_off) && disk == 0 && cd_disk == loc_disk && n_disk == n && fits;
+        if must_pin && !pinned {
+            return Err(unsupported("zip64_layout"));
+        }
     }
-    // zip64 EOCD locator sits 20 bytes before the EOCD.
-    if pos < 20 || tail[pos - 20..pos - 16] != [0x50, 0x4b, 0x06, 0x07] {
-        return Some(total);
+    if found {
+        Ok(())
+    } else {
+        Err(not_zip())
     }
-    let off = u64::from_le_bytes(tail[pos - 12..pos - 4].try_into().ok()?);
-    if off >= file_len {
-        return None;
-    }
-    f.seek(SeekFrom::Start(off)).ok()?;
-    let mut rec = [0u8; 56];
-    f.read_exact(&mut rec).ok()?;
-    if rec[0..4] != [0x50, 0x4b, 0x06, 0x06] {
-        return None;
-    }
-    Some(u64::from_le_bytes(rec[32..40].try_into().ok()?))
 }
 
 impl SafeZip {
@@ -93,11 +180,7 @@ impl SafeZip {
         if file_len > limits.max_file_bytes {
             return Err(limit("file_too_large"));
         }
-        match eocd_entry_count(&mut file, file_len) {
-            Some(n) if n > limits.max_entries => return Err(limit("too_many_entries")),
-            Some(_) => {}
-            None => return Err(unsupported("not_a_zip")),
-        }
+        check_declared_entries(&mut file, file_len, limits.max_entries)?;
         file.seek(SeekFrom::Start(0)).map_err(AppError::from)?;
         let archive = ZipArchive::new(file).map_err(|_| unsupported("not_a_zip"))?;
         if archive.len() as u64 > limits.max_entries {

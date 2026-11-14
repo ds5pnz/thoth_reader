@@ -75,7 +75,10 @@ impl Db {
                 read_only_reason = Some("DB가 더 새로운 앱 버전에서 생성되었습니다. 호환되는 버전으로 열어 주세요.".into());
             }
             SchemaState::Pending if existed => {
-                backup::snapshot(&writer, backups_dir, "pre-migration").await?;
+                // A migration that fails on every launch must not add a full copy each time.
+                if !backup::has_recovery(backups_dir) {
+                    backup::snapshot(&writer, backups_dir, "pre-migration").await?;
+                }
                 if let Err(e) = migrator.run(&writer).await {
                     backup::mark_latest_as_recovery(backups_dir);
                     tracing::error!("migration failed: {}", crate::diagnostics::redact(&e.to_string()));
@@ -100,6 +103,17 @@ impl Db {
             .connect_with(connect_options(path, false)?.pragma("query_only", "ON"))
             .await?;
         backup::prune(backups_dir, 3);
+        // Read-only mode is enforced by SQLite, not by each caller remembering to check.
+        let writer = if read_only_reason.is_some() {
+            writer.close().await;
+            SqlitePoolOptions::new()
+                .max_connections(1)
+                .acquire_timeout(Duration::from_secs(30))
+                .connect_with(connect_options(path, false)?.pragma("query_only", "ON"))
+                .await?
+        } else {
+            writer
+        };
         Ok(Db { writer, reader, path: path.to_path_buf(), read_only_reason })
     }
 

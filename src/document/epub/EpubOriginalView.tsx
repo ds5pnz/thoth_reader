@@ -41,6 +41,14 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
   const currentIndex = useRef<number | null>(null);
   const pendingDisplay = useRef<Promise<unknown> | null>(null);
   const programmaticUntil = useRef(0);
+  // The rendition outlives renders: read sections through a ref, never the mount-time list.
+  const sectionsRef = useRef(model.sections);
+  sectionsRef.current = model.sections;
+  useEffect(() => {
+    // Sections can arrive after the first relocation (book opened straight into this view).
+    const sec = model.sections.find((s) => Number((s.locator as { spineIndex?: number }).spineIndex) === currentIndex.current);
+    if (sec) loadSection(sec.id);
+  }, [model.sections, loadSection]);
   const onScrolledRef = useRef(onScrolled);
   onScrolledRef.current = onScrolled;
 
@@ -67,7 +75,7 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
     r.themes.default({ body: { 'font-size': 'var(--reader-size, 17px)', 'line-height': 'var(--reader-line, 1.6)' } });
     r.on('relocated', (loc: { start: { cfi: string; index: number } }) => {
       currentCfi.current = loc.start.cfi;
-      const sec = model.sections.find((s) => Number((s.locator as { spineIndex?: number }).spineIndex) === loc.start.index);
+      const sec = sectionsRef.current.find((s) => Number((s.locator as { spineIndex?: number }).spineIndex) === loc.start.index);
       currentIndex.current = loc.start.index;
       if (sec) loadSection(sec.id);
       // Programmatic display() also relocates; only user scrolling moves the anchor.
@@ -93,6 +101,8 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       r.on('rendered', () => { dbg.rendered = ((dbg.rendered as number) ?? 0) + 1; });
       r.on('displayError', (e: unknown) => { dbg.displayError = String(e); });
     }
+    // The first display() relocates too; it is not the user scrolling.
+    programmaticUntil.current = performance.now() + 1500;
     pendingDisplay.current = r.display(start ? cfiStart(start) ?? undefined : undefined).catch((e: unknown) => { console.error('epub display failed', String((e as Error)?.message ?? e)); setError(String(e)); });
     return () => {
       rendition.current = null;

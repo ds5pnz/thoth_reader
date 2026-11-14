@@ -2,6 +2,8 @@
 //! into an owned component tree, then rebuilt from an allow-list of rules,
 //! properties and functions. Every `url()` goes through the [`UrlPolicy`].
 
+use std::collections::BTreeSet;
+
 use cssparser::{serialize_identifier, serialize_name, serialize_string, Parser, ToCss, Token};
 
 use super::refs::{DropReason, RefUse, Resolved, UrlPolicy};
@@ -12,6 +14,41 @@ const MAX_CSS_DEPTH: usize = 16;
 const MAX_CSS_TOKENS: usize = 500_000;
 const MAX_Z_INDEX: i64 = 100;
 
+/// At most this many distinct missing references are recorded per report.
+pub(crate) const MAX_MISSING_RECORDED: usize = 1000;
+
+/// De-duplicated, size-capped, deterministically ordered set of missing
+/// reference paths (`truncated` is set once the cap dropped an entry).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub(crate) struct MissingSet {
+    paths: BTreeSet<String>,
+    pub truncated: bool,
+}
+
+impl MissingSet {
+    pub(crate) fn insert(&mut self, p: &str) {
+        if self.paths.contains(p) {
+            return;
+        }
+        if self.paths.len() >= MAX_MISSING_RECORDED {
+            self.truncated = true;
+        } else {
+            self.paths.insert(p.to_string());
+        }
+    }
+
+    pub(crate) fn merge(&mut self, o: &MissingSet) {
+        self.truncated |= o.truncated;
+        for p in &o.paths {
+            self.insert(p);
+        }
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = &String> {
+        self.paths.iter()
+    }
+}
+
 /// Side effects noticed while sanitizing (feeds package restrictions).
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct CssReport {
@@ -19,7 +56,7 @@ pub(crate) struct CssReport {
     pub rtl: bool,
     pub remote_removed: bool,
     pub import_removed: bool,
-    pub missing: Vec<String>,
+    pub missing: MissingSet,
     pub rejected: bool,
 }
 
@@ -30,11 +67,7 @@ impl CssReport {
         self.remote_removed |= o.remote_removed;
         self.import_removed |= o.import_removed;
         self.rejected |= o.rejected;
-        for m in &o.missing {
-            if !self.missing.contains(m) {
-                self.missing.push(m.clone());
-            }
-        }
+        self.missing.merge(&o.missing);
     }
 }
 
@@ -148,8 +181,21 @@ fn parse_components(src: &str) -> Option<Vec<C>> {
 
 fn ser(list: &[C], out: &mut String) {
     for c in list {
+        let at = out.len();
+        let after_slash = out.ends_with('/');
         ser_one(c, out);
+        // Two adjacent tokens must never fuse into a comment opener.
+        if after_slash && out.get(at..).is_some_and(|s| s.starts_with('*')) {
+            out.insert(at, ' ');
+        }
     }
+}
+
+/// True when sanitizer output contains a comment opener. The tokenizer never
+/// yields a comment and strings containing comment delimiters are refused, so
+/// this can only be a forged opener.
+fn has_comment_opener(css: &str) -> bool {
+    css.contains("/*")
 }
 
 fn ser_one(c: &C, out: &mut String) {
@@ -200,7 +246,8 @@ fn ser_one(c: &C, out: &mut String) {
             out.push('}');
         }
         C::Raw(s) => out.push_str(s),
-        C::Bad => {}
+        // Never serialize to nothing: the neighbours must stay separate tokens.
+        C::Bad => out.push(' '),
     }
 }
 
@@ -273,9 +320,7 @@ impl Ctx<'_> {
     fn note_drop(&mut self, r: &DropReason) {
         match r {
             DropReason::Remote => self.report.remote_removed = true,
-            DropReason::Missing(p) if !self.report.missing.contains(p) => {
-                self.report.missing.push(p.clone());
-            }
+            DropReason::Missing(p) => self.report.missing.insert(p),
             _ => {}
         }
     }
@@ -322,6 +367,10 @@ impl Ctx<'_> {
                 C::Str(s) => {
                     let l = s.to_ascii_lowercase();
                     if l.contains("javascript:") || l.contains("expression(") {
+                        return false;
+                    }
+                    // Never hand out the other half of a comment (see `has_comment_opener`).
+                    if l.contains("*/") || l.contains("/*") {
                         return false;
                     }
                 }
@@ -442,8 +491,20 @@ impl Ctx<'_> {
             C::Bad | C::Url(_) | C::Curly(_) | C::Str(_) | C::AtKw(_) | C::Semi => false,
             C::Func(n, inner) => ALLOWED_PSEUDO_FUNCTIONS.contains(&n.as_str()) && Self::selector_ok(inner),
             C::Paren(inner) => Self::selector_ok(inner),
-            C::Square(inner) => inner.iter().all(|c| !matches!(c, C::Bad | C::Url(_) | C::Curly(_))),
+            C::Square(inner) => Self::attr_selector_ok(inner),
             _ => true,
+        })
+    }
+
+    /// Contents of an attribute selector `[...]`: flat tokens only. No valid
+    /// attribute selector contains a function or a nested block, and a bad
+    /// token hidden inside one must not survive.
+    fn attr_selector_ok(list: &[C]) -> bool {
+        list.iter().all(|c| {
+            !matches!(
+                c,
+                C::Bad | C::Url(_) | C::Curly(_) | C::Func(..) | C::Paren(_) | C::Square(_) | C::AtKw(_) | C::Semi
+            )
         })
     }
 
@@ -457,7 +518,14 @@ impl Ctx<'_> {
 
     fn rules(&mut self, list: &[C], depth: usize, out: &mut String) {
         let mut i = 0;
+        let mut mark = out.len();
         while i < list.len() {
+            // Defence in depth: a rule whose output would open a comment is dropped.
+            if out.get(mark..).is_some_and(has_comment_opener) {
+                out.truncate(mark);
+                self.report.rejected = true;
+            }
+            mark = out.len();
             match &list[i] {
                 C::Ws | C::Semi | C::Bad => {
                     i += 1;
@@ -524,6 +592,10 @@ impl Ctx<'_> {
                 }
             }
         }
+        if out.get(mark..).is_some_and(has_comment_opener) {
+            out.truncate(mark);
+            self.report.rejected = true;
+        }
     }
 }
 
@@ -541,6 +613,10 @@ pub(crate) fn sanitize_stylesheet(src: &str, policy: &dyn UrlPolicy) -> (Option<
     };
     let mut out = String::new();
     ctx.rules(&list, 0, &mut out);
+    if has_comment_opener(&out) {
+        ctx.report.rejected = true;
+        return (None, ctx.report);
+    }
     (Some(out), ctx.report)
 }
 
@@ -557,10 +633,14 @@ pub(crate) fn sanitize_style_attr(src: &str, policy: &dyn UrlPolicy) -> (Option<
     };
     let decls = ctx.declarations(&list, false);
     if decls.is_empty() {
-        (None, ctx.report)
-    } else {
-        (Some(decls.join(";")), ctx.report)
+        return (None, ctx.report);
     }
+    let out = decls.join(";");
+    if has_comment_opener(&out) {
+        ctx.report.rejected = true;
+        return (None, ctx.report);
+    }
+    (Some(out), ctx.report)
 }
 
 #[cfg(test)]

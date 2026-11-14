@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { ModalBackdrop } from '../../app/Modal';
 import { call, errorMessage, mutate } from '../../ipc/client';
 import type { Block } from '../../ipc/generated/Block';
 import type { HistoryPage } from '../../ipc/generated/HistoryPage';
@@ -43,7 +44,7 @@ export function HistoryDialog({ sessionId, block, targetLanguage, onClose, onApp
   };
 
   return (
-    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="hist-title" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
+    <ModalBackdrop role="dialog" aria-labelledby="hist-title" onClose={onClose}>
       <div className="modal">
         <header>
           <h2 id="hist-title">번역 이력</h2>
@@ -78,6 +79,6 @@ export function HistoryDialog({ sessionId, block, targetLanguage, onClose, onApp
           {cursor && <button className="btn" onClick={() => void load(cursor)}>더 보기</button>}
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

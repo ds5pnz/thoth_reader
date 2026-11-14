@@ -4,19 +4,22 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
-use super::css::{sanitize_stylesheet, CssReport};
-use super::dom::{clean_text, parse_html, Element, Ns};
+use super::css::{sanitize_stylesheet, CssReport, MissingSet, MAX_MISSING_RECORDED};
+use super::dom::{clean_text, max_attrs_per_tag, parse_html, Element, Ns, MAX_TAG_ATTRS};
 use super::html::{canonicalize, sanitize_svg_resource, DocReport, Head, Sanitizer, StyleRef};
 use super::paths::{dir_of, is_safe_id, resolve_decoded, scheme_of, split_href};
 use super::refs::{LinkMap, PackagePolicy, ResKind, Target};
 use super::xml::{decode_text, parse_xml, XmlError};
-use super::zip_guard::{drm, unsupported, SafeZip};
+use super::zip_guard::{drm, limit, unsupported, SafeZip};
 use super::{canonical_revision, resource_id, EpubLimits, SafePackage, SafeResource, SafeSpineItem, TocEntry};
 use crate::error::AppError;
 
 const FONT_OBFUSCATION: &[&str] = &["http://www.idpf.org/2008/embedding", "http://ns.adobe.com/pdf/enc#RC"];
 const MAX_TOC_ENTRIES: usize = 5000;
 const MAX_TOC_DEPTH: usize = 32;
+/// Content documents that are not well-formed XML go through the (much more
+/// expensive, error-recovering) HTML parser; that path only accepts this much.
+const MAX_HTML_FALLBACK_BYTES: usize = 4 * 1024 * 1024;
 
 struct Item {
     path: String,
@@ -113,7 +116,14 @@ fn parse_content_doc(text: &str) -> Result<(Element, bool), AppError> {
             if lower_head.contains("<!entity") {
                 return Err(unsupported("xml_entity"));
             }
-            Ok((parse_html(text), false))
+            if text.len() > MAX_HTML_FALLBACK_BYTES {
+                return Err(limit("html_document_too_large"));
+            }
+            if max_attrs_per_tag(text) > MAX_TAG_ATTRS {
+                return Err(limit("markup_too_complex"));
+            }
+            let root = parse_html(text).map_err(|_| limit("markup_too_complex"))?;
+            Ok((root, false))
         }
     }
 }
@@ -176,9 +186,31 @@ struct Builder<'a> {
     restr: BTreeSet<String>,
     resources: Vec<SafeResource>,
     written: HashSet<String>,
+    /// Number of `missing_resource:*` restrictions recorded so far.
+    missing_recorded: usize,
 }
 
 impl Builder<'_> {
+    /// Record a `missing_resource:<path>` restriction, capped package-wide.
+    fn note_missing(&mut self, path: &str) {
+        if self.missing_recorded >= MAX_MISSING_RECORDED {
+            self.restr.insert("missing_resources_truncated".into());
+        } else if self.restr.insert(format!("missing_resource:{path}")) {
+            self.missing_recorded += 1;
+        }
+    }
+
+    fn note_missing_set(&mut self, missing: &MissingSet, manifest_paths: &HashSet<String>) {
+        if missing.truncated {
+            self.restr.insert("missing_resources_truncated".into());
+        }
+        for m in missing.iter() {
+            if !manifest_paths.contains(m) {
+                self.note_missing(m);
+            }
+        }
+    }
+
     fn write_resource(&mut self, id: &str, ext: &str, mime: &str, bytes: &[u8]) -> Result<String, AppError> {
         let name = format!("{id}.{ext}");
         if self.written.insert(name.clone()) {
@@ -199,11 +231,7 @@ impl Builder<'_> {
         if rep.rejected {
             self.restr.insert("css_rejected".into());
         }
-        for m in &rep.missing {
-            if !manifest_paths.contains(m) {
-                self.restr.insert(format!("missing_resource:{m}"));
-            }
-        }
+        self.note_missing_set(&rep.missing, manifest_paths);
     }
 
     fn note_doc(&mut self, rep: &DocReport, manifest_paths: &HashSet<String>) {
@@ -225,11 +253,13 @@ impl Builder<'_> {
         if rep.mathml_fallback {
             self.restr.insert("mathml_fallback".into());
         }
-        for m in &rep.missing {
-            if !manifest_paths.contains(m) {
-                self.restr.insert(format!("missing_resource:{m}"));
-            }
+        if rep.inline_style_truncated {
+            self.restr.insert("inline_style_truncated".into());
         }
+        if rep.svg_use_removed {
+            self.restr.insert("svg_use_removed".into());
+        }
+        self.note_missing_set(&rep.missing, manifest_paths);
         self.note_css(&rep.css, manifest_paths);
     }
 }
@@ -242,6 +272,7 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
         restr: BTreeSet::new(),
         resources: Vec::new(),
         written: HashSet::new(),
+        missing_recorded: 0,
     };
 
     // --- mimetype -----------------------------------------------------------
@@ -388,7 +419,7 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
             continue;
         }
         if !zip.contains(&item.path) {
-            b.restr.insert(format!("missing_resource:{}", item.path));
+            b.note_missing(&item.path);
             continue;
         }
         if !used_items.insert(idx) {
@@ -456,7 +487,7 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
                 continue;
             }
             let Some(bytes) = zip.read(&item.path)? else {
-                b.restr.insert(format!("missing_resource:{}", item.path));
+                b.note_missing(&item.path);
                 continue;
             };
             let id = resource_id(&item.path, &b.rev);
@@ -541,6 +572,8 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
                     links.push(h.clone());
                 }
                 StyleRef::Inline(css) => {
+                    // One merged resource per document (the sanitizer guarantees a
+                    // single Inline entry); `k` keeps the historical id scheme.
                     let id = resource_id(&format!("{}#style{k}", item.path), &b.rev);
                     let name = b.write_resource(&id, "css", "text/css", css.as_bytes())?;
                     links.push(format!("../r/{name}"));
@@ -566,7 +599,7 @@ pub(crate) fn build(epub_path: &Path, out_dir: &Path, limits: &EpubLimits) -> Re
             lang: doc.lang.clone().or_else(|| language.clone()),
             dir: doc.dir.clone(),
         };
-        let (xhtml, converged) = canonicalize(&head, doc.body, pos);
+        let (xhtml, converged) = canonicalize(&head, doc.body, pos).map_err(|_| limit("markup_too_complex"))?;
         if !converged {
             b.restr.insert(format!("markup_unstable:{pos}"));
         }

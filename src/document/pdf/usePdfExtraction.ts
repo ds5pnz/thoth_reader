@@ -69,7 +69,7 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
   latest.current = { session, refreshSections, onSession };
   const sessionId = session?.sessionId ?? null;
   useEffect(() => {
-    const { session, refreshSections, onSession } = latest.current;
+    const { session, refreshSections } = latest.current;
     if (!session || started.current === session.sessionId) return;
     started.current = session.sessionId;
     let cancelled = false;
@@ -85,7 +85,9 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
           pageCount: doc.numPages,
           title,
         });
-        onSession({ ...session, extractionId: begin.extractionId });
+        if (cancelled) return;
+        // Merge into the live session: its generation may have moved while the PDF opened.
+        latest.current.onSession({ ...(latest.current.session ?? session), extractionId: begin.extractionId });
         await refreshSections();
         const pending = begin.sections.filter((s) => s.state !== 'ready' && s.state !== 'failed').map((s) => ({ id: s.id, page: Number(s.ordinal) }));
         // Restore page first, then pages after it, then the rest.
@@ -116,13 +118,21 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
           batchNo += 1;
           const chunk = pending.splice(0, size);
           const inputs: PdfPageInput[] = [];
-          for (const p of chunk) {
-            const page = await doc.getPage(p.page + 1);
-            inputs.push(await buildPageInput(page));
-            page.cleanup();
-          }
           const results = new Map<number, Block[]>();
           const failed = new Set<number>();
+          for (const p of chunk) {
+            // One damaged page must not stop the rest of the book from being extracted.
+            try {
+              const page = await doc.getPage(p.page + 1);
+              try {
+                inputs.push(await buildPageInput(page));
+              } finally {
+                page.cleanup();
+              }
+            } catch {
+              failed.add(p.page);
+            }
+          }
           let running: RunningElementUpdate[] = [];
           const job = client.extract(begin.extractionId, inputs, {
             onPage: (pi, blocks) => results.set(pi, blocks),

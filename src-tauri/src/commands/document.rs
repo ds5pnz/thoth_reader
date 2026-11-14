@@ -81,6 +81,8 @@ pub async fn document_import(core: Core<'_>, meta: CommandMeta, args: DocumentIm
     let core2 = core.inner().clone();
     let w = with_receipt(&core, &meta, "document_import", json_of(&args), || async move {
         let path = core2.imports.take(&args.import_token).ok_or_else(|| AppError::invalid("가져오기 토큰이 만료되었습니다. 파일을 다시 선택해 주세요."))?;
+        // One import at a time: the duplicate check and the insert are not atomic.
+        let _one = core2.import_lock.lock().await;
         let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let r = import::import_path(&core2.db, &core2.paths, path, name).await?;
         if r.format == "epub" && !r.deduplicated {
@@ -147,7 +149,10 @@ pub async fn document_open(core: Core<'_>, window: WebviewWindow, meta: CommandM
         });
         let _ = documents::touch_opened(&core.db.writer, &doc.id).await;
         if format == Format::Epub {
-            crate::document::epub::ensure_extraction(core.inner().clone(), s.clone(), doc.clone()).await?;
+            if let Err(e) = crate::document::epub::ensure_extraction(core.inner().clone(), s.clone(), doc.clone()).await {
+                core.sessions.close(&s.id); // do not leave a session (and asset token) for a failed open
+                return Err(e);
+            }
         } else if let Some(ex) = &doc.active_extraction_id {
             *s.extraction_id.write().unwrap() = Some(ex.clone());
         }
@@ -195,9 +200,10 @@ pub async fn document_close(core: Core<'_>, window: WebviewWindow, meta: Command
                 let _ = misc::position_save(&core.db.writer, &s.document_id, a, args.view.as_ref().unwrap_or(&serde_json::json!({})), cur).await;
             }
         }
-        let cancelled = core.translation.cancel_session(&s).await?;
+        // Close the session (and revoke its asset token) even when cancelling jobs fails.
+        let cancelled = core.translation.cancel_session(&s).await;
         core.sessions.close(&s.id);
-        Ok(serde_json::json!({"closed": true, "cancelledJobs": cancelled}))
+        Ok(serde_json::json!({"closed": true, "cancelledJobs": cancelled?}))
     }
     .await;
     Ok(respond(&meta, r))
@@ -223,6 +229,8 @@ pub async fn document_delete(core: Core<'_>, meta: CommandMeta, args: DocumentDe
             let _ = core2.translation.cancel_session(&s).await;
             core2.sessions.close(&s.id);
         }
+        // Wait for an in-flight EPUB package build so it cannot publish files for a deleted book.
+        let _prep = core2.epub_prepare.lock().await;
         import::delete_document(&core2.db, &core2.paths, &args.document_id).await?;
         Ok(serde_json::json!({"deleted": true}))
     })
@@ -419,10 +427,22 @@ pub async fn extraction_begin(core: Core<'_>, window: WebviewWindow, meta: Comma
         let ex_id = crate::domain::derive_extraction_id(&s.document_id, &args.extractor_versions, &config);
         let config_hash = crate::domain::canonical_json::canonical_sha256(&serde_json::json!({"versions": args.extractor_versions, "config": config}));
         let state = extraction::ensure_extraction(&core.db.writer, &ex_id, &s.document_id, &config_hash, &args.extractor_versions).await?;
-        for p in 0..args.page_count {
-            let loc = format!("page:{p}");
-            let sid = crate::domain::derive_section_id(&ex_id, p, &loc);
-            extraction::ensure_section(&core.db.writer, &sid, &ex_id, p, &serde_json::json!({"kind": "pdf", "pageIndex": p})).await?;
+        let have: i64 = sqlx::query_scalar("select count(*) from sections where extraction_id = ?").bind(&ex_id).fetch_one(&core.db.reader).await?;
+        if have != args.page_count as i64 {
+            // One transaction: thousands of single inserts would stall the only writer.
+            let mut tx = core.db.writer.begin().await?;
+            for p in 0..args.page_count {
+                let loc = format!("page:{p}");
+                let sid = crate::domain::derive_section_id(&ex_id, p, &loc);
+                sqlx::query("insert into sections(id, extraction_id, ordinal, locator_json, state) values (?,?,?,?, 'pending') on conflict(id) do nothing")
+                    .bind(&sid)
+                    .bind(&ex_id)
+                    .bind(p as i64)
+                    .bind(serde_json::json!({"kind": "pdf", "pageIndex": p}).to_string())
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
         }
         if let Some(t) = args.title.as_deref().map(|t| t.trim()).filter(|t| !t.is_empty() && t.len() < 400) {
             let _ = documents::merge_metadata(&core.db.writer, &s.document_id, &serde_json::json!({"pdfTitle": t, "pageCount": args.page_count})).await;
@@ -490,7 +510,7 @@ pub async fn extraction_finalize_section(core: Core<'_>, window: WebviewWindow, 
         let ex = token_extraction(&s, &args.extraction_token)?;
         check_id(&args.section_id, "sectionId")?;
         if args.failed == Some(true) {
-            extraction::mark_section_failed(&core.db.writer, &args.section_id).await?;
+            extraction::mark_section_failed_in(&core.db.writer, &ex, &args.section_id).await?;
         } else {
             extraction::finalize_section(&core.db.writer, &ex, &args.section_id, args.expected_count, &args.checksum).await?;
         }

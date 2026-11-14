@@ -84,7 +84,13 @@ struct Queue {
     waiting: HashMap<String, Entry>,           // cache_key -> entry
     running: HashMap<String, (String, CancellationToken, Priority, String)>, // cache_key -> (job_id, cancel, priority, session_id)
     order: u64,
+    /// cache_key -> when its last job failed; automatic demand backs off for a while.
+    failed: HashMap<String, Instant>,
 }
+
+/// After a failure, viewport-driven (automatic) demand leaves the block alone this long;
+/// an explicit request retries at once.
+const AUTO_RETRY_COOLDOWN: Duration = Duration::from_secs(300);
 
 pub struct TranslationService {
     pub db: Db,
@@ -412,6 +418,12 @@ impl TranslationService {
         // Merge with an active job for the same key (no duplicate HTTP).
         {
             let mut q = self.queue.lock().unwrap();
+            if prio == Priority::P0 || force {
+                q.failed.remove(&pj.cache_key);
+            } else if q.failed.get(&pj.cache_key).map(|t| t.elapsed() < AUTO_RETRY_COOLDOWN).unwrap_or(false) {
+                // Scrolling must not re-send a block that just failed (billing, Retry-After).
+                return Ok(Demand::Skipped("recently failed"));
+            }
             if let Some(e) = q.waiting.get_mut(&pj.cache_key) {
                 if prio < e.priority {
                     e.priority = prio;
@@ -420,6 +432,8 @@ impl TranslationService {
                 if e.generation != generation || !Arc::ptr_eq(&e.session, s) {
                     e.session = s.clone();
                     e.generation = generation;
+                    // The entry now lives and dies with this session, not the one that created it.
+                    e.cancel = s.cancel_token().child_token();
                 }
                 return Ok(Demand::Queued(pj.cache_key.clone()));
             }
@@ -440,6 +454,9 @@ impl TranslationService {
         let snapshot = pj.snapshot_json();
         let (job, created) = translations::job_insert_or_merge(&self.db.writer, &b.id, &profile.profile.id, &pj.cache_key, &crate::domain::new_uuid(), &s.id, generation as i64, prio as i64, &snapshot).await?;
         if !created && job.state == "RETRY_WAIT" && job.next_attempt_at.is_none() {
+            if prio != Priority::P0 {
+                return Ok(Demand::Skipped("waiting for manual retry"));
+            }
             // Manual resume of a job waiting for user action.
             translations::job_transition(&self.db.writer, &job.id, "RETRY_WAIT", "QUEUED", None, None, false, None).await?;
         } else if !created && job.state != "QUEUED" {
@@ -604,6 +621,7 @@ impl TranslationService {
             if self.shutdown.is_cancelled() {
                 return;
             }
+            self.reap_cancelled().await;
             let next = self.pick_next();
             match next {
                 Some((entry, provider_permit, global_permit)) => {
@@ -623,6 +641,19 @@ impl TranslationService {
                     }
                 }
             }
+        }
+    }
+
+    /// Waiting entries whose session went away would otherwise sit in the queue forever and
+    /// swallow every later demand for the same cache key.
+    async fn reap_cancelled(&self) {
+        let dead: Vec<String> = {
+            let mut q = self.queue.lock().unwrap();
+            let keys: Vec<String> = q.waiting.iter().filter(|(_, e)| e.cancel.is_cancelled()).map(|(k, _)| k.clone()).collect();
+            keys.iter().filter_map(|k| q.waiting.remove(k)).map(|e| e.job_id).collect()
+        };
+        for id in dead {
+            let _ = translations::job_cancel(&self.db.writer, &id, "CANCELLED").await;
         }
     }
 
@@ -657,11 +688,45 @@ impl TranslationService {
     }
 
     async fn run_entry(self: &Arc<Self>, e: Entry) {
-        let result = self.execute(&e).await;
-        self.queue.lock().unwrap().running.remove(&e.cache_key);
-        if let Err(err) = result {
-            tracing::debug!(target: "translation", "job {} ended: {:?}", e.job_id, err.code);
+        // Leaves `running` even if the job panics, or the key could never be translated again.
+        struct Running<'a>(&'a Mutex<Queue>, &'a str);
+        impl Drop for Running<'_> {
+            fn drop(&mut self) {
+                let mut q = self.0.lock().unwrap_or_else(|p| p.into_inner());
+                q.running.remove(self.1);
+            }
         }
+        let _running = Running(&self.queue, &e.cache_key);
+        let result = self.execute(&e).await;
+        match &result {
+            Ok(()) => {
+                self.queue.lock().unwrap().failed.remove(&e.cache_key);
+            }
+            Err(err) if err.code == ErrorCode::Cancelled => {}
+            Err(err) => {
+                tracing::debug!(target: "translation", "job {} ended: {:?}", e.job_id, err.code);
+                self.queue.lock().unwrap().failed.insert(e.cache_key.clone(), Instant::now());
+                // An error exit (e.g. a DB error at commit) must not leave the row active:
+                // every later demand would merge into a job that no longer exists.
+                let settled = sqlx::query("update translation_jobs set state = 'FAILED', error_code = coalesce(error_code, 'INTERNAL'), next_attempt_at = null, updated_at = ? where id = ? and state in ('QUEUED','RUNNING','STREAMING')")
+                    .bind(now_ms())
+                    .bind(&e.job_id)
+                    .execute(&self.db.writer)
+                    .await
+                    .map(|r| r.rows_affected())
+                    .unwrap_or(0);
+                if settled > 0 {
+                    e.session.emit_for_generation(e.generation, "job_state", Some(&e.job_id), Some(&e.block_id), serde_json::json!({"state": "FAILED", "errorCode": "INTERNAL"}));
+                }
+            }
+        }
+    }
+
+    /// Cancelled while executing: settle the row and tell the view (pause keeps the generation).
+    async fn cancelled(&self, e: &Entry) -> AppError {
+        let _ = translations::job_cancel(&self.db.writer, &e.job_id, "CANCELLED").await;
+        e.session.emit_for_generation(e.generation, "job_state", Some(&e.job_id), Some(&e.block_id), serde_json::json!({"state": "CANCELLED"}));
+        AppError::new(ErrorCode::Cancelled, "취소됨")
     }
 
     async fn execute(self: &Arc<Self>, e: &Entry) -> AppResult<()> {
@@ -684,8 +749,7 @@ impl TranslationService {
             let mut attempt: u32 = 0;
             loop {
                 if e.cancel.is_cancelled() {
-                    let _ = translations::job_cancel(&self.db.writer, &e.job_id, "CANCELLED").await;
-                    return Err(AppError::new(ErrorCode::Cancelled, "취소됨"));
+                    return Err(self.cancelled(e).await);
                 }
                 attempt += 1;
                 self.http_attempts.fetch_add(1, Ordering::SeqCst);
@@ -738,8 +802,7 @@ impl TranslationService {
                         }
                     },
                     Err(ProviderError::Cancelled) => {
-                        let _ = translations::job_cancel(&self.db.writer, &e.job_id, "CANCELLED").await;
-                        return Err(AppError::new(ErrorCode::Cancelled, "취소됨"));
+                        return Err(self.cancelled(e).await);
                     }
                     Err(err) => {
                         let code = err.to_app_error().code;
@@ -758,8 +821,7 @@ impl TranslationService {
                                     tokio::select! {
                                         _ = tokio::time::sleep(d) => {}
                                         _ = e.cancel.cancelled() => {
-                                            let _ = translations::job_cancel(&self.db.writer, &e.job_id, "CANCELLED").await;
-                                            return Err(AppError::new(ErrorCode::Cancelled, "취소됨"));
+                                            return Err(self.cancelled(e).await);
                                         }
                                     }
                                     if !translations::job_transition(&self.db.writer, &e.job_id, "RETRY_WAIT", "QUEUED", None, None, false, None).await?
