@@ -12,6 +12,10 @@ export function App() {
   const [route, setRoute] = useState<Route>({ name: 'library' });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const openSettings = useCallback(() => setSettingsOpen(true), []);
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    window.__thoth = { ...(window.__thoth ?? {}), open: (documentId: string) => setRoute({ name: 'reader', documentId }), close: () => setRoute({ name: 'library' }) };
+  }, []);
   useShortcut('mod+,', openSettings);
   useEffect(() => {
     // Block navigation away from the app (links inside documents are handled explicitly).

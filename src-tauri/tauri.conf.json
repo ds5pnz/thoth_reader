@@ -27,7 +27,7 @@
         "form-action": "'none'"
       },
       "dangerousDisableAssetCspModification": false,
-      "freezePrototype": true
+      "freezePrototype": false
     }
   },
   "bundle": {

@@ -1,6 +1,8 @@
 //! Typed IPC commands (spec §8.2). No arbitrary SQL/HTTP/Keychain-read/file commands exist.
 
 pub mod core;
+#[cfg(debug_assertions)]
+pub mod debug;
 pub mod document;
 pub mod reader;
 pub mod translation;
@@ -14,4 +16,5 @@ pub const COMMANDS: &[&str] = &[
     "block_set_preference", "reader_set_viewport", "translation_request", "translation_cancel", "reader_set_mode",
     "translation_pause", "reader_switch_profile", "reader_get_snapshot", "provider_save", "provider_list",
     "provider_probe", "provider_new_cache_epoch", "profile_create", "cache_invalidate", "storage_usage",
+    "debug_selftest_files", "debug_log",
 ];

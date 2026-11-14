@@ -12,6 +12,10 @@ describe('cfi helpers', () => {
   it('splits a range', () => {
     expect(splitRange('epubcfi(/6/4[c1]!/4/2,/1:0,/3:5)')).toEqual({ base: '/6/4[c1]!/4/2', start: '/1:0', end: '/3:5' });
   });
+  it('handles point CFIs for blocks without text', () => {
+    const b = block('epubcfi(/6/2[cover]!/4/2[img1])', []);
+    expect(cfiStart(b)).toBe('epubcfi(/6/2[cover]!/4/2[img1])');
+  });
   it('maps offsets through text-node runs', () => {
     const b = block('epubcfi(/6/4[c1]!/4/2,/1:0,/3:5)', [
       { path: '/4/2/1', rawStartU16: 0, rawLenU16: 6, nodeOffsetU16: 0 },

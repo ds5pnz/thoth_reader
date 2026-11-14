@@ -62,3 +62,8 @@ codegen-units = 1
 lto = true
 opt-level = 3
 strip = true
+
+# Dependencies (hashing, zip, html parsing) are optimized even in dev builds so local
+# testing reflects realistic import/extraction speed; app code stays debuggable.
+[profile.dev.package."*"]
+opt-level = 3

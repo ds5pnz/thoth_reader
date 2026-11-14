@@ -89,8 +89,15 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
           const kb = b.page >= restorePage ? b.page - restorePage : 1e6 + b.page;
           return ka - kb;
         });
-        for (let i = 0; i < pending.length && !cancelled; i += BATCH_PAGES) {
-          const chunk = pending.slice(i, i + BATCH_PAGES);
+        // Ramp batch size: the restore page is published alone so reflow shows it fast;
+        // later batches are larger (running header detection needs ≥3 pages per batch).
+        let i = 0;
+        let batchNo = 0;
+        while (i < pending.length && !cancelled) {
+          const size = batchNo === 0 ? 1 : batchNo === 1 ? 3 : BATCH_PAGES;
+          batchNo += 1;
+          const chunk = pending.slice(i, i + size);
+          i += size;
           const inputs: PdfPageInput[] = [];
           for (const p of chunk) {
             const page = await doc.getPage(p.page + 1);
@@ -119,7 +126,7 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
             });
           }
           // Yield to keep the UI responsive between batches (low priority remainder).
-          await new Promise((r) => setTimeout(r, i === 0 ? 0 : 30));
+          await new Promise((r) => setTimeout(r, batchNo <= 2 ? 0 : 30));
         }
       } finally {
         releaseSessionPdf(session);

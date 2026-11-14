@@ -14,7 +14,8 @@ export function cfiStart(b: Block): string | null {
   if (b.location.kind !== 'epub') return null;
   const r = splitRange(b.location.cfiRange);
   if (!r) return null;
-  return `epubcfi(${r.base}${r.start})`;
+  // Point CFIs (e.g. figures without text) have no range parts.
+  return r.start ? `epubcfi(${r.base}${r.start})` : `epubcfi(${r.base})`;
 }
 
 /** CFI for a UTF-16 offset inside the block's raw text, via the stored text-node runs. */

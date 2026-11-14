@@ -11,7 +11,10 @@ import type { ReaderAnchor } from '../../ipc/generated/ReaderAnchor';
 import { useSettings } from '../../app/settings';
 import { useToast } from '../../app/toast';
 import { useShortcut } from '../../app/shortcuts';
-import { EpubOriginalView, type EpubOriginalHandle } from '../../document/epub/EpubOriginalView';
+import { lazy, Suspense } from 'react';
+import type { EpubOriginalHandle } from '../../document/epub/EpubOriginalView';
+// epub.js (and its xmldom dependency) only loads when original EPUB mode is opened.
+const EpubOriginalView = lazy(() => import('../../document/epub/EpubOriginalView').then((m) => ({ default: m.EpubOriginalView })));
 import { PdfOriginalView, type PdfOriginalHandle } from '../../document/pdf/PdfOriginalView';
 import { usePdfExtraction } from '../../document/pdf/usePdfExtraction';
 import { setPasswordAsker } from '../../document/pdf/sessionPdf';
@@ -87,6 +90,11 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     return { schemaVersion: 1, documentId: s.documentId, extractionId: s.extractionId, blockId: a.blockId, sourceOffsetU16: 0, withinBlockRatio: Math.min(1, Math.max(0, a.ratio)), location: null };
   }, [sessionRef, showPdfOriginal, showOriginalEpub]);
 
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    window.__thoth = { ...(window.__thoth ?? {}), anchor: () => currentAnchor() };
+  }, [currentAnchor]);
+
   const savePosition = useCallback(async () => {
     const s = sessionRef.current;
     const anchor = currentAnchor();
@@ -136,9 +144,11 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
       if (a?.blockId) {
         const id = a.blockId;
         const ratio = a.withinBlockRatio;
-        setTimeout(() => {
-          reflowRef.current?.scrollToBlock(id, ratio) || pdfRef.current?.scrollToBlock(id, ratio) || epubRef.current?.scrollToBlock(id);
-        }, 60);
+        const restore = () => reflowRef.current?.scrollToBlock(id, ratio) || pdfRef.current?.scrollToBlock(id, ratio) || epubRef.current?.scrollToBlock(id);
+        // Once after the new layout mounts, again after row heights are re-measured
+        // (ResizeObserver / image and font load corrections, spec §3.4).
+        setTimeout(restore, 60);
+        setTimeout(() => { if (!epubRef.current) restore(); }, 400);
       }
     };
     if (dirty.current.size > 0) setPendingSwitch({ run });
@@ -346,7 +356,9 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
               highlightBlockId={highlight}
             />
           ) : showOriginalEpub ? (
-            <EpubOriginalView ref={epubRef} session={session} model={model} loadSection={loadSection} onScrolled={onScrolled} openExternal={resolvers.openExternal} />
+            <Suspense fallback={<div className="muted" style={{ padding: 24 }}>원본 보기를 불러오는 중…</div>}>
+              <EpubOriginalView ref={epubRef} session={session} model={model} loadSection={loadSection} onScrolled={onScrolled} openExternal={resolvers.openExternal} />
+            </Suspense>
           ) : (
             <ReflowView
               ref={reflowRef}

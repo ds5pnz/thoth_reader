@@ -138,11 +138,15 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
       }
     }
     onVisible(ids.slice(0, 100), dir.current);
-    const a = pickAnchor(cands, 0, vp.height);
+    const atTop = el.scrollTop <= 1;
+    const first = cands.filter((c) => c.bottom > 0).sort((x, y) => x.top - y.top)[0];
+    const a = atTop && first ? { id: first.id } : pickAnchor(cands, 0, vp.height);
     if (a) setAnchorId(a.id);
   }, [pages, live, blocksByPage, onVisible, translatable]);
 
-  useEffect(() => { updateLive(); deb.current.run(report); }, [pages, model.blocks]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { updateLive(); }, [pages, model.blocks]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Re-run visibility/anchor whenever the live page set or loaded blocks change.
+  useEffect(() => { deb.current.run(report); }, [report]);
 
   const onScroll = () => {
     const el = pagesRef.current;
@@ -277,8 +281,10 @@ function PdfPage({ doc, meta, live, blocks, sectionState, highlightBlockId, onPi
       // Text layer for native selection (original-mode text selection).
       const pdfjs = await import('pdfjs-dist');
       const tc = await page.getTextContent();
-      textRef.current.replaceChildren();
-      const tl = new pdfjs.TextLayer({ textContentSource: tc, container: textRef.current, viewport: page.getViewport({ scale: SCALE }) });
+      const container = textRef.current;
+      if (cancelled || !container) return; // unmounted while awaiting
+      container.replaceChildren();
+      const tl = new pdfjs.TextLayer({ textContentSource: tc, container, viewport: page.getViewport({ scale: SCALE }) });
       await tl.render().catch(() => {});
     })();
     return () => {

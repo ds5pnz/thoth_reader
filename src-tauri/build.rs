@@ -7,6 +7,8 @@ const COMMANDS: &[&str] = &[
     "block_set_preference", "reader_set_viewport", "translation_request", "translation_cancel", "reader_set_mode",
     "translation_pause", "reader_switch_profile", "reader_get_snapshot", "provider_save", "provider_list",
     "provider_probe", "provider_new_cache_epoch", "profile_create", "cache_invalidate", "storage_usage",
+    // debug-only handlers (not compiled into release; the permission alone grants nothing)
+    "debug_selftest_files", "debug_log",
 ];
 
 fn main() {

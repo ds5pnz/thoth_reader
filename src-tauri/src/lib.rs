@@ -29,88 +29,16 @@ fn navigation_allowed(url: &url::Url) -> bool {
         "tauri" => url.host_str() == Some("localhost"),
         "http" if url.host_str() == Some("tauri.localhost") => true,
         "http" | "ws" if cfg!(debug_assertions) => url.host_str() == Some("localhost") && url.port() == Some(1420),
-        "about" => url.as_str() == "about:blank",
+        "about" => matches!(url.as_str(), "about:blank" | "about:srcdoc"),
+        // epub.js renders sanitized chapters into blob: iframes created by the app itself.
+        "blob" => url::Url::parse(url.path()).map(|inner| navigation_allowed(&inner) && inner.scheme() != "blob").unwrap_or(false),
         _ => false,
     }
 }
 
-pub fn run() {
-    diagnostics::init_logging();
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.set_focus();
-            }
-        }))
-        .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_opener::init())
-        .register_asynchronous_uri_scheme_protocol("thoth-doc", |ctx, request, responder| {
-            let app = ctx.app_handle().clone();
-            std::thread::spawn(move || {
-                let Some(core) = app.try_state::<Arc<AppCore>>() else {
-                    let _ = responder.respond(tauri::http::Response::builder().status(503).body(Vec::new()).unwrap());
-                    return;
-                };
-                let method = request.method().as_str().to_string();
-                let range = request.headers().get("range").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-                let origin = request.headers().get("origin").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
-                let resp = document::asset::handle(&core.sessions, &method, request.uri().path(), range.as_deref(), origin.as_deref(), &core.allowed_origins);
-                let mut b = tauri::http::Response::builder().status(resp.status);
-                for (k, v) in resp.headers {
-                    b = b.header(k, v);
-                }
-                let _ = responder.respond(b.body(resp.body).unwrap());
-            });
-        })
-        .setup(|app| {
-            let root = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
-            let paths = document::paths::AppPaths::new(root)?;
-            let db = tauri::async_runtime::block_on(storage::Db::open(&paths.db_file(), &paths.backups)).map_err(|e| e.message)?;
-            if let Some(r) = &db.read_only_reason {
-                tracing::warn!("database is read-only: {r}");
-            }
-            tauri::async_runtime::block_on(document::import::recover(&db, &paths)).map_err(|e| e.message)?;
-            let translation = translation::service::TranslationService::new(db.clone(), security::keychain::keychain_store(), translation::service::default_factory());
-            tauri::async_runtime::block_on(translation.start()).map_err(|e| e.message)?;
-            let core = Arc::new(AppCore {
-                db,
-                paths,
-                sessions: Default::default(),
-                imports: Default::default(),
-                translation,
-                allowed_origins: allowed_origins(),
-            });
-            app.manage(core.clone());
-
-            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-                .title("Thoth Reader")
-                .inner_size(1280.0, 840.0)
-                .min_inner_size(900.0, 600.0)
-                .on_navigation(|url| navigation_allowed(url))
-                .on_new_window(|_url, _features| tauri::webview::NewWindowResponse::Deny)
-                .build()?;
-
-            // Idle WAL checkpoints and receipt pruning.
-            let core_bg = core.clone();
-            tauri::async_runtime::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
-                    core_bg.db.checkpoint().await;
-                    let _ = storage::repo::misc::receipts_prune(&core_bg.db.writer, 7 * 24 * 3600 * 1000).await;
-                }
-            });
-            Ok(())
-        })
-        .on_window_event(|window, event| {
-            // Dropped paths are only accepted here and turned into single-use tokens.
-            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
-                if let Some(core) = window.try_state::<Arc<AppCore>>() {
-                    let cands: Vec<_> = paths.iter().take(50).filter_map(|p| core.imports.register(p.clone())).collect();
-                    let _ = window.emit_to(window.label(), "import-candidates", cands);
-                }
-            }
-        })
-        .invoke_handler(tauri::generate_handler![
+macro_rules! app_handlers {
+    ($($extra:path),*) => {
+        tauri::generate_handler![
             commands::document::library_list,
             commands::document::import_pick,
             commands::document::document_import,
@@ -148,7 +76,110 @@ pub fn run() {
             commands::translation::profile_create,
             commands::translation::cache_invalidate,
             commands::translation::storage_usage,
-        ]);
+            $($extra),*
+        ]
+    };
+}
+
+#[cfg(debug_assertions)]
+fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    app_handlers!(commands::debug::debug_selftest_files, commands::debug::debug_log)
+}
+
+#[cfg(not(debug_assertions))]
+fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    app_handlers!()
+}
+
+pub fn run() {
+    diagnostics::init_logging();
+    let builder = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .register_asynchronous_uri_scheme_protocol("thoth-doc", |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            std::thread::spawn(move || {
+                let Some(core) = app.try_state::<Arc<AppCore>>() else {
+                    let _ = responder.respond(tauri::http::Response::builder().status(503).body(Vec::new()).unwrap());
+                    return;
+                };
+                let method = request.method().as_str().to_string();
+                let range = request.headers().get("range").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                let origin = request.headers().get("origin").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                let resp = document::asset::handle(&core.sessions, &method, request.uri().path(), range.as_deref(), origin.as_deref(), &core.allowed_origins);
+                let mut b = tauri::http::Response::builder().status(resp.status);
+                for (k, v) in resp.headers {
+                    b = b.header(k, v);
+                }
+                let _ = responder.respond(b.body(resp.body).unwrap());
+            });
+        })
+        .setup(|app| {
+            #[allow(unused_mut)]
+            let mut root = app.path().app_data_dir().map_err(|e| format!("app data dir: {e}"))?;
+            #[cfg(debug_assertions)]
+            if let Ok(d) = std::env::var("THOTH_DATA_DIR") {
+                root = std::path::PathBuf::from(d); // debug-only scratch library for self-tests
+            }
+            let paths = document::paths::AppPaths::new(root)?;
+            let db = tauri::async_runtime::block_on(storage::Db::open(&paths.db_file(), &paths.backups)).map_err(|e| e.message)?;
+            if let Some(r) = &db.read_only_reason {
+                tracing::warn!("database is read-only: {r}");
+            }
+            tauri::async_runtime::block_on(document::import::recover(&db, &paths)).map_err(|e| e.message)?;
+            let translation = translation::service::TranslationService::new(db.clone(), security::keychain::keychain_store(), translation::service::default_factory());
+            tauri::async_runtime::block_on(translation.start()).map_err(|e| e.message)?;
+            let core = Arc::new(AppCore {
+                db,
+                paths,
+                sessions: Default::default(),
+                imports: Default::default(),
+                translation,
+                allowed_origins: allowed_origins(),
+            });
+            app.manage(core.clone());
+
+            #[allow(unused_mut)]
+            let mut wb = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()));
+            #[cfg(debug_assertions)]
+            if std::env::var("THOTH_SELFTEST").is_ok() {
+                // Self-test runs while the window may be occluded; keep timers running.
+                wb = wb.background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
+            }
+            wb
+                .title("Thoth Reader")
+                .inner_size(1280.0, 840.0)
+                .min_inner_size(900.0, 600.0)
+                .on_navigation(|url| navigation_allowed(url))
+                .on_new_window(|_url, _features| tauri::webview::NewWindowResponse::Deny)
+                .build()?;
+
+            // Idle WAL checkpoints and receipt pruning.
+            let core_bg = core.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(120)).await;
+                    core_bg.db.checkpoint().await;
+                    let _ = storage::repo::misc::receipts_prune(&core_bg.db.writer, 7 * 24 * 3600 * 1000).await;
+                }
+            });
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            // Dropped paths are only accepted here and turned into single-use tokens.
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                if let Some(core) = window.try_state::<Arc<AppCore>>() {
+                    let cands: Vec<_> = paths.iter().take(50).filter_map(|p| core.imports.register(p.clone())).collect();
+                    let _ = window.emit_to(window.label(), "import-candidates", cands);
+                }
+            }
+        })
+        .invoke_handler(handlers());
 
     let app = builder.build(tauri::generate_context!()).expect("error while building Thoth Reader");
     app.run(|handle, event| {
@@ -178,5 +209,9 @@ mod tests {
         assert!(!ok("file:///etc/passwd"));
         assert!(!ok("thoth-doc://localhost/x/pdf"));
         assert!(!ok("javascript:alert(1)"));
+        assert!(ok("about:srcdoc"));
+        assert!(ok("blob:tauri://localhost/2b1e-uuid"));
+        assert!(!ok("blob:https://evil.example/2b1e-uuid"));
+        assert!(!ok("blob:blob:tauri://localhost/x"));
     }
 }

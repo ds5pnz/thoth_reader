@@ -14,3 +14,9 @@
   the main window gets those plus `core:event:allow-listen/unlisten` only. No fs/http/shell/sql/dialog/opener
   permissions are granted to the frontend; the file dialog and URL opening happen in Rust commands.
 - Navigation: the main webview only allows the bundled origin (and the dev server in debug); new windows are denied.
+
+## Amendment (M0 WKWebView run, 2026-11-14)
+`app.security.freezePrototype` is **off**. With it on, epub.js 0.3.93's `@xmldom/xmldom` dependency throws
+"Attempted to assign to readonly property" at module evaluation in WKWebView, which breaks EPUB original mode.
+Mitigations kept: no remote content in the app webview, strict app CSP, sanitized EPUB served from `thoth-doc`
+into a sandboxed iframe without `allow-scripts`, and explicit command permissions. epub.js is lazy-loaded.

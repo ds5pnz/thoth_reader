@@ -45,6 +45,8 @@
     "allow-provider-new-cache-epoch",
     "allow-profile-create",
     "allow-cache-invalidate",
-    "allow-storage-usage"
+    "allow-storage-usage",
+    "allow-debug-selftest-files",
+    "allow-debug-log"
   ]
 }

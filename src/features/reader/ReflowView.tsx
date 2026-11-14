@@ -135,6 +135,12 @@ export const ReflowView = forwardRef<ReflowHandle, {
         const r = n.querySelector<HTMLElement>('.src')?.getBoundingClientRect() ?? n.getBoundingClientRect();
         cands.push({ id: n.dataset.blockId!, top: r.top - vp.top, bottom: r.bottom - vp.top });
       });
+      // At the very top the 25% line cannot be honoured after a clamped restore; the
+      // reading position is then the first visible block.
+      if (el.scrollTop <= 1) {
+        const first = cands.filter((c) => c.bottom > 0).sort((x, y) => x.top - y.top)[0];
+        if (first) return { blockId: first.id, ratio: 0 };
+      }
       const a = pickAnchor(cands, 0, vp.height);
       return a ? { blockId: a.id, ratio: a.ratio } : null;
     },
