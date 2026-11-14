@@ -12,9 +12,11 @@ pub use hashing::{sha256_hex, sha256_hex_str};
 
 /// Current extractor / sanitizer / splitter versions. Stored as part of the data.
 pub mod versions {
-    pub const EPUB_EXTRACTOR: &str = "epub-extractor/1";
+    /// 2: heading blocks carry their level as a role ("h1".."h6").
+    pub const EPUB_EXTRACTOR: &str = "epub-extractor/2";
     pub const EPUB_SANITIZER: &str = "epub-sanitizer/1";
-    pub const PDF_EXTRACTOR: &str = "pdf-extractor/1";
+    /// 2: content carries bold/italic runs (strong/emphasis nodes).
+    pub const PDF_EXTRACTOR: &str = "pdf-extractor/2";
     pub const SPLITTER: &str = "1";
     pub const PLACEHOLDER: &str = "1";
     pub const ADAPTER: &str = "1";

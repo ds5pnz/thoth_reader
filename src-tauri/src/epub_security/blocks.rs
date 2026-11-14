@@ -73,6 +73,9 @@ struct Draft {
     rtl: bool,
     footnote: bool,
     has_image: bool,
+    /// 1..=6 for h1..h6 leaves (0 otherwise); exposed as a role so views can keep the
+    /// heading hierarchy in both the source and the translation.
+    level: u8,
 }
 
 impl Draft {
@@ -87,6 +90,7 @@ impl Draft {
             rtl: inh.rtl,
             footnote: inh.footnote,
             has_image: false,
+            level: 0,
         }
     }
     fn has_text(&self) -> bool {
@@ -285,6 +289,9 @@ impl Walker {
     fn leaf(&mut self, e: &Element, steps: &[Step], kind: BlockKind, inh: &Inh, parent: Option<usize>, skip: &[&str]) -> Option<usize> {
         let mut d = Draft::new(kind, steps, String::new(), inh);
         d.parent = parent;
+        if kind == BlockKind::Heading {
+            d.level = e.name.strip_prefix('h').and_then(|n| n.parse::<u8>().ok()).filter(|n| (1..=6).contains(n)).unwrap_or(0);
+        }
         let nodes = Self::collect_children(e, steps, &mut d, skip);
         d.content = match kind {
             BlockKind::Code => vec![SafeNode::InlineCode { v: e.text_content() }],
@@ -686,6 +693,9 @@ pub(crate) fn extract(xhtml: &str, info: &SectionInfo<'_>) -> Result<Vec<Block>,
         let mut roles = Vec::new();
         if d.footnote {
             roles.push("footnote".to_string());
+        }
+        if d.level > 0 {
+            roles.push(format!("h{}", d.level));
         }
         blocks.push(Block {
             id: ids[i].clone(),

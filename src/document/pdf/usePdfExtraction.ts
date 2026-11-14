@@ -12,7 +12,7 @@ import { PdfExtractClient } from './extractClient';
 import { canonicalJson } from '../../domain/canonicalJson';
 import type { PdfPageInput, RunningElementUpdate } from './types';
 
-export const PDF_EXTRACTOR_VERSION = 'pdf-extractor/1';
+export const PDF_EXTRACTOR_VERSION = 'pdf-extractor/2';
 const BATCH_PAGES = 6;
 const MAX_BATCH_BLOCKS = 100;
 const MAX_BATCH_BYTES = 900 * 1024;

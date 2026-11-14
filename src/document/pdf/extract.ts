@@ -23,7 +23,7 @@ import {
   type Paragraph,
   userRectToFrameBox,
 } from './layout';
-import { buildVocabulary, decideLineEndHyphen, normalizeWithMapping, type RawEdit } from './text';
+import { buildVocabulary, decideLineEndHyphen, normalizeWithMapping, sourceToRawOffset, type RawEdit } from './text';
 import type { ExtractDeps, PdfPageDiagnostics, PdfPageInput, PdfPageResult, QualityReason } from './types';
 
 /** Block kinds never sent to automatic translation (spec §4.2). */
@@ -271,10 +271,14 @@ function buildDraft(
   const lineStarts: number[] = [];
   const lineTexts: string[] = [];
   let raw = '';
+  // Bold / italic runs in raw offsets (1 = bold, 2 = italic), used for inline emphasis.
+  const styleRuns: { rawStart: number; rawEnd: number; s: number }[] = [];
   const appendLine = (parts: Line['parts'], prefix: string) => {
     if (prefix) raw += prefix;
     for (const p of parts) {
       if (p.frag) {
+        const st = (p.frag.style.bold ? 1 : 0) | (p.frag.style.italic ? 2 : 0);
+        if (st) styleRuns.push({ rawStart: raw.length, rawEnd: raw.length + p.text.length, s: st });
         textNodes.push({ path: `item:${p.frag.itemIndex}`, rawStartU16: raw.length, rawLenU16: p.text.length, nodeOffsetU16: 0 });
         itemRanges.push({ itemIndex: p.frag.itemIndex, startU16: 0, endU16: p.frag.str.length });
       }
@@ -336,7 +340,7 @@ function buildDraft(
   if (norm.text.length === 0 && kind !== 'code') return null;
 
   if (kind === 'code') content.push({ t: 'inline_code', v: raw });
-  else if (!isTable) content.push({ t: 'text', v: norm.text });
+  else if (!isTable) content.push(...styledContent(norm.text, norm.offsets, styleRuns, kind, layout.bodyBold));
 
   return {
     kind,
@@ -468,4 +472,57 @@ export async function extractPage(input: PdfPageInput, extractionId: string, dep
     });
   }
   return { pageIndex: input.pageIndex, blocks, diagnostics };
+}
+
+/**
+ * Inline emphasis for a prose block: bold / italic runs become strong / emphasis nodes whose
+ * concatenated text is exactly `text` (the normalized source text). A uniformly styled block
+ * stays a plain text node when the style is implied (headings, or bold body text) and
+ * becomes one strong/emphasis node otherwise.
+ */
+export function styledContent(
+  text: string,
+  offsets: Parameters<typeof sourceToRawOffset>[0],
+  runs: readonly { rawStart: number; rawEnd: number; s: number }[],
+  kind: BlockKind,
+  bodyBold: boolean,
+): SafeNode[] {
+  const plain: SafeNode[] = [{ t: 'text', v: text }];
+  if (runs.length === 0 || text.length === 0) return plain;
+  const styleAtRaw = (r: number) => {
+    for (const x of runs) if (r >= x.rawStart && r < x.rawEnd) return x.s;
+    return 0;
+  };
+  const st: number[] = new Array<number>(text.length);
+  for (let i = 0; i < text.length; i++) st[i] = styleAtRaw(sourceToRawOffset(offsets, i));
+  // Whitespace takes the style shared by its neighbours so runs are not chopped at spaces.
+  for (let i = 0; i < text.length; i++) {
+    if (!/\s/.test(text[i]!)) continue;
+    let a = i - 1; while (a >= 0 && /\s/.test(text[a]!)) a--;
+    let b = i + 1; while (b < text.length && /\s/.test(text[b]!)) b++;
+    st[i] = (a >= 0 ? st[a]! : 0) & (b < text.length ? st[b]! : 0);
+  }
+  const inked = st.filter((_, i) => !/\s/.test(text[i]!));
+  if (inked.every((x) => x === 0)) return plain;
+  if (inked.every((x) => x === inked[0])) {
+    const s0 = inked[0]!;
+    if (kind === 'heading' || ((s0 & 1) === 1 && bodyBold && (s0 & 2) === 0)) return plain;
+    return wrap(s0, text);
+  }
+  const out: SafeNode[] = [];
+  let start = 0;
+  for (let i = 1; i <= text.length; i++) {
+    if (i === text.length || st[i] !== st[start]) {
+      out.push(...wrap(st[start]!, text.slice(start, i)));
+      start = i;
+    }
+  }
+  return out;
+}
+
+function wrap(style: number, v: string): SafeNode[] {
+  let node: SafeNode = { t: 'text', v };
+  if (style & 2) node = { t: 'emphasis', c: [node] };
+  if (style & 1) node = { t: 'strong', c: [node] };
+  return [node];
 }

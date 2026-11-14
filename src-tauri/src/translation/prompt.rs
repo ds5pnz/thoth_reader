@@ -76,6 +76,13 @@ pub fn style_instruction(target_language: &str, style: TranslationStyle) -> &'st
     }
 }
 
+/// Added only for parts that carry inline emphasis. Deliberately not in
+/// `prompt_template_hash`: the exact system message is already hashed through
+/// `requestManifestHash`, so blocks without emphasis keep their cache keys.
+const INLINE_TAG_TEMPLATE: &str = "The text contains <b>…</b> (bold) and <i>…</i> (italic) tags. Keep every tag pair in the \
+translation, wrapped around the words that translate the tagged words. Keep the tags exactly as written, properly closed and \
+not overlapping; do not add tags that are not in the source.";
+
 const PLACEHOLDER_TEMPLATE: &str = "Tokens like {example} are protected placeholders. Copy every placeholder exactly once, \
 unchanged, into the translation at the grammatically appropriate position. Never translate, alter, add or remove placeholders.";
 
@@ -230,6 +237,8 @@ pub struct PromptInput {
     pub placeholder_example: Option<String>,
     /// Register for the target language (part of the system message, hence of the cache key).
     pub style: TranslationStyle,
+    /// The segment text carries `<b>`/`<i>` emphasis tags that must survive translation.
+    pub inline_tags: bool,
 }
 
 fn language_label(code: &str) -> String {
@@ -260,6 +269,10 @@ pub fn build_messages(input: &PromptInput) -> AppResult<Vec<ChatMessage>> {
     system.push_str(CONSISTENCY_TEMPLATE);
     system.push('\n');
     system.push_str(style_instruction(&input.target_language, input.style));
+    if input.inline_tags {
+        system.push('\n');
+        system.push_str(INLINE_TAG_TEMPLATE);
+    }
     if let Some(ex) = &input.placeholder_example {
         system.push('\n');
         system.push_str(&PLACEHOLDER_TEMPLATE.replace("{example}", ex));
@@ -337,6 +350,7 @@ mod tests {
             response_format: format,
             placeholder_example: Some("⟦P1⟧".into()),
             style: TranslationStyle::default(),
+            inline_tags: false,
         }
     }
 
@@ -429,7 +443,19 @@ mod style_tests {
             response_format: ResponseFormat::Text,
             placeholder_example: None,
             style,
+            inline_tags: false,
         }
+    }
+
+    #[test]
+    fn inline_tag_rule_is_added_only_when_needed_and_keeps_the_template_hash() {
+        let before = prompt_template_hash();
+        let mut i = input("ko", TranslationStyle::Polite);
+        assert!(!build_messages(&i).unwrap()[0].content.contains("<b>"));
+        i.inline_tags = true;
+        assert!(build_messages(&i).unwrap()[0].content.contains("<b>…</b>"));
+        // Blocks without emphasis keep their cache keys: the template hash is unchanged.
+        assert_eq!(before, prompt_template_hash());
     }
 
     #[test]

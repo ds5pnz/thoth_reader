@@ -14,6 +14,8 @@ import { pdfRectToCss, cssPointToPdf, hitTest } from './coords';
 import { isVisible, pickAnchor, ScrollOrigin, attachUserIntent, Debouncer, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
 import { openSessionPdf, releaseSessionPdf } from './sessionPdf';
 import { setExtractionFocus } from './usePdfExtraction';
+import { renderMarked, stripInlineTags } from '../../features/translation/marked';
+import type { Mark } from '../../ipc/generated/Mark';
 import { blockBox, expandBox, fitFontSize, harmonizeFontSizes, resolveVerticalOverlaps, pickBackground, textColorFor, type BlockBox, type ItemSize, type Rgb } from './translatedPage';
 
 export interface PdfOriginalHandle {
@@ -482,7 +484,8 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
         return (
           <FitText
             key={b.id}
-            text={text || preview || ''}
+            text={text || stripInlineTags(preview ?? '')}
+            marks={text ? d?.shown?.marks : undefined}
             kind={`${b.kind}/${box.lines}`}
             cover={slot}
             maxWidth={(f?.width ?? box.width) + 2}
@@ -505,8 +508,8 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
 
 /** Translated text for one block. It always covers the original text region (`cover`) and
  *  may use the free space up to maxWidth/maxHeight; the font shrinks only if that is not enough. */
-function FitText({ text, kind, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, stale, manual, streaming, selected, onClick }: {
-  text: string; kind: string; cover: { left: number; top: number; width: number; height: number }; maxWidth: number; maxHeight: number; baseSize: number; lineHeight: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; onClick: () => void;
+function FitText({ text, marks, kind, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, stale, manual, streaming, selected, onClick }: {
+  text: string; marks?: Mark[]; kind: string; cover: { left: number; top: number; width: number; height: number }; maxWidth: number; maxHeight: number; baseSize: number; lineHeight: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; onClick: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   // When the region is too small for a readable translation (diagram labels, tight table
@@ -535,7 +538,7 @@ function FitText({ text, kind, cover, maxWidth, maxHeight, baseSize, lineHeight,
     const timer = window.setTimeout(again, 300);
     void document.fonts?.ready.then(again);
     return () => { alive = false; cancelAnimationFrame(raf); window.clearTimeout(timer); };
-  }, [text, maxWidth, maxHeight, baseSize, lineHeight]);
+  }, [text, marks, maxWidth, maxHeight, baseSize, lineHeight]);
   const color = bg ?? [255, 255, 255];
   return (
     <div
@@ -550,7 +553,7 @@ function FitText({ text, kind, cover, maxWidth, maxHeight, baseSize, lineHeight,
       data-max={`${maxWidth.toFixed(0)}x${maxHeight.toFixed(0)}`}
       onClick={(e) => { if (!window.getSelection()?.toString()) { e.stopPropagation(); onClick(); } }}
     >
-      {text}
+      {renderMarked(text, marks)}
     </div>
   );
 }

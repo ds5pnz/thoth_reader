@@ -811,6 +811,9 @@ pub struct DisplayRevision {
     pub cache_key: Option<String>,
     /// e.g. "script:cyrillic" or "language" when the output looks wrong; a hint, not a failure.
     pub warning: Option<String>,
+    /// Bold/italic ranges of `text` (UTF-16), empty for manual edits.
+    #[serde(default)]
+    pub marks: Vec<crate::translation::inline_marks::Mark>,
 }
 
 pub fn warning_of(metadata: &serde_json::Value) -> Option<String> {
@@ -841,8 +844,9 @@ pub async fn heads_with_text(pool: &SqlitePool, block_ids: &[String], lang: &str
         }
         for r in q.fetch_all(pool).await? {
             let head = HeadRow { block_id: r.get(0), target_language: lang.into(), manual_revision_id: r.get(1), generated_revision_id: r.get(2), version: r.get(3) };
-            let manual = head.manual_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("mtext"), origin: r.get("morigin"), profile_id: None, cache_key: None, warning: None });
-            let generated = head.generated_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("gtext"), origin: "generated".into(), profile_id: r.get("gprofile"), cache_key: r.get("gkey"), warning: r.get::<Option<String>, _>("gmeta").and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok()).and_then(|m| warning_of(&m)) });
+            let gmeta: Option<serde_json::Value> = r.get::<Option<String>, _>("gmeta").and_then(|m| serde_json::from_str(&m).ok());
+            let manual = head.manual_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("mtext"), origin: r.get("morigin"), profile_id: None, cache_key: None, warning: None, marks: vec![] });
+            let generated = head.generated_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("gtext"), origin: "generated".into(), profile_id: r.get("gprofile"), cache_key: r.get("gkey"), warning: gmeta.as_ref().and_then(warning_of), marks: gmeta.as_ref().map(crate::translation::inline_marks::marks_of).unwrap_or_default() });
             out.push((head, manual, generated));
         }
     }

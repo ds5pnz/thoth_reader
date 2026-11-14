@@ -293,8 +293,10 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
   const restricted = block.quality.level === 'low' || block.translationPolicy !== 'auto';
   const srcId = `src-${block.id}`;
   const imageOnly = isImageOnly(block);
+  // EPUB headings carry their level as a role ("h1".."h6") so both columns keep the hierarchy.
+  const headingLevel = block.kind === 'heading' ? Number(block.roles.find((r) => /^h[1-6]$/.test(r))?.slice(1) ?? 0) : 0;
   return (
-    <div className={`brow kind-${block.kind} ${highlighted ? 'hl' : ''}`} data-block-id={block.id}>
+    <div className={`brow kind-${block.kind} ${headingLevel ? `lvl-${headingLevel}` : ''} ${highlighted ? 'hl' : ''}`} data-block-id={block.id}>
       <Tag className="src" id={srcId} lang={sourceLanguage}>
         <SafeContentView nodes={block.content.length ? block.content : [{ t: 'text', v: block.sourceText }]} resolvers={resolvers} />
         {restricted && block.quality.reasons.length > 0 && <span className="badge warn qual" title={block.quality.reasons.join(', ')}>제한</span>}

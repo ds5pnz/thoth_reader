@@ -230,7 +230,7 @@ impl TranslationService {
                 None => (translations::HeadRow { block_id: b.id.clone(), target_language: lang.clone(), ..Default::default() }, None, None),
             };
             let cached = match &current_key {
-                Some(k) => translations::cache_lookup(&self.db.reader, k).await?.map(|r| translations::DisplayRevision { warning: translations::warning_of(&r.metadata), revision_id: r.id, text: r.text, origin: r.origin, profile_id: r.profile_id, cache_key: r.cache_key }),
+                Some(k) => translations::cache_lookup(&self.db.reader, k).await?.map(|r| translations::DisplayRevision { warning: translations::warning_of(&r.metadata), marks: crate::translation::inline_marks::marks_of(&r.metadata), revision_id: r.id, text: r.text, origin: r.origin, profile_id: r.profile_id, cache_key: r.cache_key }),
                 None => None,
             };
             let mut has_candidate = false;
@@ -782,7 +782,8 @@ impl TranslationService {
                 }
             }
         }
-        let text = prepare::join_parts(&outputs, &e.prepared.target_language);
+        let joined = prepare::join_parts(&outputs, &e.prepared.target_language);
+        let (text, marks) = prepare::finish_text(&e.prepared, &joined);
         let is_current = {
             let st = s.state.lock().unwrap();
             e.generation == s.generation() && st.profile_id.is_some()
@@ -796,7 +797,7 @@ impl TranslationService {
             cache_key: &e.cache_key,
             descriptor: &e.prepared.descriptor,
             text: &text,
-            metadata: &serde_json::json!({"generation": e.generation, "force": e.force, "parts": e.prepared.parts.len(), "languageWarning": prepare::language_warning(&text, &e.prepared.target_language), "scriptWarning": prepare::script_warning(&e.prepared, &text)}),
+            metadata: &serde_json::json!({"generation": e.generation, "force": e.force, "parts": e.prepared.parts.len(), "languageWarning": prepare::language_warning(&text, &e.prepared.target_language), "scriptWarning": prepare::script_warning(&e.prepared, &text), "marks": marks}),
             is_current_profile: is_current,
             force: e.force,
         })

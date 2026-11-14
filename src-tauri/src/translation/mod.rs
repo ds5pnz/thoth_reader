@@ -1,5 +1,6 @@
 //! Translation scheduler, cache keys, validation, placeholders and splitting (spec §6.3, §7).
 pub mod cache_key;
+pub mod inline_marks;
 pub mod placeholder;
 pub mod prepare;
 pub mod prompt;

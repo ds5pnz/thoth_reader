@@ -215,6 +215,9 @@ pub struct PreparedJob {
     pub target_language: String,
     pub source_hash: String,
     pub source_text: String,
+    /// Emphasis handling decided for this block (see `inline_marks`).
+    pub has_inline_marks: bool,
+    pub whole_mark: Option<char>,
     pub block_id: String,
     pub cache_key: String,
     pub descriptor: serde_json::Value,
@@ -256,8 +259,22 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
     let overhead = 600 + crate::translation::splitter::estimate_tokens(&context.to_json().to_string());
     let max_out = p.options.max_output_tokens.unwrap_or_else(|| p.context_limit.map(|l| (l / 3).clamp(256, 8192)).unwrap_or(4096));
     let budget = if p.context_limit.is_some() { SplitBudget::for_model(p.context_limit, overhead, max_out)? } else { SplitBudget::default() };
-    let spans = placeholder::detect_spans(&b.source_text);
-    let split = splitter::split_source(&b.source_text, budget, &spans);
+    // Inline emphasis (bold/italic) travels as paired tags inside the text to translate.
+    let marks = super::inline_marks::analyze(b);
+    let text_in: &str = match &marks {
+        super::inline_marks::SourceMarks::Inline(m) => m.as_str(),
+        _ => b.source_text.as_str(),
+    };
+    let has_inline = matches!(marks, super::inline_marks::SourceMarks::Inline(_));
+    let spans = placeholder::detect_spans(text_in);
+    let mut split = splitter::split_source(text_in, budget, &spans);
+    if has_inline && split.len() > 1 {
+        let mut texts: Vec<String> = split.iter().map(|p| p.text.clone()).collect();
+        super::inline_marks::rebalance_parts(&mut texts);
+        for (p, t) in split.iter_mut().zip(texts) {
+            p.text = t;
+        }
+    }
     let part_count = split.len() as u32;
     let src_lang = p.profile.source_language.clone();
     let tgt_lang = p.profile.target_language.clone();
@@ -275,6 +292,7 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
             response_format: p.response_format,
             placeholder_example: if protected.has_placeholders() { Some(protected.example_token()) } else { None },
             style: p.style,
+            inline_tags: has_inline && (sp.text.contains("<b>") || sp.text.contains("<i>")),
         })?;
         let request = TranslationRequest {
             request_id: String::new(),
@@ -326,6 +344,8 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
         target_language: tgt_lang,
         source_hash: b.source_hash.clone(),
         source_text: b.source_text.clone(),
+        has_inline_marks: has_inline,
+        whole_mark: match marks { super::inline_marks::SourceMarks::Whole(k) => Some(k), _ => None },
         block_id: b.id.clone(),
         cache_key: cache_key::cache_key(&descriptor),
         descriptor,
@@ -344,6 +364,20 @@ pub fn validate_part(pj: &PreparedJob, index: usize, out: &TranslationOutput) ->
     let v = validation::validate_output(out, pj.response_format, &[ExpectedSegment { id: SEGMENT_ID, protected: &part.protected }], &pj.target_language)
         .map_err(|e| e.reason().to_string())?;
     v.segments.into_iter().next().map(|s| s.text.trim().to_string()).ok_or_else(|| "no_segment".to_string())
+}
+
+/// Final stored text + emphasis ranges for a completed job.
+pub fn finish_text(pj: &PreparedJob, joined: &str) -> (String, Vec<super::inline_marks::Mark>) {
+    if pj.has_inline_marks {
+        return super::inline_marks::extract(joined);
+    }
+    match pj.whole_mark {
+        Some(k) if !joined.is_empty() => (
+            joined.to_string(),
+            vec![super::inline_marks::Mark { start_u16: 0, end_u16: crate::domain::utf16::len_u16(joined), kind: k.to_string() }],
+        ),
+        _ => (joined.to_string(), vec![]),
+    }
 }
 
 /// Join part translations in order (no space for CJK targets).

@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from 'react';
 import type { Block } from '../../ipc/generated/Block';
 import type { BlockDisplay } from '../../ipc/generated/BlockDisplay';
 import type { JobView } from '../reader/useReaderSession';
+import { renderMarked, stripInlineTags } from './marked';
 
 export interface CellActions {
   retranslate: (blockId: string) => void;
@@ -146,10 +147,10 @@ export const TranslationCell = memo(function TranslationCell(props: {
           {/* Popover: the existing translation stays and the new result is previewed below it.
               Reading flow: the existing text simply stays until the new one is committed. */}
           {detailed && shownText && <p className="tcell-prev">{shownText}</p>}
-          <p className="tcell-stream" aria-live="off">{preview}</p>
+          <p className="tcell-stream" aria-live="off">{stripInlineTags(preview)}</p>
         </div>
       ) : shownText ? (
-        <div className="tcell-text" onDoubleClick={startEdit}>{shownText}</div>
+        <div className="tcell-text" onDoubleClick={startEdit}>{renderMarked(shownText, display?.shown?.marks)}</div>
       ) : display?.status === 'excluded' ? null : (
         <div className="tcell-empty faint">
           {job?.state === 'FAILED' ? (

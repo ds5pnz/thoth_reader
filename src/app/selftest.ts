@@ -94,6 +94,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'pdflayout') await pdfLayout(res);
       if (cfg.scenario === 'audit') await layoutAudit(res, i);
       if (cfg.scenario === 'quiet') await quietCheck(res);
+      if (cfg.scenario === 'structure') await structureCheck(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -413,6 +414,17 @@ async function pdfLayout(res: Record<string, unknown>) {
   const texts = [...document.querySelectorAll<HTMLElement>('.tp-text')];
   const sizes = texts.map((t) => parseFloat(getComputedStyle(t).fontSize));
   res.perBlock = [...document.querySelectorAll<HTMLElement>('.pdf-row')].filter((r) => r.querySelector(`.pdf-page[data-page="${page}"]`)).flatMap((r) => [...r.querySelectorAll<HTMLElement>('.tp-text')]).map((t) => ({ k: t.dataset.kind, base: t.dataset.base, font: parseFloat(getComputedStyle(t).fontSize).toFixed(1), cover: (t.dataset.cover ?? '').split(',').slice(2).map((x) => Math.round(Number(x))).join('x'), max: t.dataset.max, client: `${t.clientWidth}x${t.clientHeight}`, scroll: `${t.scrollWidth}x${t.scrollHeight}`, fb: t.classList.contains('fallback'), chars: (t.textContent ?? '').length }));
+  {
+    const onPage = [...document.querySelectorAll<HTMLElement>('.pdf-row')].filter((r) => r.querySelector(`.pdf-page[data-page="${page}"]`)).flatMap((r) => [...r.querySelectorAll<HTMLElement>('.tp-text')]);
+    res.bold = {
+      overlays: onPage.length,
+      withStrong: onPage.filter((t) => t.querySelector('strong')).length,
+      leadingStrong: onPage.filter((t) => t.firstElementChild?.querySelector('strong') && (t.textContent ?? '').startsWith(t.querySelector('strong')?.textContent ?? '\u0000')).length,
+      wholeStrong: onPage.filter((t) => (t.querySelector('strong')?.textContent ?? '') === (t.textContent ?? ' ')).length,
+      strongLens: onPage.filter((t) => t.querySelector('strong')).map((t) => `${(t.querySelector('strong')?.textContent ?? '').length}/${(t.textContent ?? '').length}`),
+      rawTagsLeft: onPage.filter((t) => /<\/?[bi]>/i.test(t.textContent ?? '')).length,
+    };
+  }
   res.pdfLayout = {
     paneWidth: pane?.clientWidth,
     liveRows: pairs.length,
@@ -561,5 +573,50 @@ async function quietCheck(res: Record<string, unknown>) {
     badgesWhenStale: visibleBadges(),
     textColours: [...new Set(cells.map((c) => getComputedStyle(c).color))],
     sourceColour: src ? getComputedStyle(src).color : null,
+  };
+}
+
+/** EPUB side-by-side: the translation keeps the source's structure (heading size/weight per
+ *  level, bold terms). Numbers only. */
+async function structureCheck(res: Record<string, unknown>) {
+  clickButton('병렬');
+  await waitFor(() => rows() > 0 && !!document.querySelector('.reflow'), 15000);
+  const scroller = document.querySelector<HTMLElement>('.reflow');
+  const seen = new Map<string, { kind: string; lvl: string; srcPx: number; trPx: number; srcW: string; trW: string; srcStrong: number; trStrong: number; rawTags: boolean }>();
+  for (const top of [2500, 3300, 4100, 4900]) {
+    if (!scroller) break;
+    scroller.scrollTop = top;
+    userScroll(scroller);
+    await waitFor(() => {
+      const vis = [...document.querySelectorAll<HTMLElement>('.brow')].filter((r) => { const b = r.getBoundingClientRect(); return b.bottom > 80 && b.top < window.innerHeight; });
+      return vis.length > 0 && vis.every((r) => !r.querySelector('.tcell') || r.querySelector('.tcell-text') || r.querySelector('.tcell.excluded') || r.querySelector('.badge.danger'));
+    }, WAIT);
+    for (const r of document.querySelectorAll<HTMLElement>('.brow')) {
+      const src = r.querySelector<HTMLElement>('.src');
+      const tr = r.querySelector<HTMLElement>('.tcell-text');
+      if (!src || !tr || !r.dataset.blockId) continue;
+      const cs = getComputedStyle(src), ct = getComputedStyle(tr);
+      seen.set(r.dataset.blockId, {
+        kind: [...r.classList].find((c) => c.startsWith('kind-'))?.slice(5) ?? '',
+        lvl: [...r.classList].find((c) => c.startsWith('lvl-'))?.slice(4) ?? '',
+        srcPx: parseFloat(cs.fontSize), trPx: parseFloat(ct.fontSize), srcW: cs.fontWeight, trW: ct.fontWeight,
+        srcStrong: src.querySelectorAll('strong').length, trStrong: tr.querySelectorAll('strong').length,
+        rawTags: /<\/?[bi]>/i.test(tr.textContent ?? ''),
+      });
+    }
+  }
+  const all = [...seen.values()];
+  const headings = all.filter((x) => x.kind === 'heading');
+  const withBold = all.filter((x) => x.srcStrong > 0);
+  res.structure = {
+    rows: all.length,
+    sizeMismatch: all.filter((x) => Math.abs(x.srcPx - x.trPx) > 0.5).length,
+    weightMismatch: all.filter((x) => x.srcW !== x.trW).length,
+    headings: headings.length,
+    headingLevels: Object.fromEntries([...new Set(headings.map((h) => h.lvl || '-'))].map((l) => [l, headings.filter((h) => (h.lvl || '-') === l).length])),
+    headingSizes: [...new Set(headings.map((h) => `${h.lvl || '-'}:${h.srcPx}/${h.trPx}`))],
+    srcRowsWithBold: withBold.length,
+    boldKept: withBold.filter((x) => x.trStrong > 0).length,
+    rawTagsLeft: all.filter((x) => x.rawTags).length,
   };
 }

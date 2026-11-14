@@ -125,3 +125,23 @@
 /* region too small for a readable translation: keep the original, mark it, translate on click */
 .tp-text.fallback { overflow: hidden; border-bottom: 1px dotted rgba(31, 95, 107, .8); -webkit-user-select: none; user-select: none; }
 .tp-text.fallback.stale, .tp-text.fallback.manual { box-shadow: none; }
+
+/* inline emphasis carried over from the source */
+.tp-text strong, .tcell-text strong { font-weight: 650; }
+.tp-text em, .tcell-text em { font-style: italic; }
+
+/* Source and translation share the same typography per block kind, so both columns read as
+   the same document (heading hierarchy, quotes, captions). */
+.brow.kind-heading .tcell { font-size: calc(var(--reader-size) * 1.3); font-weight: 650; margin-top: .6em; }
+.brow.kind-heading.lvl-1 .src, .brow.kind-heading.lvl-1 .tcell { font-size: calc(var(--reader-size) * 1.75); line-height: 1.25; }
+.brow.kind-heading.lvl-2 .src, .brow.kind-heading.lvl-2 .tcell { font-size: calc(var(--reader-size) * 1.45); line-height: 1.3; }
+.brow.kind-heading.lvl-3 .src, .brow.kind-heading.lvl-3 .tcell { font-size: calc(var(--reader-size) * 1.25); }
+.brow.kind-heading.lvl-4 .src, .brow.kind-heading.lvl-4 .tcell { font-size: calc(var(--reader-size) * 1.1); }
+.brow.kind-heading.lvl-5 .src, .brow.kind-heading.lvl-5 .tcell,
+.brow.kind-heading.lvl-6 .src, .brow.kind-heading.lvl-6 .tcell { font-size: var(--reader-size); }
+.brow.kind-heading .tcell-head { font-weight: 400; font-size: 13px; }
+.brow.kind-quote .tcell { border-left: 3px solid var(--border); padding-left: 12px; color: var(--fg-muted); }
+.brow.kind-caption .tcell { font-size: calc(var(--reader-size) * .85); color: var(--fg-muted); }
+.brow.kind-list_item .src, .brow.kind-list_item .tcell { padding-left: 1.2em; position: relative; }
+.brow.kind-list_item .src::before, .brow.kind-list_item .tcell::before { content: "•"; position: absolute; left: .2em; color: var(--fg-faint); }
+.src strong { font-weight: 650; }
