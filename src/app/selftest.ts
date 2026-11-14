@@ -85,6 +85,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'security') await securityScan(res);
       if (cfg.scenario === 'outage') await outage(res);
       if (cfg.scenario === 'style') await styleRun(res);
+      if (cfg.scenario === 'chrome') await chromeCheck(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -332,4 +333,41 @@ async function styleRun(res: Record<string, unknown>) {
     total = translated();
   }
   res.styleRun = { translatedVisible: total };
+}
+
+/** Toolbar chrome: flags, icon buttons, collapsible sidebar that keeps the reading position. */
+async function chromeCheck(res: Record<string, unknown>) {
+  clickButton('병렬');
+  await waitFor(() => rows() > 0 && !!document.querySelector('.reflow'), 15000);
+  const scroller = document.querySelector<HTMLElement>('.reflow');
+  if (scroller) { scroller.scrollTop = 5000; userScroll(scroller); }
+  await sleep(1500);
+  const byLabel = (re: RegExp) => [...document.querySelectorAll<HTMLButtonElement>('button[aria-label]')].find((b) => re.test(b.getAttribute('aria-label') ?? ''));
+  const start = anchorId();
+  const widths: number[] = [];
+  const errs: (number | null)[] = [];
+  const sidebarStates: boolean[] = [];
+  for (let i = 0; i < 4; i++) {
+    byLabel(/^사이드바 (닫기|열기)$/)?.click();
+    await sleep(1100);
+    sidebarStates.push(!!document.querySelector('#reader-sidebar'));
+    widths.push(Math.round(document.querySelector('.content')?.getBoundingClientRect().width ?? 0));
+    errs.push(window.__thoth?.anchorError?.() ?? null);
+  }
+  const pause = byLabel(/^자동 번역 (일시정지|재개)$/);
+  const labelBefore = pause?.getAttribute('aria-label');
+  pause?.click();
+  await sleep(300);
+  const labelAfter = byLabel(/^자동 번역 (일시정지|재개)$/)?.getAttribute('aria-label');
+  byLabel(/^자동 번역 재개$/)?.click();
+  res.chrome = {
+    flags: [...document.querySelectorAll('.lang-pair .flag')].map((f) => f.textContent),
+    langLabel: document.querySelector('.lang-pair')?.getAttribute('aria-label'),
+    iconButtons: ['사이드바', '자동 번역', '번역 설정'].map((k) => { const b = byLabel(new RegExp(k)); return !!b && !!b.querySelector('svg') && (b.textContent ?? '').trim() === ''; }),
+    sidebarStates,
+    contentWidths: widths,
+    anchorKept: anchorId() === start,
+    maxAnchorErrPx: Math.max(0, ...errs.map((e) => Math.round(e ?? 0))),
+    pauseToggle: [labelBefore, labelAfter],
+  };
 }

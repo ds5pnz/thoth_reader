@@ -19,7 +19,7 @@ export function Sidebar({ tab, onTab, session, model, onJump, onSection, current
   currentAnchor: () => ReaderAnchor | null;
 }) {
   return (
-    <aside className="sidebar" aria-label="탐색">
+    <aside className="sidebar" id="reader-sidebar" aria-label="탐색">
       <div className="seg side-tabs" role="tablist">
         <button role="tab" aria-selected={tab === 'toc'} aria-pressed={tab === 'toc'} onClick={() => onTab('toc')}>목차</button>
         <button role="tab" aria-selected={tab === 'search'} aria-pressed={tab === 'search'} onClick={() => onTab('search')}>검색</button>

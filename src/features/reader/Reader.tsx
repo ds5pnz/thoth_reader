@@ -11,6 +11,8 @@ import type { ReaderAnchor } from '../../ipc/generated/ReaderAnchor';
 import { useSettings } from '../../app/settings';
 import { useToast } from '../../app/toast';
 import { useShortcut } from '../../app/shortcuts';
+import { flagOf } from '../../domain/flags';
+import { IconGear, IconPause, IconPlay, IconSidebar } from './icons';
 import { lazy, Suspense } from 'react';
 import type { EpubOriginalHandle } from '../../document/epub/EpubOriginalView';
 // epub.js (and its xmldom dependency) only loads when original EPUB mode is opened.
@@ -32,7 +34,25 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const [historyFor, setHistoryFor] = useState<Block | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
-  const [sidebarTab, setSidebarTab] = useState<'toc' | 'search' | 'bookmarks'>('toc');
+  const [sidebarTab, setSidebarTabState] = useState<'toc' | 'search' | 'bookmarks'>('toc');
+  // Sidebar visibility is a per-device convenience (not document data): localStorage.
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    try { return localStorage.getItem('thoth.sidebarOpen') !== '0'; } catch { return true; }
+  });
+  const toggleSidebar = useCallback(() => {
+    // Keep the reading position while the content column changes width.
+    switchViewRef.current(() => setSidebarOpen((v) => {
+      try { localStorage.setItem('thoth.sidebarOpen', v ? '0' : '1'); } catch { /* storage unavailable */ }
+      return !v;
+    }));
+  }, []);
+  /** Choosing a tab (search shortcut, new bookmark) always reveals the sidebar. */
+  const setSidebarTab = useCallback((t: 'toc' | 'search' | 'bookmarks') => {
+    setSidebarTabState(t);
+    setSidebarOpen(true);
+    try { localStorage.setItem('thoth.sidebarOpen', '1'); } catch { /* storage unavailable */ }
+  }, []);
+  const switchViewRef = useRef<(apply: () => void) => void>((apply) => apply());
   const [pendingSwitch, setPendingSwitch] = useState<PendingSwitch>(null);
   const reflowRef = useRef<ReflowHandle>(null);
   const epubRef = useRef<EpubOriginalHandle>(null);
@@ -221,6 +241,9 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     else run();
   }, [currentAnchor]);
 
+  switchViewRef.current = switchView;
+  useShortcut('mod+\\', toggleSidebar);
+
   const setMode = (m: ReflowMode) => switchView(() => {
     if (isPdf && pdfView === 'original' && m === 'interleaved') {
       toast({ kind: 'info', text: '문단 교차는 리플로우로 표시합니다' });
@@ -385,6 +408,9 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   return (
     <div className="reader">
       <header className="toolbar">
+        <button className={`btn icon ${sidebarOpen ? 'active' : 'ghost'}`} onClick={toggleSidebar} aria-pressed={sidebarOpen} aria-controls="reader-sidebar" aria-label={sidebarOpen ? '사이드바 닫기' : '사이드바 열기'} title={sidebarOpen ? '사이드바 닫기 (⌘\\)' : '사이드바 열기 (⌘\\)'}>
+          <IconSidebar />
+        </button>
         <button className="btn ghost" onClick={() => void close()} aria-label="라이브러리로 돌아가기">← 라이브러리</button>
         <h1 className="doc-title" title={title}>{title}</h1>
         {restrictions.length > 0 && <span className="badge warn" title={restrictions.join(', ')}>제한된 문서</span>}
@@ -403,10 +429,18 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           <button aria-pressed={mode === 'interleaved'} onClick={() => setMode('interleaved')}>교차</button>
           <button aria-pressed={mode === 'original'} onClick={() => setMode('original')}>원문</button>
         </div>
-        <span className="lang-pair" title="원문 → 대상 언어">{sourceLanguage} → {targetLanguage}</span>
-        <button className={`btn small ${paused ? '' : 'ghost'}`} onClick={() => void togglePause()} aria-pressed={paused} title="자동 번역 일시정지">{paused ? '자동 번역 재개' : '일시정지'}</button>
+        <span className="lang-pair" role="img" aria-label={`원문 ${sourceLanguage}에서 대상 언어 ${targetLanguage}로 번역`} title={`${sourceLanguage} → ${targetLanguage}`}>
+          <span className="flag">{flagOf(sourceLanguage) ?? sourceLanguage}</span>
+          <span className="arrow" aria-hidden="true">→</span>
+          <span className="flag">{flagOf(targetLanguage) ?? targetLanguage}</span>
+        </span>
+        <button className={`btn icon ${paused ? 'active' : 'ghost'}`} onClick={() => void togglePause()} aria-pressed={paused} aria-label={paused ? '자동 번역 재개' : '자동 번역 일시정지'} title={paused ? '자동 번역 재개' : '자동 번역 일시정지'}>
+          {paused ? <IconPlay /> : <IconPause />}
+        </button>
         {paused && <button className="btn small ghost" onClick={() => void cancelRunning()}>진행 중 요청 취소</button>}
-        <button className="btn small ghost" onClick={onSettings}>{settings.activeProfileId ? '번역 설정' : '번역 설정 필요'}</button>
+        <button className={`btn icon ghost ${settings.activeProfileId ? '' : 'attention'}`} onClick={onSettings} aria-label={settings.activeProfileId ? '번역 설정' : '번역 설정 필요'} title={settings.activeProfileId ? '번역 설정 (⌘,)' : '번역 설정이 필요합니다 (⌘,)'}>
+          <IconGear />
+        </button>
       </header>
       {blockedReason === 'source_language_required' && (
         <SourceLanguagePrompt onPick={(lang) => {
@@ -424,7 +458,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
         </div>
       )}
       <div className="reader-body">
-        <Sidebar
+        {sidebarOpen && <Sidebar
           tab={sidebarTab}
           onTab={setSidebarTab}
           session={session}
@@ -432,7 +466,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           onJump={(blockId, sectionId) => void revealBlock(blockId, sectionId)}
           onSection={(sectionId) => { userAnchor.current = null; void loadSection(sectionId); reflowRef.current?.scrollToSection(sectionId); pdfRef.current?.scrollToSection(sectionId); epubRef.current?.scrollToSection(sectionId); }}
           currentAnchor={currentAnchor}
-        />
+        />}
         <main className="content">
           {showPdfOriginal ? (
             <PdfOriginalView
