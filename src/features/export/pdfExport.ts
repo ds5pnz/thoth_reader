@@ -54,10 +54,10 @@ const SBS_GAP = 14; // points between the two pages
 const MIN_RATIO = 0.6; // below this share of the original size the original text is kept
 
 /** Draw the translated twin of a page onto `target` (already holding the original raster). */
-export function paintTranslatedPage(ctx: CanvasRenderingContext2D, viewport: { width: number; height: number; scale: number } & Parameters<typeof blockBox>[1], blocks: readonly Block[], display: ReadonlyMap<string, BlockDisplay>, items: ItemSize[]): { drawn: number; kept: number } {
+export function paintTranslatedPage(ctx: CanvasRenderingContext2D, viewport: { width: number; height: number; scale: number } & Parameters<typeof blockBox>[1], blocks: readonly Block[], display: ReadonlyMap<string, BlockDisplay>, items: ItemSize[]): { drawn: number; kept: number; clipped: number } {
   const body = blocks.filter((b) => !b.roles.some((r) => NON_BODY.includes(r)) && b.sourceText.trim().length > 0);
   const boxes = resolveVerticalOverlaps(body.map((b) => ({ b, id: b.id, box: blockBox(b, viewport, items) })).filter((x): x is { b: Block; id: string; box: BlockBox } => !!x.box));
-  if (boxes.length === 0) return { drawn: 0, kept: 0 };
+  if (boxes.length === 0) return { drawn: 0, kept: 0, clipped: 0 };
   const fonts = harmonizeFontSizes(boxes);
   const img = ctx.getImageData(0, 0, ctx.canvas.width, ctx.canvas.height);
   const at = (x: number, y: number): Rgb => {
@@ -71,6 +71,7 @@ export function paintTranslatedPage(ctx: CanvasRenderingContext2D, viewport: { w
   // Decide every block first (sizes come from the untouched raster), then paint.
   const plans: { box: BlockBox; bg: Rgb; laid: NonNullable<ReturnType<typeof fit>>; lh: number; w: number; h: number }[] = [];
   let kept = 0;
+  let clipped = 0;
   for (const { b, box } of boxes) {
     const shown = display.get(b.id)?.shown;
     if (!shown?.text.trim()) { if (translatable(b)) kept++; continue; }
@@ -82,8 +83,18 @@ export function paintTranslatedPage(ctx: CanvasRenderingContext2D, viewport: { w
     const lh = box.pitch > 0 ? Math.max(1.05, Math.min(1.9, box.pitch / base)) : 1.25;
     const heading = b.kind === 'heading';
     const runs: Run[] = runsOf(shown.text, shown.marks, heading ? { bold: true } : {});
-    const laid = fit(ctx, runs, grown.width + 2, grown.height + 2, base, lh, Math.max(4.5 * viewport.scale, base * MIN_RATIO));
-    if (!laid) { kept++; continue; } // too small to read: the original stays, as on screen
+    // On screen a translation that would get too small gives way to the original (one click
+    // shows it). A PDF has no click: go smaller, and as a last resort set it at the floor
+    // size and keep the lines that fit — the page must come out translated.
+    const floor = Math.max(3.4 * viewport.scale, base * 0.34);
+    let laid = fit(ctx, runs, grown.width + 2, grown.height + 2, base, lh, Math.max(4.5 * viewport.scale, base * MIN_RATIO))
+      ?? fit(ctx, runs, grown.width + 2, grown.height + 2, base * MIN_RATIO, Math.min(lh, 1.25), floor);
+    if (!laid) {
+      const lines = wrap(ctx, runs, grown.width + 2, floor);
+      const room = Math.max(1, Math.floor((grown.height + 2) / (floor * 1.15)));
+      laid = { px: floor, lines: lines.slice(0, room) };
+      clipped++;
+    }
     plans.push({ box, bg, laid, lh, w: grown.width + 2, h: grown.height + 2 });
   }
   // Largest first, so a small label is never covered by a big paragraph's background.
@@ -95,7 +106,7 @@ export function paintTranslatedPage(ctx: CanvasRenderingContext2D, viewport: { w
     ctx.fillRect(p.box.left - 1, p.box.top - 1, Math.max(p.box.width + 2, textW + 1), Math.max(p.box.height + 2, textH));
     draw(ctx, p.laid.lines, p.box.left, p.box.top - 1, p.laid.px, p.lh, textColorFor(p.bg));
   }
-  return { drawn: plans.length, kept };
+  return { drawn: plans.length, kept, clipped };
 }
 
 async function renderPage(page: PDFPageProxy, scale: number): Promise<{ canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D; viewport: ReturnType<PDFPageProxy['getViewport']> }> {

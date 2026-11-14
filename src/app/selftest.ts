@@ -1069,11 +1069,31 @@ async function exportCheck(res: Record<string, unknown>, isPdf: boolean) {
     await sleep(200);
     const t1 = performance.now();
     const before = document.querySelectorAll('.toast').length;
-    (inDlg('내보내기') ?? inDlg('지금까지 번역된 만큼 내보내기'))?.click();
+    (inDlg('번역하고 내보내기') ?? inDlg('내보내기') ?? inDlg('지금까지 번역된 만큼 내보내기'))?.click();
     const ms = await waitFor(() => !dlg().querySelector('.tx-actions button:disabled') && !inDlg('취소') && performance.now() - t1 > 400, 120000);
     done[f] = { ms, error: dlg().querySelector('.badge.danger')?.textContent ?? null, toasts: document.querySelectorAll('.toast').length - before };
   }
   out.formats = done;
+  // Export alone must translate a range nobody translated yet.
+  if (isPdf) {
+    range.focus();
+    setVal(range, '12-14');
+    await sleep(300);
+    setVal(dlg().querySelector<HTMLSelectElement>('.tx-row select')!, 'pdf-sbs');
+    await sleep(200);
+    const callsBefore = dlg().querySelector('.batch-line .batch-text')?.textContent ?? '';
+    const t2 = performance.now();
+    const toastsBefore = document.querySelectorAll('.toast').length;
+    inDlg('번역하고 내보내기')?.click();
+    let sawTranslating = false;
+    for (let i = 0; i < 900; i++) {
+      if (/내보내기 전에 범위를 번역하는 중/.test(dlg().textContent ?? '')) sawTranslating = true;
+      if (!inDlg('취소') && !dlg().querySelector('.tx-actions button:disabled') && performance.now() - t2 > 600) break;
+      await sleep(200);
+    }
+    const toastText = [...document.querySelectorAll('.toast')].slice(toastsBefore).map((x) => x.textContent ?? '').join(' | ');
+    out.autoTranslate = { ms: Math.round(performance.now() - t2), sawTranslating, before: callsBefore, after: dlg().querySelector('.batch-line .batch-text')?.textContent, error: dlg().querySelector('.badge.danger')?.textContent ?? null, untranslatedMentioned: /번역되지 않은 문단/.test(toastText), saved: /저장했습니다/.test(toastText) };
+  }
   inDlg('닫기')?.click();
 }
 

@@ -49,7 +49,10 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
   const [picked, setPicked] = useState<Set<number>>(new Set());
   const [format, setFormat] = useState<Format>(isPdf ? 'pdf-sbs' : 'epub');
   const [bilingual, setBilingual] = useState(false);
-  const [busy, setBusy] = useState<ExportProgress | 'saving' | null>(null);
+  const [busy, setBusy] = useState<ExportProgress | 'saving' | 'translating' | null>(null);
+  // Export means "the translated book": whatever is still untranslated in the range is
+  // translated first, unless the reader asks for the current state as it is.
+  const [translateFirst, setTranslateFirst] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const cancelExport = useRef(false);
 
@@ -77,10 +80,34 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
   };
   const stop = () => void call('translation_batch_cancel', { sessionId: session.sessionId }).catch(() => {});
 
+  /** Translate the range and wait for the run to end. False when the reader stopped it. */
+  const translateRange = async (): Promise<boolean> => {
+    let st = await call<BatchStatus>('translation_batch_start', { sessionId: session.sessionId, sectionIds });
+    onBatch(st);
+    while (st.state === 'running') {
+      await new Promise((r) => setTimeout(r, 700));
+      if (cancelExport.current) {
+        await call('translation_batch_cancel', { sessionId: session.sessionId }).catch(() => {});
+        return false;
+      }
+      const r = await call<{ status: BatchStatus | null }>('translation_batch_status', { sessionId: session.sessionId });
+      if (!r.status) return false;
+      st = r.status;
+      onBatch(st);
+    }
+    if (st.state === 'cancelled') return false;
+    if (st.state === 'stopped') throw new Error(st.message ?? '번역이 멈췄습니다.');
+    return true;
+  };
+
   const doExport = async () => {
     setErr(null);
     cancelExport.current = false;
     try {
+      if (translateFirst) {
+        setBusy('translating');
+        if (!(await translateRange())) return;
+      }
       if (format === 'pdf-sbs' || format === 'pdf') {
         setBusy({ done: 0, total: chosen.length });
         const opts = { onProgress: (p: ExportProgress) => setBusy(p), cancelled: () => cancelExport.current, bilingual };
@@ -91,7 +118,7 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
         const r = await call<{ saved: boolean; untranslated?: number }>('export_translation', { sessionId: session.sessionId, sectionIds, format, bilingual });
         if (r.saved) toast({ kind: 'info', text: `저장했습니다.${(r.untranslated ?? 0) > 0 ? ` 번역되지 않은 문단 ${r.untranslated}개는 원문으로 들어갔습니다.` : ''}` });
       }
-    } catch (e) { setErr(errorMessage(e)); }
+    } catch (e) { setErr(e instanceof Error && !(e as { error?: unknown }).error ? e.message : errorMessage(e)); }
     finally { setBusy(null); }
   };
 
@@ -143,7 +170,7 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
               </p>
             )}
             <div className="tx-actions">
-              {running ? <button className="btn" onClick={stop}>중지</button> : <button className="btn primary" onClick={() => void start()} disabled={sectionIds.length === 0 || exporting}>이 범위 번역</button>}
+              {running && busy !== 'translating' ? <button className="btn" onClick={stop}>중지</button> : running ? null : <button className="btn primary" onClick={() => void start()} disabled={sectionIds.length === 0 || exporting}>이 범위 번역</button>}
             </div>
           </section>
 
@@ -161,19 +188,21 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
               {format !== 'pdf-sbs' && <label className="tx-check"><input type="checkbox" checked={bilingual} onChange={(e) => setBilingual(e.target.checked)} disabled={exporting} /> 원문 함께</label>}
             </div>
             <p className="faint tx-note">
-              {format === 'pdf-sbs' ? '쪽마다 왼쪽에 원문, 오른쪽에 번역을 놓습니다. 번역되지 않은 문단은 원문 그대로 남습니다. 글자는 이미지로 저장됩니다.' :
+              {format === 'pdf-sbs' ? '쪽마다 왼쪽에 원문, 오른쪽에 번역을 놓습니다. 글자는 이미지로 저장됩니다. 코드·그림처럼 번역하지 않는 부분과, 자리가 좁아 번역문이 들어가지 않는 부분은 원문 그대로 남습니다.' :
                 format === 'epub' ? (isPdf ? '번역문을 전자책으로 만듭니다. 글자는 그대로 살아 있고, PDF 원본의 그림은 포함되지 않습니다.' : '번역문을 전자책으로 만듭니다. 글자는 그대로 살아 있고 책의 그림도 포함됩니다.') :
                 format === 'pdf' ? '번역문을 A4로 조판합니다. 그림은 포함되지 않고, 글자는 이미지로 저장됩니다.' :
                   '글만 내보냅니다. 번역되지 않은 문단은 원문으로 들어갑니다.'}
             </p>
-            {busy && busy !== 'saving' && (
+            <label className="tx-check"><input type="checkbox" checked={translateFirst} onChange={(e) => setTranslateFirst(e.target.checked)} disabled={exporting} /> 번역되지 않은 문단은 먼저 번역한 뒤 내보내기</label>
+            {busy === 'translating' && <p className="batch-text muted">내보내기 전에 범위를 번역하는 중입니다. 진행 상황은 위 "번역"에 표시됩니다.</p>}
+            {busy && busy !== 'saving' && busy !== 'translating' && (
               <div className="batch-line">
                 <div className="batch-bar" role="progressbar" aria-valuemin={0} aria-valuemax={busy.total} aria-valuenow={busy.done} aria-label="내보내기 진행률"><span style={{ width: `${busy.total ? (busy.done / busy.total) * 100 : 0}%` }} /></div>
                 <p className="batch-text">{busy.done} / {busy.total}{unit}</p>
               </div>
             )}
             <div className="tx-actions">
-              {exporting && busy !== 'saving' ? <button className="btn" onClick={() => { cancelExport.current = true; }}>취소</button> : <button className="btn primary" onClick={() => void doExport()} disabled={sectionIds.length === 0 || exporting}>{running ? '지금까지 번역된 만큼 내보내기' : '내보내기'}</button>}
+              {exporting && busy !== 'saving' ? <button className="btn" onClick={() => { cancelExport.current = true; }}>취소</button> : <button className="btn primary" onClick={() => void doExport()} disabled={sectionIds.length === 0 || exporting}>{translateFirst ? '번역하고 내보내기' : running ? '지금까지 번역된 만큼 내보내기' : '내보내기'}</button>}
             </div>
           </section>
           {err && <p className="badge danger">{err}</p>}
