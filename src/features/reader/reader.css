@@ -95,7 +95,7 @@
 .pdf-page .page-badge { position: absolute; top: 6px; right: 6px; }
 .tp-text { position: absolute; overflow: hidden; box-sizing: border-box; font-family: -apple-system, "Apple SD Gothic Neo", "Helvetica Neue", sans-serif; word-break: keep-all; overflow-wrap: anywhere; cursor: pointer; border-radius: 1px; }
 .tp-text.sel { outline: 2px solid var(--focus); outline-offset: 1px; z-index: 2; }
-.tp-text.stale { box-shadow: inset 2px 0 0 #c98a1b; }
+/* stale translations look the same on the page; their state is shown in the click popover */
 .tp-text.manual { box-shadow: inset 2px 0 0 var(--ok); }
 .tp-text.streaming { color: #1f5f6b !important; }
 .tp-text:hover { outline: 1px solid rgba(31, 95, 107, .55); }
