@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isTranslationModel } from './SettingsDialog';
+import { defaultPromptMode, isTranslationModel } from './SettingsDialog';
 
 describe('isTranslationModel', () => {
   it('recognises translation-only models by id', () => {
@@ -7,5 +7,10 @@ describe('isTranslationModel', () => {
   });
   it('leaves chat models on the structured request', () => {
     for (const id of ['qwen3.8-27b', 'gemma-3-12b-it', 'llama3.3:70b', 'gpt-4o-mini', 'mistral-small', '']) expect(isTranslationModel(id)).toBe(false);
+  });
+  it('picks the request style from the model id', () => {
+    expect(defaultPromptMode('yanolja_yanoljanext-rosetta-12b-2510')).toBe('rosetta');
+    expect(defaultPromptMode('hy-mt2-7b')).toBe('simple');
+    expect(defaultPromptMode('qwen3.8-27b')).toBe('structured');
   });
 });

@@ -70,7 +70,7 @@ pub async fn create_profile_with_mode(
 ) -> AppResult<translations::ProfileRow> {
     let cfg = provider_config(row)?;
     let caps = cfg.effective_capabilities();
-    let simple = mode == prompt::PromptMode::Simple;
+    let simple = mode.is_plain();
     let mut snapshot = serde_json::json!({
         "providerId": row.id,
         "providerKind": cfg.kind.as_str(),
@@ -149,7 +149,7 @@ pub async fn profile_context(db: &Db, base: &translations::ProfileRow, src: &str
     let caps: ProviderCapabilities = serde_json::from_value(snap["capabilities"].clone()).unwrap_or_else(|_| provider_config(&provider).map(|c| c.effective_capabilities()).unwrap_or_else(|_| ProviderCapabilities::default_for(ProviderKind::Ollama)));
     let kind = ProviderKind::parse(&provider.kind).unwrap_or(ProviderKind::Ollama);
     let prompt_mode = snap["promptMode"].as_str().map(prompt::PromptMode::parse).unwrap_or_default();
-    let response_format = if snap["responseFormat"].as_str() == Some("json_segments") && prompt_mode != prompt::PromptMode::Simple { ResponseFormat::JsonSegments } else { ResponseFormat::Text };
+    let response_format = if snap["responseFormat"].as_str() == Some("json_segments") && !prompt_mode.is_plain() { ResponseFormat::JsonSegments } else { ResponseFormat::Text };
     let options = GenerationOptions {
         temperature: snap["options"]["temperature"].as_f64(),
         seed: snap["options"]["seed"].as_i64(),

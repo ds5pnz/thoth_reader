@@ -196,6 +196,13 @@ export function isTranslationModel(id: string): boolean {
   return /translategemma|hy-?mt|hunyuan-?mt|madlad|nllb|seamless|opus-?mt|towerinstruct|(^|[^a-z])mt\d*([^a-z]|$)/i.test(id);
 }
 
+export type PromptModeName = 'structured' | 'simple' | 'rosetta';
+/** Request style a model needs, judged from its id. */
+export function defaultPromptMode(id: string): PromptModeName {
+  if (/rosetta/i.test(id)) return 'rosetta';
+  return isTranslationModel(id) ? 'simple' : 'structured';
+}
+
 function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provider: ProviderRow; probe: ProbeResult | 'running' | undefined; activeProfileId: string | null; onActivate: (id: string) => void }) {
   const { settings, set } = useSettings();
   const models = probe && probe !== 'running' ? probe.models : [];
@@ -205,8 +212,8 @@ function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provi
   const [temp, setTemp] = useState('0.2');
   const [ctx, setCtx] = useState('');
   // Translation-only models answer a short plain request; chat models get the structured one.
-  const [mode, setMode] = useState<'structured' | 'simple' | null>(null);
-  const promptMode = mode ?? (isTranslationModel(model) ? 'simple' : 'structured');
+  const [mode, setMode] = useState<PromptModeName | null>(null);
+  const promptMode = mode ?? defaultPromptMode(model);
   const [msg, setMsg] = useState<string | null>(null);
   const create = async () => {
     try {
@@ -250,8 +257,9 @@ function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provi
         <div className="seg">
           <button type="button" aria-pressed={promptMode === 'structured'} onClick={() => setMode('structured')}>표준</button>
           <button type="button" aria-pressed={promptMode === 'simple'} onClick={() => setMode('simple')}>단순</button>
+          <button type="button" aria-pressed={promptMode === 'rosetta'} onClick={() => setMode('rosetta')}>Rosetta</button>
         </div>
-        <span className="faint">표준은 일반 대화형 모델용입니다. TranslateGemma, Hunyuan-MT 같은 번역 전용 모델은 단순을 쓰세요(앞 문단 문맥은 보내지 않습니다). 모델 이름으로 자동 선택되며, 바꾼 뒤 프로필 적용을 눌러야 반영됩니다.</span>
+        <span className="faint">표준은 일반 대화형 모델용입니다. TranslateGemma, Hunyuan-MT 같은 번역 전용 모델은 단순을, YanoljaNEXT Rosetta는 Rosetta를 쓰세요(둘 다 앞 문단 문맥은 보내지 않습니다). 모델 이름으로 자동 선택되며, 바꾼 뒤 프로필 적용을 눌러야 반영됩니다.</span>
       </label>
       <label>번역 문체 (한국어)
         <div className="seg">

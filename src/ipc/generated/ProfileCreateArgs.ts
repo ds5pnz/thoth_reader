@@ -2,6 +2,7 @@
 
 export type ProfileCreateArgs = { providerId: string, modelId: string, sourceLanguage: string, targetLanguage: string, temperature: number | null, seed: number | null, maxOutputTokens: number | null, contextLimit: number | null, modelDigest: string | null, 
 /**
- * "simple" for translation-only models; anything else is the structured request.
+ * "simple" for translation-only models, "rosetta" for YanoljaNEXT Rosetta; anything
+ * else is the structured request.
  */
 promptMode?: string, };

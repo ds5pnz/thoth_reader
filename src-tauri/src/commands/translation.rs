@@ -477,7 +477,8 @@ pub struct ProfileCreateArgs {
     pub max_output_tokens: Option<u32>,
     pub context_limit: Option<u32>,
     pub model_digest: Option<String>,
-    /// "simple" for translation-only models; anything else is the structured request.
+    /// "simple" for translation-only models, "rosetta" for YanoljaNEXT Rosetta; anything
+    /// else is the structured request.
     #[serde(default)]
     #[ts(optional)]
     pub prompt_mode: Option<String>,

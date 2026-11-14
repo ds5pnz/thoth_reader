@@ -181,3 +181,9 @@ THOTH_SELFTEST_PROVIDER=http://localhost:1235/v1 THOTH_SELFTEST_MODEL=<model> sc
 
 - 병렬 보기에서 번역이 아직 없는 문단은 번역 칸에 원문을 흐리게 먼저 보여 주고, 번역 중(대기·실행·재시도 대기, 자동 번역이 켜진 미번역 문단 포함)에는 PDF 쪽의 번역 대기 칸과 같은 훑는 효과를 얹는다. 스트리밍이 시작되면 미리보기, 끝나면 번역문으로 바뀐다. 교차 보기는 원문이 바로 위에 있으므로 한 줄 높이의 효과 막대만 둔다. EPUB과 PDF 리플로우가 같은 구성요소를 쓴다.
 - 실제 앱(공개 도서 EPUB, qwen3.8-27b): 장을 연 직후 원문 대기 칸 20개 모두 효과 표시, 번역 완료 후 화면에 남은 대기 칸 0개.
+
+## Rosetta 요청 방식 (2026-11-14)
+
+- `promptMode`에 `rosetta`가 추가됐다. 시스템 메시지("Translate the user's text to …", Tone, Glossary, 태그·자리표시자 규칙)와 본문만 든 사용자 메시지로 보낸다. YanoljaNEXT Rosetta는 사용자 메시지에 든 것을 통째로 번역하므로 표준(JSON 반환)과 단순(규칙까지 번역) 모두 0/7이었다.
+- LM Studio 실측: YanoljaNEXT-Rosetta-12B-2510 Q4_K_M, Rust 책 한 쪽 7/7·30초. 태그·자리표시자 유지, `<pb/>`는 문장 끝으로 이동, 본문에 섞은 지시문은 그대로 번역(따르지 않음). 실제 앱 병렬 보기 첫 화면 약 23초.
+- 여덟 모델 비교는 `docs/MODEL_BENCHMARK_KO.md`.
