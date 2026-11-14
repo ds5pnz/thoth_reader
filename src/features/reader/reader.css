@@ -60,9 +60,13 @@
 .menu button { width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 10px; border-radius: 5px; cursor: pointer; }
 .menu button:hover { background: var(--bg-sunken); }
 .tcell-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.tcell.stale .tcell-text { color: var(--fg-muted); }
+/* reading flow is quiet: no state colours; states live in the menu / popover */
+.tcell.detailed.stale .tcell-text { color: var(--fg-muted); }
 .tcell-prev { color: var(--fg-muted); margin: 0 0 4px; }
-.tcell-stream { margin: 0; color: var(--accent); }
+.tcell-stream { margin: 0; }
+.tcell.detailed .tcell-stream { color: var(--accent); }
+.tcell.quiet .on-hover { opacity: 0; transition: opacity .15s; }
+.brow:hover .tcell.quiet .on-hover, .tcell.quiet .on-hover:focus-visible { opacity: 1; }
 .tcell-empty { display: flex; gap: 8px; align-items: center; font-family: var(--ui-font); font-size: 12px; min-height: 1.5em; }
 .tcell .cancel { position: absolute; right: 0; bottom: -4px; }
 .tcell.editing textarea { font-family: var(--reader-font); font-size: var(--reader-size); }

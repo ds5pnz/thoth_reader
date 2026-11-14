@@ -95,6 +95,8 @@ export function useReaderSession(documentId: string) {
         for (const d of disp) m.set(d.blockId, d);
         return m;
       });
+    } catch {
+      // The session may have been closed while loading (document switched): nothing to show.
     } finally {
       loadingSections.current.delete(sectionId);
     }

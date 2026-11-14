@@ -93,6 +93,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'chrome') await chromeCheck(res);
       if (cfg.scenario === 'pdflayout') await pdfLayout(res);
       if (cfg.scenario === 'audit') await layoutAudit(res, i);
+      if (cfg.scenario === 'quiet') await quietCheck(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -536,4 +537,29 @@ async function layoutAudit(res: Record<string, unknown>, docIndex: number) {
     });
   }
   res.audit = { totalPages: total, pages };
+}
+
+/** Reading flow must look like a plain document: no state badges or state colours. */
+async function quietCheck(res: Record<string, unknown>) {
+  clickButton('병렬');
+  await waitFor(() => rows() > 0 && !!document.querySelector('.reflow'), 15000);
+  const scroller = document.querySelector<HTMLElement>('.reflow');
+  if (scroller) { scroller.scrollTop = 3000; userScroll(scroller); }
+  await waitFor(() => translated() >= 3, WAIT);
+  const visibleBadges = () => [...document.querySelectorAll<HTMLElement>('.reflow .tcell .badge, .reflow .tcell .cancel')].filter((b) => getComputedStyle(b).opacity !== '0').map((b) => b.textContent);
+  const during = visibleBadges();
+  await waitFor(() => document.querySelectorAll('.reflow .tcell[aria-busy="true"]').length === 0, WAIT);
+  // make everything stale, then look again
+  await call('settings_patch', { key: 'translationStyle', value: 'plain', expectedVersion: null }).catch(() => {});
+  await window.__thoth?.reloadSettings?.();
+  await waitFor(() => document.querySelectorAll('.reflow .tcell.stale').length > 0, 8000);
+  const cells = [...document.querySelectorAll<HTMLElement>('.reflow .tcell-text')];
+  const src = document.querySelector<HTMLElement>('.reflow .brow.kind-paragraph .src');
+  res.quiet = {
+    badgesWhileTranslating: during,
+    staleCells: document.querySelectorAll('.reflow .tcell.stale').length,
+    badgesWhenStale: visibleBadges(),
+    textColours: [...new Set(cells.map((c) => getComputedStyle(c).color))],
+    sourceColour: src ? getComputedStyle(src).color : null,
+  };
 }

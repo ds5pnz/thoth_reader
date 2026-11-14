@@ -332,7 +332,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
             <span className="spacer" />
             <button className="btn small ghost" onClick={() => setSelectedId(null)} aria-label="닫기">닫기</button>
           </header>
-          <TranslationCell block={selected} display={model.display.get(selected.id)} job={model.jobs.get(selected.id)} preview={model.previews.get(selected.id)} autoActive={autoActive} targetLanguage={targetLanguage} actions={actions} />
+          <TranslationCell detailed block={selected} display={model.display.get(selected.id)} job={model.jobs.get(selected.id)} preview={model.previews.get(selected.id)} autoActive={autoActive} targetLanguage={targetLanguage} actions={actions} />
         </aside>
       )}
     </div>

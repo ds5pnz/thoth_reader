@@ -17,14 +17,20 @@ export interface CellActions {
 
 const MAX_EDIT_BYTES = 128 * 1024;
 
-function statusOf(d: BlockDisplay | undefined, job: JobView | undefined, autoActive: boolean): { label: string; cls: string } | null {
+/**
+ * Status badge. In the reading flow (`detailed` = false) only states that need the reader's
+ * attention are shown, so translated text reads like a plain document; the inspect popover
+ * shows every state.
+ */
+function statusOf(d: BlockDisplay | undefined, job: JobView | undefined, autoActive: boolean, detailed: boolean): { label: string; cls: string } | null {
   if (job) {
     if (job.state === 'FAILED') return { label: '실패', cls: 'danger' };
     if (job.state === 'RETRY_WAIT') return { label: '재시도 대기', cls: 'warn' };
+    if (!detailed) return null;
     if (job.state === 'QUEUED') return { label: '대기', cls: '' };
     return { label: '번역 중', cls: 'accent' };
   }
-  if (!d) return null;
+  if (!d || !detailed) return null;
   if (d.status === 'excluded') return { label: '번역 제외', cls: '' };
   if (d.status === 'manual') return { label: '수동 수정', cls: 'ok' };
   if (d.status === 'stale') return { label: '이전 설정의 번역', cls: 'warn' };
@@ -40,8 +46,10 @@ export const TranslationCell = memo(function TranslationCell(props: {
   autoActive: boolean;
   targetLanguage: string;
   actions: CellActions;
+  /** Show every status badge (inspect popover). Default: quiet, document-like. */
+  detailed?: boolean;
 }) {
-  const { block, display, job, preview, autoActive, targetLanguage, actions } = props;
+  const { block, display, job, preview, autoActive, targetLanguage, actions, detailed = false } = props;
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState('');
   const [saving, setSaving] = useState(false);
@@ -49,7 +57,7 @@ export const TranslationCell = memo(function TranslationCell(props: {
   const [menuOpen, setMenuOpen] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const shownText = display?.shown?.text ?? '';
-  const status = statusOf(display, job, autoActive);
+  const status = statusOf(display, job, autoActive, detailed);
   const tooLong = new TextEncoder().encode(draft).length > MAX_EDIT_BYTES;
   const dirty = editing && draft !== shownText;
 
@@ -108,13 +116,13 @@ export const TranslationCell = memo(function TranslationCell(props: {
 
   const running = job && (job.state === 'RUNNING' || job.state === 'STREAMING' || job.state === 'QUEUED');
   return (
-    <div className={`tcell ${display?.status ?? 'none'}`} lang={targetLanguage} aria-busy={running ? true : undefined}>
+    <div className={`tcell ${display?.status ?? 'none'} ${detailed ? 'detailed' : 'quiet'}`} lang={targetLanguage} aria-busy={running ? true : undefined}>
       <div className="tcell-head">
         {status && <span className={`badge ${status.cls}`}>{status.label}</span>}
         {display?.shown?.warning && (
-          <span className="badge warn" title={display.shown.warning.startsWith('script:') ? '번역에 다른 문자 체계가 섞였습니다. 재번역하거나 직접 수정해 주세요.' : '번역 결과의 언어가 대상 언어와 달라 보입니다.'}>확인 필요</span>
+          <span className="badge warn on-hover" title={display.shown.warning.startsWith('script:') ? '번역에 다른 문자 체계가 섞였습니다. 재번역하거나 직접 수정해 주세요.' : '번역 결과의 언어가 대상 언어와 달라 보입니다.'}>확인 필요</span>
         )}
-        {display?.hasCandidate && <button className="btn small ghost" onClick={() => actions.applyCandidate(block)} title="수동 고정본 대신 새 번역을 적용">새 번역 적용</button>}
+        {display?.hasCandidate && <button className="btn small ghost on-hover" onClick={() => actions.applyCandidate(block)} title="수동 고정본 대신 새 번역을 적용">새 번역 적용</button>}
         <span className="spacer" />
         <div className="tcell-menu">
           <button className="btn small ghost" aria-haspopup="menu" aria-expanded={menuOpen} aria-label="문단 메뉴" onClick={() => setMenuOpen((v) => !v)}>⋯</button>
@@ -133,10 +141,11 @@ export const TranslationCell = memo(function TranslationCell(props: {
           )}
         </div>
       </div>
-      {running && preview != null ? (
+      {running && preview != null && (detailed || !shownText) ? (
         <div className="tcell-text preview">
-          {/* preview: shown separately; existing translation stays visible above */}
-          {shownText && <p className="tcell-prev">{shownText}</p>}
+          {/* Popover: the existing translation stays and the new result is previewed below it.
+              Reading flow: the existing text simply stays until the new one is committed. */}
+          {detailed && shownText && <p className="tcell-prev">{shownText}</p>}
           <p className="tcell-stream" aria-live="off">{preview}</p>
         </div>
       ) : shownText ? (
@@ -148,12 +157,12 @@ export const TranslationCell = memo(function TranslationCell(props: {
               <span>{job.errorCode === 'AUTH_FAILED' ? '인증을 확인해 주세요.' : job.errorCode === 'INVALID_OUTPUT' ? '모델 응답 형식이 올바르지 않습니다.' : '번역에 실패했습니다.'}</span>
               <button className="btn small" onClick={() => actions.translateNow(block.id)} title={job.sentUnknown ? '원문이 이미 전송되었을 수 있어 새 요청이 발생할 수 있습니다' : undefined}>다시 시도</button>
             </>
-          ) : running ? '번역 중…' : !autoActive && display?.status === 'none' ? (
+          ) : running ? (detailed ? '번역 중…' : null) : !autoActive && display?.status === 'none' ? (
             <button className="btn small ghost" onClick={() => actions.translateNow(block.id)}>번역</button>
           ) : null}
         </div>
       )}
-      {running && job && <button className="btn small ghost cancel" onClick={() => actions.cancel(job.jobId)}>취소</button>}
+      {running && job && <button className="btn small ghost cancel on-hover" onClick={() => actions.cancel(job.jobId)}>취소</button>}
     </div>
   );
 });
