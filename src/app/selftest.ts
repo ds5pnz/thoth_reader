@@ -1071,7 +1071,8 @@ async function exportCheck(res: Record<string, unknown>, isPdf: boolean) {
     const before = document.querySelectorAll('.toast').length;
     (inDlg('번역하고 내보내기') ?? inDlg('내보내기') ?? inDlg('지금까지 번역된 만큼 내보내기'))?.click();
     const ms = await waitFor(() => !dlg().querySelector('.tx-actions button:disabled') && !inDlg('취소') && performance.now() - t1 > 400, 120000);
-    done[f] = { ms, error: dlg().querySelector('.badge.danger')?.textContent ?? null, toasts: document.querySelectorAll('.toast').length - before };
+    const toastText = [...document.querySelectorAll('.toast')].slice(before).map((x) => x.textContent ?? '').join(' | ');
+    done[f] = { ms, error: dlg().querySelector('.badge.danger')?.textContent ?? null, toasts: document.querySelectorAll('.toast').length - before, pictures: Number(/그림 (\d+)개/.exec(toastText)?.[1] ?? 0), pages: Number(/PDF (\d+)쪽/.exec(toastText)?.[1] ?? 0) };
   }
   out.formats = done;
   // Export alone must translate a range nobody translated yet.
@@ -1211,4 +1212,33 @@ async function epubViewCheck(res: Record<string, unknown>) {
   await waitFor(() => epubFrameText() > 200 && !document.querySelector('.epub-turn'), 15000);
   await sleep(1200);
   out.backToScroll = { keptPlace: anchorId() === anchorBefore, highlights: hl() };
+  // links: the frame runs no listeners, so a click is seen as a fragment jump from outside
+  const links = () => [...(frame()?.contentDocument?.querySelectorAll<HTMLAnchorElement>('a[data-thoth-href]') ?? [])];
+  const internal = () => links().filter((a) => a.getAttribute('data-thoth-external') !== '1' && /\d+\.xhtml/.test(a.getAttribute('data-thoth-href') ?? ''));
+  if (!internal().length) {
+    if (!document.querySelector('#reader-sidebar')) document.querySelector<HTMLButtonElement>('button[aria-controls="reader-sidebar"]')?.click();
+    await sleep(300);
+    clickButton('목차');
+    await sleep(300);
+    const items = [...document.querySelectorAll<HTMLButtonElement>('.toc-item')];
+    for (let i = 0; i < Math.min(items.length, 12) && !internal().length; i++) {
+      items[i]?.click();
+      await waitFor(() => internal().length > 0, 2500);
+    }
+  }
+  const cand = internal();
+  const linkOut: Record<string, unknown> = { links: links().length, internal: cand.length, external: links().filter((a) => a.getAttribute('data-thoth-external') === '1').length, rawLeft: frame()?.contentDocument?.querySelectorAll('a[href]:not([data-thoth-href])').length ?? -1 };
+  out.linkCheck = linkOut;
+  if (cand.length) {
+    const a = cand[cand.length - 1]!;
+    const urlBefore = frame()?.contentDocument?.URL.split('#')[0];
+    const posBefore = `${cont()?.scrollTop}:${cont()?.scrollLeft}:${anchorId()}`;
+    const armed = a.getAttribute('href');
+    a.click();
+    await sleep(120);
+    linkOut.hashJumped = frame()?.contentWindow?.location.hash === armed;
+    linkOut.movedMs = await waitFor(() => frame()?.contentDocument?.URL.split('#')[0] !== urlBefore || `${cont()?.scrollTop}:${cont()?.scrollLeft}:${anchorId()}` !== posBefore, 6000);
+    linkOut.chapterChanged = frame()?.contentDocument?.URL.split('#')[0] !== urlBefore;
+    linkOut.rearmed = a.isConnected ? a.getAttribute('href') !== armed : null;
+  }
 }

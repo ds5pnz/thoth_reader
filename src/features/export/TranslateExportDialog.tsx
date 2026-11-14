@@ -112,7 +112,7 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
         setBusy({ done: 0, total: chosen.length });
         const opts = { onProgress: (p: ExportProgress) => setBusy(p), cancelled: () => cancelExport.current, bilingual };
         const r = format === 'pdf-sbs' ? await exportSideBySide(session, chosen, opts) : await exportTypeset(session, chosen, opts);
-        if (r.saved) toast({ kind: 'info', text: `PDF ${r.pages}쪽을 저장했습니다.${r.untranslated > 0 ? ` 번역되지 않은 문단 ${r.untranslated}개는 원문 그대로입니다.` : ''}` });
+        if (r.saved) toast({ kind: 'info', text: `PDF ${r.pages}쪽을 저장했습니다.${(r.pictures ?? 0) > 0 ? ` 그림 ${r.pictures}개 포함.` : ''}${r.untranslated > 0 ? ` 번역되지 않은 문단 ${r.untranslated}개는 원문 그대로입니다.` : ''}` });
       } else {
         setBusy('saving');
         const r = await call<{ saved: boolean; untranslated?: number }>('export_translation', { sessionId: session.sessionId, sectionIds, format, bilingual });

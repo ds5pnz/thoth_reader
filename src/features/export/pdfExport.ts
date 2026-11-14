@@ -9,6 +9,7 @@ import type { Block } from '../../ipc/generated/Block';
 import type { BlockDisplay } from '../../ipc/generated/BlockDisplay';
 import type { BlocksPage } from '../../ipc/generated/BlocksPage';
 import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
+import type { SafeNode } from '../../ipc/generated/SafeNode';
 import type { SectionRow } from '../../ipc/generated/SectionRow';
 import { blockBox, expandBox, harmonizeFontSizes, pickBackground, resolveVerticalOverlaps, textColorFor, type BlockBox, type ItemSize, type Rgb } from '../../document/pdf/translatedPage';
 import { openSessionPdf, releaseSessionPdf } from '../../document/pdf/sessionPdf';
@@ -16,7 +17,7 @@ import { draw, fit, runsOf, wrap, EXPORT_FONT, type Run } from './canvasText';
 
 export interface ExportProgress { done: number; total: number }
 export interface ExportOptions { onProgress: (p: ExportProgress) => void; cancelled: () => boolean; bilingual?: boolean }
-export interface ExportResult { saved: boolean; pages: number; untranslated: number }
+export interface ExportResult { saved: boolean; pages: number; untranslated: number; pictures?: number }
 
 const NON_BODY = ['running_header', 'running_footer', 'page_number'];
 const translatable = (b: Block) => b.translationPolicy === 'auto' && /\p{L}/u.test(b.sourceText);
@@ -210,7 +211,54 @@ function parasOf(b: Block, d: BlockDisplay | undefined, bilingual: boolean): Par
   return out;
 }
 
-/** The translation as a plain A4 document (text only; figures are not reproduced). */
+/** Image resources a block refers to, in reading order. */
+export function imageRefs(nodes: readonly SafeNode[], out: string[] = []): string[] {
+  for (const n of nodes) {
+    if (n.t === 'image_ref' || n.t === 'math_ref') out.push(n.resourceId);
+    else if ('c' in n && Array.isArray(n.c)) imageRefs(n.c, out);
+  }
+  return out;
+}
+
+/** Size of a picture on the page: natural size (CSS px → pt), never wider or taller than the text area. */
+export function placeImage(naturalW: number, naturalH: number, maxW: number, maxH: number): { w: number; h: number } {
+  if (!(naturalW > 0) || !(naturalH > 0)) return { w: 0, h: 0 };
+  const k = Math.min(0.75, maxW / naturalW, maxH / naturalH);
+  return { w: naturalW * k, h: naturalH * k };
+}
+
+/** Load a book image into a canvas of its own. A picture that cannot be read back (it would
+ *  taint the page canvas and make the whole page unexportable) is reported as missing. */
+async function loadPicture(url: string, maxW: number, maxH: number): Promise<{ canvas: HTMLCanvasElement; w: number; h: number } | null> {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.decoding = 'async';
+  const loaded = new Promise<boolean>((res) => { img.onload = () => res(true); img.onerror = () => res(false); });
+  img.src = url;
+  if (!(await Promise.race([loaded, new Promise<boolean>((r) => setTimeout(() => r(false), 15000))]))) return null;
+  // SVGs without intrinsic size report 0: give them the text width.
+  const nw = img.naturalWidth || maxW / 0.75;
+  const nh = img.naturalHeight || (img.naturalWidth ? 0 : (maxW / 0.75) * 0.6);
+  const { w, h } = placeImage(nw, nh, maxW, maxH);
+  if (w < 1 || h < 1) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w * TS_SCALE));
+  canvas.height = Math.max(1, Math.round(h * TS_SCALE));
+  try {
+    const c = canvas.getContext('2d')!;
+    c.fillStyle = '#fff';
+    c.fillRect(0, 0, canvas.width, canvas.height);
+    c.drawImage(img, 0, 0, canvas.width, canvas.height);
+    c.getImageData(0, 0, 1, 1); // throws when the picture tainted the canvas
+    return { canvas, w, h };
+  } catch {
+    canvas.width = 0;
+    canvas.height = 0;
+    return null;
+  }
+}
+
+/** The translation as a plain A4 document, with the book's pictures in place. */
 export async function exportTypeset(session: ReaderSessionDto, sections: readonly SectionRow[], opts: ExportOptions): Promise<ExportResult> {
   const token = await begin(session, 'translation');
   if (!token) return { saved: false, pages: 0, untranslated: 0 };
@@ -223,7 +271,28 @@ export async function exportTypeset(session: ReaderSessionDto, sections: readonl
   let pageNo = 0;
   let dirty = false;
   let untranslated = 0;
+  let pictures = 0;
   let ok = false;
+  const resources = (session.metadata?.resources ?? {}) as Record<string, string>;
+  const maxPicH = A4.h - MARGIN.top - MARGIN.bottom;
+  const drawPictures = async (b: Block) => {
+    for (const rid of imageRefs(b.content)) {
+      const res = resources[rid];
+      if (!res) continue;
+      const pic = await loadPicture(`thoth-doc://localhost/${session.assetToken}/epub/${res}`, width, maxPicH);
+      if (!pic) continue;
+      // small inline pictures (icons, formulas) sit with the text; a figure gets air around it
+      const gap = pic.h > 40 ? 8 : 3;
+      if (y + gap + pic.h > A4.h - MARGIN.bottom && dirty) await flush();
+      y += gap;
+      ctx.drawImage(pic.canvas, MARGIN.x + (width - pic.w) / 2, y, pic.w, pic.h);
+      pic.canvas.width = 0;
+      pic.canvas.height = 0;
+      y += pic.h + gap;
+      dirty = true;
+      pictures++;
+    }
+  };
   const clear = () => {
     ctx.setTransform(TS_SCALE, 0, 0, TS_SCALE, 0, 0);
     ctx.fillStyle = '#fff';
@@ -253,6 +322,7 @@ export async function exportTypeset(session: ReaderSessionDto, sections: readonl
         if (parents.has(b.id)) continue; // containers repeat their children
         const d = display.get(b.id);
         if (translatable(b) && !d?.shown?.text.trim()) untranslated++;
+        if (!b.roles.some((r) => NON_BODY.includes(r))) await drawPictures(b);
         for (const p of parasOf(b, d, !!opts.bilingual)) {
           const family = p.mono ? 'ui-monospace, Menlo, monospace' : EXPORT_FONT;
           const lines = wrap(ctx, p.runs, width - p.indent, p.px, family);
@@ -285,5 +355,5 @@ export async function exportTypeset(session: ReaderSessionDto, sections: readonl
     if (!ok) await finish(token, true);
   }
   const end = await finish(token, false);
-  return { saved: end.saved, pages: end.pages ?? 0, untranslated };
+  return { saved: end.saved, pages: end.pages ?? 0, untranslated, pictures };
 }

@@ -31,6 +31,38 @@ export function absolutizeResourceRefs(xhtml: string, assetBase: string): string
   return xhtml.replace(/(\s(?:src|href|xlink:href)=")\.\.\/(r|x)\/([^"#?]+)/g, (_m, attr: string, dir: string, rest: string) => `${attr}${assetBase}${dir}/${rest}`);
 }
 
+const LINK_PREFIX = '#thoth-l-';
+let linkSeq = 0;
+
+/** Turn every link in a rendered chapter into a same-document fragment jump. The frame runs
+ *  no listeners, but a fragment jump changes its location, and that can be seen from outside:
+ *  the real target stays in `data-thoth-href` and the click is acted on by the poll. */
+export function armLinks(doc: Document): number {
+  let n = 0;
+  for (const a of doc.querySelectorAll<Element>('a[href]:not([data-thoth-href])')) {
+    a.setAttribute('data-thoth-href', a.getAttribute('href') ?? '');
+    a.setAttribute('href', `${LINK_PREFIX}${++linkSeq}`);
+    a.removeAttribute('target'); // epub.js marks absolute links _blank; popups are not allowed
+    n++;
+  }
+  return n;
+}
+
+/** The link whose fragment the frame just jumped to, re-armed so a second click is seen too. */
+export function takeClickedLink(doc: Document, hash: string): { href: string; external: boolean } | null {
+  if (!hash.startsWith(LINK_PREFIX)) return null;
+  const a = [...doc.querySelectorAll<Element>('a[data-thoth-href]')].find((x) => x.getAttribute('href') === hash);
+  if (!a) return null;
+  a.setAttribute('href', `${LINK_PREFIX}${++linkSeq}`);
+  return { href: a.getAttribute('data-thoth-href') ?? '', external: a.getAttribute('data-thoth-external') === '1' };
+}
+
+/** "…/12.xhtml#note3" (a link into the sanitized package) → spine index and fragment. */
+export function parseSpineLink(href: string): { index: number; fragment: string | null } | null {
+  const m = /(?:^|\/)(\d+)\.xhtml(?:#(.*))?$/.exec(href);
+  return m ? { index: Number(m[1]), fragment: m[2] || null } : null;
+}
+
 export function packageUrl(session: ReaderSessionDto) {
   return `thoth-doc://localhost/${session.assetToken}/epub/package.opf`;
 }
@@ -108,17 +140,8 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       // Programmatic display() also relocates; only user scrolling moves the anchor.
       if (performance.now() > programmaticUntil.current) onScrolledRef.current();
     });
-    // Links inside the document never navigate the app; external http(s) go through Rust.
-    r.hooks.content.register((contents: { document: Document; window: Window }) => {
-      contents.document.addEventListener('click', (e) => {
-        const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
-        if (!a) return;
-        if (a.getAttribute('data-thoth-external') === '1') {
-          e.preventDefault();
-          openExternal(a.getAttribute('href') ?? '');
-        }
-      }, true);
-    });
+    // Links: see the link poll below (listeners inside the frame never run).
+    r.hooks.content.register((contents: { document: Document }) => { armLinks(contents.document); });
     // Changing the layout re-creates the rendition: come back to where the reader was.
     const resume = currentCfi.current;
     const start = session.position?.blockId ? allBlocks.current.find((x) => x.id === session.position?.blockId) : undefined;
@@ -191,6 +214,16 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
   // its selection is polled, and keyboard focus is handed back to this view so page keys
   // and shortcuts keep working after a click in the text.
   const rootRef = useRef<HTMLDivElement>(null);
+  const lastHash = useRef('');
+  const followLink = useRef<(l: { href: string; external: boolean }) => void>(() => {});
+  followLink.current = (l) => {
+    if (l.external) { if (/^https?:\/\//i.test(l.href)) openExternal(l.href); return; }
+    const to = parseSpineLink(l.href);
+    const item = to && (book.current?.spine as unknown as { get: (i: number) => { href: string } | null } | undefined)?.get(to.index);
+    if (!to || !item) return;
+    // A link is the reader moving: let the relocation update the reading position.
+    void rendition.current?.display(to.fragment ? `${item.href}#${to.fragment}` : item.href).catch(() => {});
+  };
   useEffect(() => {
     let last = '';
     const t = window.setInterval(() => {
@@ -199,12 +232,19 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       const doc = frame?.contentDocument;
       if (!frame || !win || !doc) return;
       if (document.activeElement === frame) rootRef.current?.focus({ preventScroll: true });
+      armLinks(doc);
+      const hash = win.location.hash;
+      if (hash !== lastHash.current) {
+        lastHash.current = hash;
+        const link = takeClickedLink(doc, hash);
+        if (link) followLink.current(link);
+      }
       const sel = win.getSelection();
       const sig = sel && !sel.isCollapsed && sel.rangeCount ? `${sel.toString().length}:${sel.anchorOffset}:${sel.focusOffset}:${sel.toString().slice(0, 24)}` : '';
       if (sig === last) return;
       last = sig;
       reportSelection.current(doc, win);
-    }, 300);
+    }, 150);
     return () => window.clearInterval(t);
   }, []);
   // ⌘C copies what is selected in the book (focus lives out here, see above).
