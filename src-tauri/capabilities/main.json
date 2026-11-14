@@ -40,6 +40,7 @@
     "allow-reader-set-viewport",
     "allow-translation-request",
     "allow-translation-cancel",
+    "allow-translate-selection",
     "allow-translation-batch-start",
     "allow-translation-batch-cancel",
     "allow-translation-batch-status",

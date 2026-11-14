@@ -61,6 +61,28 @@ pub async fn translation_request(core: Core<'_>, window: WebviewWindow, meta: Co
 #[derive(Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
+pub struct TranslateSelectionArgs {
+    pub session_id: String,
+    pub text: String,
+}
+
+/// Translate just the selected words (not stored anywhere).
+#[tauri::command]
+pub async fn translate_selection(core: Core<'_>, window: WebviewWindow, meta: CommandMeta, args: TranslateSelectionArgs) -> Result<Wire, ()> {
+    let r = async {
+        let s = core.sessions.get(&args.session_id, window.label())?;
+        if args.text.len() > 32 * 1024 {
+            return Err(AppError::limit("선택한 글이 너무 깁니다."));
+        }
+        Ok(serde_json::json!({"text": core.translation.translate_selection(&s, &args.text).await?}))
+    }
+    .await;
+    Ok(respond(&meta, r))
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
 pub struct BatchStartArgs {
     pub session_id: String,
     pub section_ids: Vec<String>,

@@ -70,6 +70,7 @@ macro_rules! app_handlers {
             commands::translation::reader_set_viewport,
             commands::translation::translation_request,
             commands::translation::translation_cancel,
+            commands::translation::translate_selection,
             commands::translation::translation_batch_start,
             commands::translation::translation_batch_cancel,
             commands::translation::translation_batch_status,

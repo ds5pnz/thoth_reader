@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-translate-selection"
+description = "Enables the translate_selection command without any pre-configured scope."
+commands.allow = ["translate_selection"]
+
+[[permission]]
+identifier = "deny-translate-selection"
+description = "Denies the translate_selection command without any pre-configured scope."
+commands.deny = ["translate_selection"]

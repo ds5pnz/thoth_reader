@@ -105,6 +105,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'viewer') await viewerCheck(res);
       if (cfg.scenario === 'annotate') await annotateCheck(res, isPdf);
       if (cfg.scenario === 'export') await exportCheck(res, isPdf);
+      if (cfg.scenario === 'selection') await selectionCheck(res, isPdf);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -1024,4 +1025,34 @@ async function exportCheck(res: Record<string, unknown>, isPdf: boolean) {
   }
   out.formats = done;
   inDlg('닫기')?.click();
+}
+
+/** Selection toolbar: translate only the selected words, copy. */
+async function selectionCheck(res: Record<string, unknown>, isPdf: boolean) {
+  const out: Record<string, unknown> = {};
+  res.selection = out;
+  if (isPdf) clickButton('리플로우');
+  clickButton('병렬');
+  await waitFor(() => rows() > 3, 20000);
+  await sleep(800);
+  const src = [...document.querySelectorAll<HTMLElement>('.brow.kind-paragraph > .src')].find((e) => (e.textContent ?? '').trim().length > 60);
+  if (!src) { out.error = 'no paragraph'; return; }
+  const first = document.createTreeWalker(src, NodeFilter.SHOW_TEXT).nextNode() as Text;
+  const r = document.createRange();
+  r.setStart(first, 0);
+  r.setEnd(first, Math.min(first.data.length, 30));
+  const sel = window.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(r);
+  out.toolbarMs = await waitFor(() => !!document.querySelector('.sel-bar'), 3000);
+  const bar = () => document.querySelector<HTMLElement>('.sel-bar');
+  const b = (t: string) => [...(bar()?.querySelectorAll<HTMLButtonElement>('button') ?? [])].find((x) => x.textContent === t);
+  out.buttons = [...(bar()?.querySelectorAll('button') ?? [])].map((x) => x.textContent || x.getAttribute('aria-label')).length;
+  b('선택 번역')?.click();
+  out.translatedMs = await waitFor(() => { const t = bar()?.querySelector('.sel-result p')?.textContent ?? ''; return t.length > 0 && t !== '번역 중…'; }, 20000);
+  out.resultLen = (bar()?.querySelector('.sel-result p')?.textContent ?? '').length;
+  out.isError = !!bar()?.querySelector('.sel-result .warn-text');
+  b('닫기')?.click();
+  await sleep(300);
+  out.closed = !document.querySelector('.sel-bar');
 }

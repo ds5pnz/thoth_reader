@@ -572,3 +572,20 @@ async fn batch_translates_a_range_and_reports_progress() {
     assert_eq!(c.state, "cancelled");
     assert!(c.done < 30);
 }
+
+/// Selection translation answers with the profile's model and leaves no trace in storage.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn selection_translation_is_not_stored() {
+    let f = fixture(1, MockConfig::default()).await;
+    let out = f.svc.translate_selection(&f.s, "  quick   brown fox ").await.unwrap();
+    assert!(!out.trim().is_empty());
+    assert_eq!(f.mock.calls(), 1);
+    let sent = serde_json::to_string(&f.mock.requests()[0].messages).unwrap();
+    assert!(sent.contains("quick brown fox"), "whitespace is collapsed before sending");
+    for table in ["translation_jobs", "translation_revisions", "translation_cache"] {
+        let n: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("select count(*) from {table}"))).fetch_one(&f.db.reader).await.unwrap();
+        assert_eq!(n, 0, "{table}");
+    }
+    assert!(f.svc.translate_selection(&f.s, "   ").await.is_err());
+    assert!(f.svc.translate_selection(&f.s, &"a ".repeat(3000)).await.is_err());
+}

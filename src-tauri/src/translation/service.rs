@@ -897,6 +897,69 @@ impl TranslationService {
     }
 }
 
+// ---------------------------------------------------------------- selection translation
+
+impl TranslationService {
+    /// Translate a piece of text the reader selected. Nothing is stored: no revision, no
+    /// cache entry, no job row — just the session's current profile applied to the text.
+    pub async fn translate_selection(self: &Arc<Self>, s: &Arc<Session>, text: &str) -> AppResult<String> {
+        let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if text.is_empty() || text.chars().count() > 4000 {
+            return Err(AppError::limit("선택한 글이 비어 있거나 너무 깁니다(최대 4,000자)."));
+        }
+        if s.state.lock().unwrap().source_language.is_none() {
+            return Err(AppError::invalid("원문 언어를 먼저 설정해 주세요."));
+        }
+        let p = self.session_profile(s).await?.ok_or_else(|| AppError::new(ErrorCode::ProviderUnavailable, "번역 Provider와 모델을 먼저 설정해 주세요."))?;
+        let (_, provider) = self.provider_for(&p.profile.provider_id).await?;
+        let protected = super::placeholder::protect(&text, &[])?;
+        let messages = super::prompt::build_messages(&super::prompt::PromptInput {
+            block_id: "selection".into(),
+            segments: vec![super::prompt::PromptSegment { id: prepare::SEGMENT_ID.into(), text: protected.text.clone() }],
+            source_language: p.profile.source_language.clone(),
+            target_language: p.profile.target_language.clone(),
+            context: super::prompt::PromptContext::empty(),
+            glossary: p.glossary.iter().filter(|g| !g.source.is_empty() && text.to_lowercase().contains(&g.source.to_lowercase())).cloned().collect(),
+            response_format: p.response_format,
+            placeholder_example: if protected.has_placeholders() { Some(protected.example_token()) } else { None },
+            style: p.style,
+            inline_tags: false,
+            page_break: false,
+            color_tags: false,
+        })?;
+        let request = crate::providers::TranslationRequest {
+            request_id: crate::domain::new_uuid(),
+            job_id: String::new(),
+            block_id: "selection".into(),
+            part_index: 0,
+            part_count: 1,
+            model_id: p.profile.model_id.clone(),
+            source_language: p.profile.source_language.clone(),
+            target_language: p.profile.target_language.clone(),
+            messages,
+            options: p.options.clone(),
+            response_format: p.response_format,
+            stream: p.caps.streaming,
+            expected_segment_ids: vec![prepare::SEGMENT_ID.into()],
+        };
+        // Wait for a slot like any other request, so a local model is not hit twice at once.
+        let _global = self.global.clone().acquire_owned().await.map_err(|_| AppError::internal("번역기를 사용할 수 없습니다."))?;
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TranslationDelta>(64);
+        let cancel = s.cancel_token().child_token();
+        let call = tokio::spawn(async move { provider.translate(request, tx, cancel).await });
+        while rx.recv().await.is_some() {}
+        let out = call.await.unwrap_or(Err(ProviderError::Cancelled)).map_err(|e| e.to_app_error())?;
+        let stripped = prepare::strip_leading_think(&out.text).map(|t| t.to_string());
+        let out = match stripped {
+            Some(t) => crate::providers::TranslationOutput { text: t, ..out },
+            None => out,
+        };
+        let v = super::validation::validate_output(&out, p.response_format, &[super::validation::ExpectedSegment { id: prepare::SEGMENT_ID, protected: &protected }], &p.profile.target_language)
+            .map_err(|e| AppError::new(ErrorCode::InvalidOutput, e.reason().to_string()))?;
+        v.segments.into_iter().next().map(|x| x.text.trim().to_string()).filter(|t| !t.is_empty()).ok_or_else(|| AppError::new(ErrorCode::InvalidOutput, "빈 응답"))
+    }
+}
+
 // ---------------------------------------------------------------- range translation
 
 /// Progress of a "translate this range" run. Counts are paragraphs (translation units);

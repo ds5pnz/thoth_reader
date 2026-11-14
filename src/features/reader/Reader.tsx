@@ -451,7 +451,19 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const title = (session.metadata?.title as string) || (session.metadata?.pdfTitle as string) || session.title;
   return (
     <div className="reader" ref={readerRef}>
-      <SelectionToolbar root={readerRef} pageBlocks={pageBlocks} onCreate={(a) => void annotations.create(a)} />
+      <SelectionToolbar
+        root={readerRef}
+        pageBlocks={pageBlocks}
+        onCreate={(a) => void annotations.create(a)}
+        onTranslate={async (text) => (await call<{ text: string }>('translate_selection', { sessionId: session.sessionId, text })).text}
+        paragraphPair={(blockId) => {
+          for (const [, bs] of model.blocks) {
+            const b = bs.find((x) => x.id === blockId);
+            if (b) return { source: b.sourceText, translation: model.display.get(blockId)?.shown?.text ?? '' };
+          }
+          return null;
+        }}
+      />
       <header className="toolbar">
         <button className={`btn icon ${sidebarOpen ? 'active' : 'ghost'}`} onClick={toggleSidebar} aria-pressed={sidebarOpen} aria-controls="reader-sidebar" aria-label={sidebarOpen ? '사이드바 닫기' : '사이드바 열기'} title={sidebarOpen ? '사이드바 닫기 (⌘\\)' : '사이드바 열기 (⌘\\)'}>
           <IconSidebar />

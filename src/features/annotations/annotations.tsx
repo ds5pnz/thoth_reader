@@ -171,16 +171,42 @@ export function selectionTarget(root: HTMLElement, pageBlocks: (page: number) =>
 }
 
 /** Floating bar over a selection: highlight in a colour, optionally with a note. */
-export function SelectionToolbar({ root, pageBlocks, onCreate, extraActions }: {
+/** Put text on the clipboard (async API first; a hidden textarea where that is refused). */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { ok = false; }
+    ta.remove();
+    return ok;
+  }
+}
+
+export function SelectionToolbar({ root, pageBlocks, onCreate, onTranslate, paragraphPair }: {
   root: RefObject<HTMLElement | null>;
   pageBlocks: (page: number) => readonly Block[];
   onCreate: (a: NewAnnotation) => void;
-  extraActions?: (t: SelectionTarget, close: () => void) => React.ReactNode;
+  /** Translate just the selected words. */
+  onTranslate?: (text: string) => Promise<string>;
+  /** Source and translation of the paragraph the selection is in, for "copy both". */
+  paragraphPair?: (blockId: string) => { source: string; translation: string } | null;
 }) {
+  const toast = useToast();
+  const [result, setResult] = useState<{ state: 'busy' | 'done' | 'error'; text: string } | null>(null);
   const [target, setTarget] = useState<SelectionTarget | null>(null);
   const [noting, setNoting] = useState(false);
   const [note, setNote] = useState('');
   const barRef = useRef<HTMLDivElement>(null);
+  const keep = useRef(false);
+  keep.current = result !== null;
   const pb = useRef(pageBlocks);
   pb.current = pageBlocks;
   useEffect(() => {
@@ -189,23 +215,41 @@ export function SelectionToolbar({ root, pageBlocks, onCreate, extraActions }: {
       window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         if (barRef.current?.contains(document.activeElement)) return; // typing a note
+        if (keep.current) return; // showing a translation of the (now cleared) selection
         const el = root.current;
         setTarget(el ? selectionTarget(el, pb.current) : null);
         setNoting(false);
         setNote('');
+        setResult(null);
       }, 180);
     };
     document.addEventListener('selectionchange', update);
     return () => { window.clearTimeout(timer); document.removeEventListener('selectionchange', update); };
   }, [root]);
   if (!target) return null;
-  const close = () => { window.getSelection()?.removeAllRanges(); setTarget(null); };
+  const close = () => { setResult(null); keep.current = false; window.getSelection()?.removeAllRanges(); setTarget(null); };
+  const copied = (ok: boolean) => toast({ kind: ok ? 'info' : 'error', text: ok ? '복사했습니다.' : '복사하지 못했습니다.' });
+  const pair = paragraphPair?.(target.blockId) ?? null;
+  const translate = async () => {
+    if (!onTranslate) return;
+    setResult({ state: 'busy', text: '' });
+    try { setResult({ state: 'done', text: await onTranslate(target.quote) }); } catch (e) { setResult({ state: 'error', text: errorMessage(e) }); }
+  };
   const make = (color: HighlightColor, withNote = '') => { onCreate({ blockId: target.blockId, side: target.side, quote: target.quote, occurrence: target.occurrence, color, note: withNote }); close(); };
   const top = Math.max(8, target.rect.top - 44);
   const left = Math.min(window.innerWidth - 300, Math.max(8, target.rect.left + target.rect.width / 2 - 140));
   return (
-    <div ref={barRef} className="sel-bar" role="toolbar" aria-label="선택한 글" style={{ top, left }} onMouseDown={(e) => { if ((e.target as HTMLElement).tagName !== 'INPUT') e.preventDefault(); }}>
-      {noting ? (
+    <div ref={barRef} className={`sel-bar ${result ? 'with-result' : ''}`} role="toolbar" aria-label="선택한 글" style={{ top: result ? Math.max(8, target.rect.top - 44 - 8) : top, left }} onMouseDown={(e) => { if ((e.target as HTMLElement).tagName !== 'INPUT') e.preventDefault(); }}>
+      {result ? (
+        <div className="sel-result" aria-live="polite">
+          <p className={result.state === 'error' ? 'warn-text' : undefined}>{result.state === 'busy' ? '번역 중…' : result.text}</p>
+          <div className="note-actions">
+            <span className="spacer" />
+            {result.state === 'done' && <button className="btn small" onClick={() => void copyText(result.text).then(copied)}>복사</button>}
+            <button className="btn small" onClick={close}>닫기</button>
+          </div>
+        </div>
+      ) : noting ? (
         <form onSubmit={(e) => { e.preventDefault(); make('yellow', note.trim()); }}>
           <input className="input" autoFocus placeholder="메모" aria-label="메모 내용" value={note} maxLength={2000} onChange={(e) => setNote(e.target.value)} onKeyDown={(e) => { if (e.key === 'Escape') setNoting(false); e.stopPropagation(); }} />
           <button className="btn small primary" type="submit">저장</button>
@@ -214,7 +258,10 @@ export function SelectionToolbar({ root, pageBlocks, onCreate, extraActions }: {
         <>
           {HIGHLIGHT_COLORS.map((c) => <button key={c} className={`hl-dot hl-${c}`} onClick={() => make(c)} aria-label={`${COLOR_LABEL[c]} 형광펜`} title={`${COLOR_LABEL[c]} 형광펜`} />)}
           <button className="btn small ghost" onClick={() => setNoting(true)}>메모</button>
-          {extraActions?.(target, close)}
+          <span className="sel-sep" aria-hidden="true" />
+          <button className="btn small ghost" onClick={() => void copyText(target.quote).then(copied)}>복사</button>
+          {pair && pair.translation && <button className="btn small ghost" title="이 문단의 원문과 번역을 함께 복사" onClick={() => void copyText(`${pair.source}\n\n${pair.translation}`).then(copied)}>문단 원문+번역</button>}
+          {onTranslate && target.side === 'source' && <button className="btn small ghost" onClick={() => void translate()}>선택 번역</button>}
         </>
       )}
     </div>
