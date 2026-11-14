@@ -54,8 +54,11 @@ export const TranslationCell = memo(function TranslationCell(props: {
   actions: CellActions;
   /** Show every status badge (inspect popover). Default: quiet, document-like. */
   detailed?: boolean;
+  /** Until the translation arrives, show the source in its place (side-by-side reading),
+   *  with a sweep over it while the paragraph is being translated — as PDF pages do. */
+  sourceWhilePending?: boolean;
 }) {
-  const { block, display, job, preview, autoActive, targetLanguage, actions, detailed = false } = props;
+  const { block, display, job, preview, autoActive, targetLanguage, actions, detailed = false, sourceWhilePending = false } = props;
   const draftKey = `${block.id}|${targetLanguage}`;
   const [editing, setEditingState] = useState(() => drafts.has(draftKey));
   const [draft, setDraftState] = useState(() => drafts.get(draftKey) ?? '');
@@ -125,6 +128,8 @@ export const TranslationCell = memo(function TranslationCell(props: {
   }
 
   const running = job && (job.state === 'RUNNING' || job.state === 'STREAMING' || job.state === 'QUEUED');
+  // Being translated, or about to be: automatic translation picks up every visible paragraph.
+  const pending = !!running || (job?.state === 'RETRY_WAIT') || (!job && autoActive && (display?.status ?? 'none') === 'none');
   return (
     <div className={`tcell ${display?.status ?? 'none'} ${detailed ? 'detailed' : 'quiet'}`} lang={targetLanguage} aria-busy={running ? true : undefined}>
       <div className="tcell-head">
@@ -161,16 +166,23 @@ export const TranslationCell = memo(function TranslationCell(props: {
       ) : shownText ? (
         <div className="tcell-text" onDoubleClick={startEdit}>{renderMarked(shownText, display?.shown?.marks)}</div>
       ) : display?.status === 'excluded' ? null : (
-        <div className="tcell-empty faint">
-          {job?.state === 'FAILED' ? (
-            <>
-              <span>{job.errorCode === 'AUTH_FAILED' ? '인증을 확인해 주세요.' : job.errorCode === 'INVALID_OUTPUT' ? '모델 응답 형식이 올바르지 않습니다.' : '번역에 실패했습니다.'}</span>
-              <button className="btn small" onClick={() => actions.translateNow(block.id)} title={job.sentUnknown ? '원문이 이미 전송되었을 수 있어 새 요청이 발생할 수 있습니다' : undefined}>다시 시도</button>
-            </>
-          ) : running ? (detailed ? '번역 중…' : null) : !autoActive && display?.status === 'none' ? (
-            <button className="btn small ghost" onClick={() => actions.translateNow(block.id)}>번역</button>
-          ) : null}
-        </div>
+        <>
+          {!detailed && sourceWhilePending
+            ? <div className={`tcell-source${pending ? ' busy' : ''}`} lang="" aria-hidden="true">{block.sourceText}</div>
+            : !detailed && pending && <div className="tcell-wait busy" aria-hidden="true" />}
+          {(job?.state === 'FAILED' || (running && detailed) || (!running && !autoActive && display?.status === 'none') || (!sourceWhilePending && !pending)) && (
+            <div className="tcell-empty faint">
+              {job?.state === 'FAILED' ? (
+                <>
+                  <span>{job.errorCode === 'AUTH_FAILED' ? '인증을 확인해 주세요.' : job.errorCode === 'INVALID_OUTPUT' ? '모델 응답 형식이 올바르지 않습니다.' : '번역에 실패했습니다.'}</span>
+                  <button className="btn small" onClick={() => actions.translateNow(block.id)} title={job.sentUnknown ? '원문이 이미 전송되었을 수 있어 새 요청이 발생할 수 있습니다' : undefined}>다시 시도</button>
+                </>
+              ) : running ? (detailed ? '번역 중…' : null) : !autoActive && display?.status === 'none' ? (
+                <button className="btn small ghost" onClick={() => actions.translateNow(block.id)}>번역</button>
+              ) : null}
+            </div>
+          )}
+        </>
       )}
       {running && job && <button className="btn small ghost cancel on-hover" onClick={() => actions.cancel(job.jobId)}>취소</button>}
     </div>

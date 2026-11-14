@@ -322,6 +322,7 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
             autoActive={autoActive}
             targetLanguage={targetLanguage}
             actions={actions}
+            sourceWhilePending={mode === 'parallel'}
           />
         </div>
       )}

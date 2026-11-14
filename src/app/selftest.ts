@@ -1153,7 +1153,9 @@ async function screensCheck(res: Record<string, unknown>, index: number, count: 
       const vis = [...document.querySelectorAll<HTMLElement>('.brow')].filter((r) => { const b = r.getBoundingClientRect(); return b.bottom > 60 && b.top < window.innerHeight; });
       return vis.length > 2 && vis.every((r) => !r.querySelector('.tcell') || r.querySelector('.tcell-text') || r.querySelector('.tcell.excluded'));
     };
+    out.pending = { sources: document.querySelectorAll('.tcell-source').length, busy: document.querySelectorAll('.tcell-source.busy').length, shot: await snap('reader-pending') };
     out.translatedMs = await waitFor(filled, 240000);
+    out.sourcesLeftVisible = [...document.querySelectorAll<HTMLElement>('.tcell-source')].filter((e) => { const b = e.getBoundingClientRect(); return b.bottom > 60 && b.top < window.innerHeight; }).length;
     await sleep(1200);
     out.parallel = await snap('reader-parallel');
     clickButton('원문');

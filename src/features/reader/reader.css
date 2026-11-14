@@ -65,6 +65,11 @@
 .menu button { width: 100%; text-align: left; border: 0; background: transparent; padding: 6px 10px; border-radius: 5px; cursor: pointer; }
 .menu button:hover { background: var(--bg-sunken); }
 .tcell-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* not translated yet: the source stands in, and a sweep runs over it while it is being translated */
+.tcell-source { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg-muted); border-radius: 4px; }
+.tcell-wait { height: 1.2em; border-radius: 4px; }
+.tcell-source.busy, .tcell-wait.busy { background: linear-gradient(90deg, rgba(31,95,107,0) 0%, rgba(31,95,107,.22) 50%, rgba(31,95,107,0) 100%); background-size: 200% 100%; animation: tp-busy 1.4s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .tcell-source.busy, .tcell-wait.busy { animation: none; background: rgba(31,95,107,.12); } }
 /* reading flow is quiet: no state colours; states live in the menu / popover */
 .tcell.detailed.stale .tcell-text { color: var(--fg-muted); }
 .tcell-prev { color: var(--fg-muted); margin: 0 0 4px; }
