@@ -286,6 +286,10 @@ pub fn build_payload(caps: &ProviderCapabilities, req: &TranslationRequest) -> V
     if let (Some(field), Some(n)) = (&caps.token_limit_field, req.options.max_output_tokens) {
         body.insert(field.clone(), json!(n));
     }
+    // Verified at probe time to suppress hidden reasoning on this model (see probe step 3).
+    if caps.thinking_toggle {
+        body.insert("reasoning_effort".into(), json!("none"));
+    }
     if req.response_format == ResponseFormat::JsonSegments && caps.structured_output {
         body.insert(
             "response_format".into(),
@@ -508,10 +512,87 @@ impl ProviderDiagnostics for OpenAiCompatibleProvider {
                 report.warnings.push("structured_output_unsupported".into());
             }
         }
+        if ok {
+            // 3) Hidden reasoning ("thinking") check. Only when the model is observed to reason
+            //    AND `reasoning_effort: "none"` is verified to suppress it do we enable the
+            //    toggle (spec §6.1: never force unverified options on every model).
+            caps.thinking_toggle = false;
+            let mut base = probe_request(&model, false, false, &caps);
+            base["max_tokens"] = json!(512);
+            if let Some(field) = caps.token_limit_field.as_deref().filter(|f| *f != "max_tokens") {
+                base.as_object_mut().map(|o| o.remove("max_tokens"));
+                base[field] = json!(512);
+            }
+            match self.probe_json(&base, &cancel).await {
+                Some(v) if reasoning_used(&v) => {
+                    let mut off = base.clone();
+                    off["reasoning_effort"] = json!("none");
+                    match self.probe_json(&off, &cancel).await {
+                        Some(v2) if !reasoning_used(&v2) && message_content(&v2).is_some_and(|c| !c.trim().is_empty()) => {
+                            caps.thinking_toggle = true;
+                            report.warnings.push("reasoning_disabled_for_translation".into());
+                        }
+                        _ => report.warnings.push("reasoning_not_disableable".into()),
+                    }
+                }
+                _ => {}
+            }
+        }
         if caps.context_limit.is_none() {
             report.warnings.push("context_limit_unknown".into());
         }
         report.capabilities = caps;
         Ok(report)
+    }
+}
+
+impl OpenAiCompatibleProvider {
+    /// Non-streaming fixed-phrase request returning the raw JSON (probe only).
+    async fn probe_json(&self, payload: &Value, cancel: &CancellationToken) -> Option<Value> {
+        let (resp, _dl, _) = self.post_chat(payload, cancel).await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = tokio::time::timeout(std::time::Duration::from_secs(180), resp.bytes()).await.ok()?.ok()?;
+        if bytes.len() > 256 * 1024 {
+            return None;
+        }
+        serde_json::from_slice(&bytes).ok()
+    }
+}
+
+fn message_content(v: &Value) -> Option<&str> {
+    v.pointer("/choices/0/message/content").and_then(Value::as_str)
+}
+
+/// True when the response shows hidden reasoning tokens or a reasoning field.
+pub(crate) fn reasoning_used(v: &Value) -> bool {
+    let tokens = v.pointer("/usage/completion_tokens_details/reasoning_tokens").and_then(Value::as_u64).unwrap_or(0);
+    let field = ["reasoning_content", "reasoning"]
+        .iter()
+        .any(|k| v.pointer(&format!("/choices/0/message/{k}")).and_then(Value::as_str).is_some_and(|s| !s.trim().is_empty()));
+    tokens > 0 || field
+}
+
+#[cfg(test)]
+mod reasoning_tests {
+    use super::*;
+    #[test]
+    fn detects_reasoning_tokens_and_fields() {
+        assert!(reasoning_used(&json!({"usage": {"completion_tokens_details": {"reasoning_tokens": 138}}})));
+        assert!(reasoning_used(&json!({"choices": [{"message": {"content": "x", "reasoning_content": "think"}}]})));
+        assert!(!reasoning_used(&json!({"usage": {"completion_tokens_details": {"reasoning_tokens": 0}}, "choices": [{"message": {"content": "x"}}]})));
+    }
+    #[test]
+    fn toggle_adds_reasoning_effort_only_when_verified() {
+        let mut caps = ProviderCapabilities::default_for(ProviderKind::OpenaiCompatible);
+        let req = TranslationRequest {
+            request_id: String::new(), job_id: String::new(), block_id: "b".into(), part_index: 0, part_count: 1,
+            model_id: "m".into(), source_language: "en".into(), target_language: "ko".into(), messages: vec![],
+            options: GenerationOptions::default(), response_format: ResponseFormat::Text, stream: true, expected_segment_ids: vec!["s0".into()],
+        };
+        assert!(build_payload(&caps, &req).get("reasoning_effort").is_none());
+        caps.thinking_toggle = true;
+        assert_eq!(build_payload(&caps, &req)["reasoning_effort"], "none");
     }
 }

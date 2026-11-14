@@ -14,6 +14,14 @@ export type JobView = { jobId: string; state: string; errorCode?: string | null;
 
 const MAX_PREVIEW = 256 * 1024;
 
+// A reopen of the same document must observe the final position written by the previous
+// session's document_close (which is fire-and-forget during unmount).
+const pendingCloses = new Map<string, Promise<unknown>>();
+export function trackClose(documentId: string, p: Promise<unknown>) {
+  const done = p.catch(() => {}).finally(() => { if (pendingCloses.get(documentId) === done) pendingCloses.delete(documentId); });
+  pendingCloses.set(documentId, done);
+}
+
 export interface ReaderModel {
   session: ReaderSessionDto | null;
   error: string | null;
@@ -139,6 +147,7 @@ export function useReaderSession(documentId: string) {
     channel.onmessage = (m) => { if (!disposed) onEvent(m); };
     (async () => {
       try {
+        await pendingCloses.get(documentId);
         const s = await call<ReaderSessionDto>('document_open', { documentId }, { channel });
         if (disposed) {
           void call('document_close', { sessionId: s.sessionId, generation: s.generation, finalAnchor: null, view: null });

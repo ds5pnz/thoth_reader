@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { call, errorMessage, mutate } from '../../ipc/client';
-import { useReaderSession } from './useReaderSession';
+import { useReaderSession, trackClose } from './useReaderSession';
 import { ReflowView, type ReflowHandle, type ReflowMode } from './ReflowView';
 import { Sidebar } from './Sidebar';
 import { HistoryDialog } from '../translation/HistoryDialog';
@@ -122,14 +122,23 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     saveTimer.current = window.setTimeout(() => void savePosition(), 500);
   }, [savePosition]);
 
+  const lastAnchor = useRef<ReaderAnchor | null>(null);
   const onVisible = useCallback((ids: string[], direction: 'forward' | 'backward') => {
     const s = sessionRef.current;
     if (!s) return;
+    // Track the reading anchor continuously; save 500ms after it changes (spec §3.4).
+    const a = currentAnchor();
+    if (a && a.blockId !== lastAnchor.current?.blockId) {
+      lastAnchor.current = a;
+      if (restored.current) onScrolled();
+    } else if (a) {
+      lastAnchor.current = a;
+    }
     viewportSeq.current += 1;
     void call<{ blockedReason?: string }>('reader_set_viewport', { sessionId: s.sessionId, generation: s.generation, sequence: viewportSeq.current, visibleIds: autoActive ? ids : [], direction })
       .then((r) => setBlockedReason(r.blockedReason ?? null))
       .catch(() => {});
-  }, [sessionRef, autoActive]);
+  }, [sessionRef, autoActive, currentAnchor, onScrolled]);
 
   // Restore saved position once the first sections exist: load the anchor's section,
   // then retry until its rows are rendered (React commits after loadSection resolves).
@@ -194,18 +203,23 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   anchorFnRef.current = currentAnchor;
   const viewRef = useRef({ mode, pdfView });
   viewRef.current = { mode, pdfView };
-  useEffect(() => () => {
+  // Layout-effect cleanup runs before React detaches the DOM, so the anchor is still measurable.
+  useLayoutEffect(() => () => {
     const s = sessionRef.current;
     if (closedRef.current || !s) return;
     closedRef.current = true;
-    void call('document_close', { sessionId: s.sessionId, generation: s.generation, finalAnchor: anchorFnRef.current(), view: viewRef.current }).catch(() => {});
+    trackClose(s.documentId, call('document_close', { sessionId: s.sessionId, generation: s.generation, finalAnchor: anchorFnRef.current() ?? lastAnchor.current, view: viewRef.current }));
   }, [sessionRef]);
 
   const close = async () => {
     const doClose = async () => {
       const s = sessionRef.current;
       closedRef.current = true;
-      if (s) await call('document_close', { sessionId: s.sessionId, generation: s.generation, finalAnchor: currentAnchor(), view: { mode, pdfView } }).catch(() => {});
+      if (s) {
+        const p = call('document_close', { sessionId: s.sessionId, generation: s.generation, finalAnchor: currentAnchor() ?? lastAnchor.current, view: { mode, pdfView } });
+        trackClose(s.documentId, p);
+        await p.catch(() => {});
+      }
       onClose();
     };
     if (dirty.current.size > 0) setPendingSwitch({ run: () => void doClose() });

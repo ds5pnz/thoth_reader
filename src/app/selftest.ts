@@ -133,7 +133,7 @@ let WAIT = 30000;
 async function setupProvider(endpoint: string, model: string | null) {
   try {
     const p = await call<{ id: string }>('provider_save', { providerId: null, kind: 'openai_compatible', label: 'selftest mock', endpoint, accountNamespace: 'selftest', allowPrivateHttp: false, enabled: true });
-    const probe = await call<{ ok: boolean; models: { id: string }[]; capabilities: Record<string, unknown> | null; warnings: string[] }>('provider_probe', { providerId: p.id });
+    const probe = await call<{ ok: boolean; models: { id: string }[]; capabilities: Record<string, unknown> | null; warnings: string[] }>('provider_probe', { providerId: p.id, modelId: model });
     await log('result', { stage: 'provider', probeOk: probe.ok, models: probe.models.map((m) => m.id), caps: probe.capabilities, warnings: probe.warnings });
     const prof = await call<{ id: string }>('profile_create', { providerId: p.id, modelId: model ?? probe.models[0]?.id ?? 'mock-ko', sourceLanguage: 'en', targetLanguage: 'ko', temperature: 0.2, seed: null, maxOutputTokens: null, contextLimit: 8192, modelDigest: null });
     await call('settings_patch', { key: 'activeProfileId', value: prof.id, expectedVersion: null });
@@ -180,7 +180,9 @@ async function translationChecks(res: Record<string, unknown>, documentId: strin
   const t1 = performance.now();
   window.__thoth?.open?.(documentId);
   res.reopenTranslatedMs = await waitFor(() => translated() > 0, 10000);
-  await sleep(1500);
+  const wantId = anchorBefore?.blockId;
+  res.reopenAnchorRestoredMs = wantId ? await waitFor(() => (window.__thoth?.anchor?.() as { blockId?: string } | null)?.blockId === wantId, 10000) : null;
+  await sleep(500);
   res.reopenAnchor = ((window.__thoth?.anchor?.() as { blockId?: string } | null)?.blockId ?? '').slice(0, 8);
   res.reopenManualKept = [...document.querySelectorAll('.tcell-text')].some((x) => x.textContent === '수동으로 고친 번역');
   res.reopenWindowMs = Math.round(performance.now() - t1);

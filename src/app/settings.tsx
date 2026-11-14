@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { call, mutate } from '../ipc/client';
 
 export type SettingsMap = {
@@ -31,10 +31,13 @@ const SettingsContext = createContext<Ctx | null>(null);
 
 export function SettingsProvider({ children }: { children: ReactNode }) {
   const [raw, setRaw] = useState<Versioned>({});
+  const rawRef = useRef<Versioned>({});
   const [loaded, setLoaded] = useState(false);
   const reload = useCallback(async () => {
     try {
-      setRaw(await call<Versioned>('settings_get'));
+      const v = await call<Versioned>('settings_get');
+      rawRef.current = v;
+      setRaw(v);
     } finally {
       setLoaded(true);
     }
@@ -49,10 +52,23 @@ export function SettingsProvider({ children }: { children: ReactNode }) {
     return s as SettingsMap;
   }, [raw]);
   const set = useCallback(async <K extends keyof SettingsMap>(key: K, value: SettingsMap[K]) => {
-    const expectedVersion = raw[key]?.version ?? null;
-    const r = await mutate<{ version: number }>('settings_patch', { key, value, expectedVersion });
-    setRaw((prev) => ({ ...prev, [key]: { value, version: r.version } }));
-  }, [raw]);
+    // UI preferences are last-writer-wins: on a version conflict (e.g. rapid toggles),
+    // retry once against the server's current version.
+    const attempt = (expectedVersion: number | null) => mutate<{ version: number }>('settings_patch', { key, value, expectedVersion });
+    let r: { version: number };
+    try {
+      r = await attempt(rawRef.current[key]?.version ?? null);
+    } catch (e) {
+      const cur = (e as { error?: { code?: string; details?: { currentVersion?: number } } }).error;
+      if (cur?.code !== 'CONFLICT' || typeof cur.details?.currentVersion !== 'number') throw e;
+      r = await attempt(cur.details.currentVersion);
+    }
+    setRaw((prev) => {
+      const next = { ...prev, [key]: { value, version: r.version } };
+      rawRef.current = next;
+      return next;
+    });
+  }, []);
 
   // Theme + reading typography are applied to :root so every view follows them.
   useEffect(() => {

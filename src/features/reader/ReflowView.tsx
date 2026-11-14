@@ -116,13 +116,57 @@ export const ReflowView = forwardRef<ReflowHandle, {
     return () => io.disconnect();
   }, [items, reportVisible, mode]);
 
+  // Scroll anchoring (spec §3.4): remember the block under the reading line and its
+  // on-screen offset; when rows resize without user input (translations streaming in,
+  // images/fonts loading, sections measured) shift scrollTop so that block stays put.
+  const sticky = useRef<{ id: string; offset: number } | null>(null);
+  const lastUserScroll = useRef(0);
+  const captureSticky = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const vp = el.getBoundingClientRect();
+    const cands: { id: string; top: number; bottom: number }[] = [];
+    el.querySelectorAll<HTMLElement>('[data-block-id]').forEach((n) => {
+      const r = n.getBoundingClientRect();
+      cands.push({ id: n.dataset.blockId!, top: r.top - vp.top, bottom: r.bottom - vp.top });
+    });
+    const a = pickAnchor(cands, 0, vp.height);
+    const c = a && cands.find((x) => x.id === a.id);
+    if (a && c) sticky.current = { id: a.id, offset: c.top };
+  }, []);
+  const innerRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    const inner = innerRef.current;
+    if (!el || !inner) return;
+    const ro = new ResizeObserver(() => {
+      const st = sticky.current;
+      if (!st || performance.now() - lastUserScroll.current < 250) return;
+      const node = el.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(st.id)}"]`);
+      if (!node) return;
+      const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - st.offset;
+      if (Math.abs(delta) > 1) {
+        origin.current.markProgrammatic(150);
+        el.scrollTop += delta;
+      }
+    });
+    ro.observe(inner);
+    inner.querySelectorAll('.row-wrap').forEach((r) => ro.observe(r));
+    return () => ro.disconnect();
+  }, [items]);
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
     direction.current = el.scrollTop >= lastTop.current ? 'forward' : 'backward';
     lastTop.current = el.scrollTop;
-    if (origin.current.classify() === 'user') onScrolled();
-    debouncer.current.run(reportVisible);
+    if (origin.current.classify() === 'user') {
+      lastUserScroll.current = performance.now();
+      onScrolled();
+      debouncer.current.run(() => { captureSticky(); reportVisible(); });
+    } else {
+      debouncer.current.run(reportVisible);
+    }
   };
 
   useImperativeHandle(ref, () => ({
@@ -155,9 +199,13 @@ export const ReflowView = forwardRef<ReflowHandle, {
         const node = el?.querySelector<HTMLElement>(`[data-block-id="${CSS.escape(blockId)}"]`);
         if (!el || !node) return;
         const src = node.querySelector<HTMLElement>('.src') ?? node;
-        const top = node.offsetTop + (src === node ? 0 : src.offsetTop);
+        // Rows are positioned with transform: translateY, which offsetTop ignores; use
+        // layout rects relative to the scroller instead.
+        const sr = src.getBoundingClientRect();
+        const top = el.scrollTop + (sr.top - el.getBoundingClientRect().top);
         origin.current.markProgrammatic(200);
-        el.scrollTop = scrollTopForAnchor(top, src.offsetHeight, ratio, el.clientHeight);
+        el.scrollTop = scrollTopForAnchor(top, sr.height, ratio, el.clientHeight);
+        requestAnimationFrame(() => captureSticky());
       }));
       return true;
     },
@@ -172,7 +220,7 @@ export const ReflowView = forwardRef<ReflowHandle, {
 
   return (
     <div ref={scrollRef} className={`reflow mode-${mode}`} onScroll={onScroll} tabIndex={0} aria-label="본문">
-      <div style={{ height: virt.getTotalSize(), position: 'relative' }}>
+      <div ref={innerRef} style={{ height: virt.getTotalSize(), position: 'relative' }}>
         {items.map((it) => {
           const r = rows[it.index]!;
           return (

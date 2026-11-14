@@ -54,7 +54,7 @@ function TranslationSettings() {
   const runProbe = async (p: ProviderRow) => {
     setProbe((x) => ({ ...x, [p.id]: 'running' }));
     try {
-      const r = await call<ProbeResult>('provider_probe', { providerId: p.id });
+      const r = await call<ProbeResult>('provider_probe', { providerId: p.id, modelId: null });
       setProbe((x) => ({ ...x, [p.id]: r }));
     } catch (e) {
       setErr(errorMessage(e));
@@ -201,6 +201,10 @@ function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provi
   const [msg, setMsg] = useState<string | null>(null);
   const create = async () => {
     try {
+      // Re-check the chosen model (fixed test phrase only) so its capabilities —
+      // streaming, structured output, verified reasoning toggle — enter the profile.
+      setMsg('선택한 모델을 고정 문구로 검사하는 중…');
+      await call('provider_probe', { providerId: provider.id, modelId: model.trim() }).catch(() => null);
       const m = models.find((x) => x.id === model);
       const p = await mutate<ProfileRow>('profile_create', {
         providerId: provider.id, modelId: model.trim(), sourceLanguage: src, targetLanguage: tgt,

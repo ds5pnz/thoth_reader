@@ -12,6 +12,8 @@ const COMMANDS: &[&str] = &[
 ];
 
 fn main() {
+    // sqlx::migrate! embeds the directory at compile time; rebuild when a migration is added.
+    println!("cargo:rerun-if-changed=migrations");
     tauri_build::try_build(
         tauri_build::Attributes::new().app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
     )

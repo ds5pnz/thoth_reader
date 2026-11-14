@@ -332,8 +332,18 @@ pub struct ProbeResult {
 }
 
 /// Connection check: endpoint, auth, models. Never sends document text.
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ProbeArgs {
+    pub provider_id: String,
+    /// Model to check with a fixed test phrase (never document text). Defaults to the
+    /// active profile's model for this provider.
+    pub model_id: Option<String>,
+}
+
 #[tauri::command]
-pub async fn provider_probe(core: Core<'_>, meta: CommandMeta, args: ProviderIdArgs) -> Result<Wire, ()> {
+pub async fn provider_probe(core: Core<'_>, meta: CommandMeta, args: ProbeArgs) -> Result<Wire, ()> {
     let r = async {
         check_id(&args.provider_id, "providerId")?;
         let row = translations::provider_get(&core.db.reader, &args.provider_id).await?.ok_or_else(|| AppError::not_found("Provider"))?;
@@ -342,9 +352,10 @@ pub async fn provider_probe(core: Core<'_>, meta: CommandMeta, args: ProviderIdA
         let provider = crate::providers::build_provider(&cfg, core.translation.secrets.clone())?;
         let model_id = misc::setting_get(&core.db.reader, "activeProfileId").await?
             .and_then(|v| v.0.as_str().map(|s| s.to_string()));
-        let model_id = match model_id {
-            Some(pid) => translations::profile_get(&core.db.reader, &pid).await?.filter(|p| p.provider_id == row.id).map(|p| p.model_id),
-            None => None,
+        let model_id = match (args.model_id.clone().filter(|m| !m.trim().is_empty() && m.len() <= 200), model_id) {
+            (Some(m), _) => Some(m),
+            (None, Some(pid)) => translations::profile_get(&core.db.reader, &pid).await?.filter(|p| p.provider_id == row.id).map(|p| p.model_id),
+            (None, None) => None,
         };
         match provider.probe_model(&crate::providers::ProbeRequest { model_id, send_test_prompt: true }).await {
             Ok(rep) => {
