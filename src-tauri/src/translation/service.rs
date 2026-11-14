@@ -926,6 +926,7 @@ impl TranslationService {
             inline_tags: false,
             page_break: false,
             color_tags: false,
+            mode: p.prompt_mode,
         })?;
         let request = crate::providers::TranslationRequest {
             request_id: crate::domain::new_uuid(),

@@ -477,6 +477,10 @@ pub struct ProfileCreateArgs {
     pub max_output_tokens: Option<u32>,
     pub context_limit: Option<u32>,
     pub model_digest: Option<String>,
+    /// "simple" for translation-only models; anything else is the structured request.
+    #[serde(default)]
+    #[ts(optional)]
+    pub prompt_mode: Option<String>,
 }
 
 #[tauri::command]
@@ -495,7 +499,7 @@ pub async fn profile_create(core: Core<'_>, meta: CommandMeta, args: ProfileCrea
             }
         }
         let row = translations::provider_get(&core2.db.reader, &args.provider_id).await?.ok_or_else(|| AppError::not_found("Provider"))?;
-        prepare::create_profile(&core2.db, &row, &args.model_id, &args.source_language, &args.target_language, args.temperature, args.seed, args.max_output_tokens, args.context_limit, args.model_digest.as_deref()).await
+        prepare::create_profile_with_mode(&core2.db, &row, &args.model_id, &args.source_language, &args.target_language, args.temperature, args.seed, args.max_output_tokens, args.context_limit, args.model_digest.as_deref(), args.prompt_mode.as_deref().map(crate::translation::prompt::PromptMode::parse).unwrap_or_default()).await
     })
     .await)
 }

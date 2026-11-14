@@ -56,7 +56,7 @@ Books, translations, notes and settings stay on your Mac. Text leaves the machin
 | Ollama | Local. No key needed. |
 | OpenAI-compatible API | Any server that speaks the Chat Completions API, including LM Studio and hosted services. API keys are stored in the macOS Keychain only. |
 
-Add a provider in Settings, pick a model, and choose the target language. The app never falls back from a local provider to a remote one on its own.
+Add a provider in Settings, pick a model, and choose the target language. Translation-only models such as TranslateGemma or Hunyuan-MT use the *simple* request style (selected automatically from the model name); general chat models use the *standard* one, which also sends the previous paragraph as context. The app never falls back from a local provider to a remote one on its own.
 
 ## Install
 

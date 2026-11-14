@@ -186,7 +186,7 @@ async function setupProvider(endpoint: string, model: string | null) {
     const p = await call<{ id: string }>('provider_save', { providerId: null, kind: 'openai_compatible', label: 'selftest mock', endpoint, accountNamespace: 'selftest', allowPrivateHttp: false, enabled: true });
     const probe = await call<{ ok: boolean; models: { id: string }[]; capabilities: Record<string, unknown> | null; warnings: string[] }>('provider_probe', { providerId: p.id, modelId: model });
     await log('result', { stage: 'provider', probeOk: probe.ok, models: probe.models.map((m) => m.id), caps: probe.capabilities, warnings: probe.warnings });
-    const prof = await call<{ id: string }>('profile_create', { providerId: p.id, modelId: model ?? probe.models[0]?.id ?? 'mock-ko', sourceLanguage: 'en', targetLanguage: 'ko', temperature: 0.2, seed: null, maxOutputTokens: null, contextLimit: 8192, modelDigest: null });
+    const prof = await call<{ id: string }>('profile_create', { providerId: p.id, modelId: model ?? probe.models[0]?.id ?? 'mock-ko', sourceLanguage: 'en', targetLanguage: 'ko', temperature: 0.2, seed: null, maxOutputTokens: null, contextLimit: 8192, modelDigest: null, promptMode: /translategemma|hy-?mt/i.test(model ?? '') ? 'simple' : 'structured' });
     await call('settings_patch', { key: 'activeProfileId', value: prof.id, expectedVersion: null });
     // The settings UI stores these with the profile; PDFs carry no language metadata.
     await call('settings_patch', { key: 'defaultSourceLanguage', value: 'en', expectedVersion: null });

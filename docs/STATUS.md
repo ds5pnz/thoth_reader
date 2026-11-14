@@ -169,3 +169,10 @@ THOTH_SELFTEST_PROVIDER=http://localhost:1235/v1 THOTH_SELFTEST_MODEL=<model> sc
 - 상단 바: 서재·내보내기 아이콘, 전체 화면(⇧⌘F, Esc로 종료). 전체 화면에서는 상단 바와 사이드바를 숨기고 포인터가 위쪽 가장자리에 닿으면 상단 바가 나온다.
 - 앱 아이콘: 왼쪽 쪽에 "Th", 오른쪽 쪽에 "th", 가운데 고리 "o" (`scripts/make-icon.swift`).
 - 자가 검증 창이 가려진 상태에서는 CSS 전환·IntersectionObserver가 진행되지 않아, 도구 막대 표시·전체 화면 상단 바·썸네일 렌더링은 이번 실행에서 자동 확인하지 못했다(썸네일은 이전 실행에서 확인).
+
+## 번역 전용 모델용 단순 요청 (2026-11-14)
+
+- 프로필에 요청 방식(`promptMode`)이 추가됐다. 표준은 기존의 시스템 메시지 + JSON 문서, 단순은 규칙 몇 문장 뒤에 본문을 붙인 사용자 메시지 한 개다(문맥 문단 없음, 응답은 항상 텍스트). 단순 프로필만 스냅샷에 `promptMode`를 가지므로 기존 프로필의 해시와 캐시는 그대로다.
+- 규칙 문장은 "다음 글을 번역하라"는 문장보다 앞에 둔다. 뒤에 두면 TranslateGemma가 규칙을 본문으로 보고 번역한다(10문단 중 3문단).
+- LM Studio 실측(M1 Max 32GB, Q4, 자바 책 한 쪽 8문단 391단어, 순차 요청): 표준 요청에서 translategemma-4b-it 0/8(지시문 반복), hy-mt2-7b 7/8(1문단 JSON 반환), qwen3.8-27b 8/8·77초. 단순 요청에서 translategemma 8/8·약 11초, hy-mt2 8/8·약 25초. 강조 태그·자리표시자·`<pb/>`는 hy-mt2가 유지했고 translategemma는 태그를 떨어뜨렸다.
+- 실제 앱(공개 도서 EPUB, 병렬 보기 첫 화면이 번역으로 채워질 때까지): qwen3.8-27b 55~65초, hy-mt2-7b 약 10초, translategemma-4b-it 약 8초.

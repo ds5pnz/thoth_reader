@@ -51,9 +51,27 @@ pub async fn create_profile(
     context_limit: Option<u32>,
     model_digest: Option<&str>,
 ) -> AppResult<translations::ProfileRow> {
+    create_profile_with_mode(db, row, model_id, src, tgt, temperature, seed, max_output_tokens, context_limit, model_digest, prompt::PromptMode::Structured).await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn create_profile_with_mode(
+    db: &Db,
+    row: &translations::ProviderRow,
+    model_id: &str,
+    src: &str,
+    tgt: &str,
+    temperature: Option<f64>,
+    seed: Option<i64>,
+    max_output_tokens: Option<u32>,
+    context_limit: Option<u32>,
+    model_digest: Option<&str>,
+    mode: prompt::PromptMode,
+) -> AppResult<translations::ProfileRow> {
     let cfg = provider_config(row)?;
     let caps = cfg.effective_capabilities();
-    let snapshot = serde_json::json!({
+    let simple = mode == prompt::PromptMode::Simple;
+    let mut snapshot = serde_json::json!({
         "providerId": row.id,
         "providerKind": cfg.kind.as_str(),
         "endpointIdentity": row.endpoint,
@@ -67,12 +85,16 @@ pub async fn create_profile(
             "seed": if caps.seed { seed } else { None },
             "maxOutputTokens": max_output_tokens,
         },
-        "responseFormat": if caps.structured_output { "json_segments" } else { "text" },
+        "responseFormat": if caps.structured_output && !simple { "json_segments" } else { "text" },
         "contextLimit": context_limit.or(caps.context_limit),
         "capabilities": caps,
         "adapterVersion": crate::domain::versions::ADAPTER,
         "promptHash": prompt::prompt_template_hash(),
     });
+    // Only present for the simple request, so existing profiles keep their hash.
+    if simple {
+        snapshot["promptMode"] = serde_json::json!(mode.as_str());
+    }
     let p = translations::ProfileRow {
         id: new_uuid(),
         provider_id: row.id.clone(),
@@ -99,6 +121,7 @@ pub struct ProfileContext {
     pub glossary: Vec<GlossaryEntry>,
     pub glossary_version: String,
     pub style: prompt::TranslationStyle,
+    pub prompt_mode: prompt::PromptMode,
 }
 
 /// The session's effective profile: same settings as `base`, languages from the session.
@@ -125,7 +148,8 @@ pub async fn profile_context(db: &Db, base: &translations::ProfileRow, src: &str
     let snap = &profile.snapshot;
     let caps: ProviderCapabilities = serde_json::from_value(snap["capabilities"].clone()).unwrap_or_else(|_| provider_config(&provider).map(|c| c.effective_capabilities()).unwrap_or_else(|_| ProviderCapabilities::default_for(ProviderKind::Ollama)));
     let kind = ProviderKind::parse(&provider.kind).unwrap_or(ProviderKind::Ollama);
-    let response_format = if snap["responseFormat"].as_str() == Some("json_segments") { ResponseFormat::JsonSegments } else { ResponseFormat::Text };
+    let prompt_mode = snap["promptMode"].as_str().map(prompt::PromptMode::parse).unwrap_or_default();
+    let response_format = if snap["responseFormat"].as_str() == Some("json_segments") && prompt_mode != prompt::PromptMode::Simple { ResponseFormat::JsonSegments } else { ResponseFormat::Text };
     let options = GenerationOptions {
         temperature: snap["options"]["temperature"].as_f64(),
         seed: snap["options"]["seed"].as_i64(),
@@ -152,6 +176,7 @@ pub async fn profile_context(db: &Db, base: &translations::ProfileRow, src: &str
     let style = misc::setting_get(&db.reader, "translationStyle").await?.and_then(|v| v.0.as_str().map(prompt::TranslationStyle::parse)).unwrap_or_default();
     Ok(ProfileContext {
         style,
+        prompt_mode,
         context_limit: snap["contextLimit"].as_u64().map(|v| v as u32),
         profile,
         provider,
@@ -376,6 +401,7 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
             inline_tags: has_inline && (sp.text.contains("<b>") || sp.text.contains("<i>")),
             page_break: pair.is_some(),
             color_tags: sp.text.contains("<c>"),
+            mode: p.prompt_mode,
         })?;
         let request = TranslationRequest {
             request_id: String::new(),
