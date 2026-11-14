@@ -292,13 +292,21 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
   const Tag = block.kind === 'heading' ? 'h3' : block.kind === 'code' ? 'pre' : block.kind === 'quote' ? 'blockquote' : 'div';
   const restricted = block.quality.level === 'low' || block.translationPolicy !== 'auto';
   const srcId = `src-${block.id}`;
+  const imageOnly = isImageOnly(block);
   return (
     <div className={`brow kind-${block.kind} ${highlighted ? 'hl' : ''}`} data-block-id={block.id}>
       <Tag className="src" id={srcId} lang={sourceLanguage}>
         <SafeContentView nodes={block.content.length ? block.content : [{ t: 'text', v: block.sourceText }]} resolvers={resolvers} />
         {restricted && block.quality.reasons.length > 0 && <span className="badge warn qual" title={block.quality.reasons.join(', ')}>제한</span>}
       </Tag>
-      {mode !== 'original' && (
+      {mode === 'parallel' && imageOnly && (
+        // Side-by-side: images have nothing to translate, so the same image is mirrored
+        // in the translation column to keep both sides aligned. Decorative duplicate.
+        <div className="trn trn-mirror" aria-hidden="true">
+          <SafeContentView nodes={block.content} resolvers={resolvers} />
+        </div>
+      )}
+      {mode !== 'original' && !imageOnly && (
         <div className="trn" aria-describedby={srcId}>
           <TranslationCell
             block={block}
@@ -313,4 +321,17 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
       )}
     </div>
   );
+}
+
+/** A block that shows only images/formula images (no text to translate). */
+export function isImageOnly(block: Pick<Block, 'content' | 'sourceText'>): boolean {
+  if (block.content.length === 0) return false;
+  if (/\p{L}/u.test(block.sourceText)) return false;
+  let images = 0;
+  for (const n of block.content) {
+    if (n.t === 'image_ref' || n.t === 'math_ref') images += 1;
+    else if (n.t === 'break' || (n.t === 'text' && n.v.trim() === '')) continue;
+    else return false;
+  }
+  return images > 0;
 }

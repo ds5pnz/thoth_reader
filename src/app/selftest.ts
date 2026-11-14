@@ -90,6 +90,19 @@ export async function runSelftest() {
       continue;
     }
     res.initial = { rows: rows(), canvases: canvases(), anchor: window.__thoth?.anchor?.() };
+    if (!isPdf) {
+      clickButton('병렬');
+      await waitFor(() => !!document.querySelector('.reflow'), 5000);
+      await sleep(1200);
+      const pairs = [...document.querySelectorAll<HTMLElement>('.brow')].filter((r) => r.querySelector('.trn-mirror'));
+      const ok = (im: HTMLImageElement | null) => !!im && im.complete && im.naturalWidth > 0;
+      res.mirror = {
+        imageRows: pairs.length,
+        bothLoaded: pairs.filter((r) => ok(r.querySelector('.src img')) && ok(r.querySelector('.trn-mirror img'))).length,
+        sameHeight: pairs.filter((r) => Math.abs((r.querySelector('.src img')?.getBoundingClientRect().height ?? 0) - (r.querySelector('.trn-mirror img')?.getBoundingClientRect().height ?? -9)) <= 1).length,
+        excludedBadgesOnImages: pairs.filter((r) => [...r.querySelectorAll('.badge')].some((b) => b.textContent === '번역 제외')).length,
+      };
+    }
     if (isPdf) {
       clickButton('리플로우');
       res.reflowRowsMs = await waitFor(() => rows() > 0, 15000);

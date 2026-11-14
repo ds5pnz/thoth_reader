@@ -93,12 +93,18 @@ fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
 
 pub fn run() {
     diagnostics::init_logging();
-    let builder = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    let mut builder = tauri::Builder::default();
+    // The debug self-test uses its own scratch data dir, so it may run next to a normal
+    // instance; every other launch takes the single-instance lock.
+    let selftest = cfg!(debug_assertions) && std::env::var("THOTH_SELFTEST").is_ok() && std::env::var("THOTH_DATA_DIR").is_ok();
+    if !selftest {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
                 let _ = w.set_focus();
             }
-        }))
+        }));
+    }
+    let builder = builder
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .register_asynchronous_uri_scheme_protocol("thoth-doc", |ctx, request, responder| {

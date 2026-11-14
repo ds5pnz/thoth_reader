@@ -98,3 +98,7 @@
 .pdf-trn .trow.anchor { background: var(--accent-soft); }
 .pdf-trn .trow .src-mini { font-size: 12px; color: var(--fg-faint); margin-bottom: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sync-chip { position: sticky; top: 0; z-index: 3; display: flex; justify-content: center; }
+
+/* mirrored images in the translation column (side-by-side) */
+.trn-mirror { font-family: var(--reader-font); font-size: var(--reader-size); line-height: var(--reader-line); }
+.mode-interleaved .trn-mirror { display: none; }
