@@ -9,13 +9,16 @@ export function isEditing(el: Element | null): boolean {
 
 /** combo: "mod+o", "mod+shift+f", "escape". mod = Cmd on macOS. */
 export function matches(e: KeyboardEvent, combo: string): boolean {
-  const parts = combo.toLowerCase().split('+');
-  const key = parts.pop()!;
+  // "mod++" is Cmd with the plus key
+  const plus = combo.endsWith('++');
+  const parts = (plus ? combo.slice(0, -2) : combo).toLowerCase().split('+');
+  const key = plus ? '+' : parts.pop()!;
   const mod = parts.includes('mod');
   const shift = parts.includes('shift');
   const alt = parts.includes('alt');
   if (mod !== (e.metaKey || e.ctrlKey)) return false;
-  if (shift !== e.shiftKey || alt !== e.altKey) return false;
+  // '+' needs Shift on most layouts; do not require or forbid it there
+  if ((key !== '+' && shift !== e.shiftKey) || alt !== e.altKey) return false;
   if (e.key.toLowerCase() === key) return true;
   // Physical-key fallback: with a Korean input source Cmd+D arrives as 'ㅇ', '\\' as '₩'.
   const code = key.length === 1 && key >= 'a' && key <= 'z' ? `Key${key.toUpperCase()}` : key === '\\' ? 'Backslash' : key === ',' ? 'Comma' : null;

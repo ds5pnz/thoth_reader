@@ -91,7 +91,17 @@
 /* PDF original + layout-preserving translated page */
 .pdf-split { flex: 1; display: flex; min-height: 0; position: relative; }
 .pdf-pages { flex: 1; overflow: auto; background: var(--bg-sunken); padding: 16px 0 40vh; position: relative; }
-.pdf-row { display: flex; justify-content: center; align-items: flex-start; }
+.pdf-row { display: flex; justify-content: center; align-items: flex-start; box-sizing: border-box; min-width: max-content; }
+.pdf-link { position: absolute; z-index: 3; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 2px; }
+.pdf-link:hover, .pdf-link:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); }
+.pdf-controls { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 92%, transparent); border: 1px solid var(--border); box-shadow: 0 4px 16px -6px rgba(0, 0, 0, .35); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); font-size: 13px; font-variant-numeric: tabular-nums; opacity: .55; transition: opacity .15s ease; }
+.pdf-controls:hover, .pdf-controls:focus-within { opacity: 1; }
+.pdf-controls .btn { border-radius: 999px; min-width: 28px; padding: 3px 8px; }
+.pdf-pageno { display: inline-flex; align-items: center; gap: 6px; padding: 0 6px; color: var(--fg-muted); white-space: nowrap; }
+.pdf-pageno .input { width: 4.2em; padding: 2px 6px; text-align: right; font-variant-numeric: tabular-nums; }
+.pdf-controls-sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+.pdf-zoom { min-width: 4.2em; }
+@media (prefers-reduced-motion: reduce) { .pdf-controls { transition: none; } }
 .pdf-page { position: relative; flex: none; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.15); overflow: hidden; }
 .pdf-page canvas { display: block; width: 100%; height: 100%; }
 .pdf-page .textLayer { position: absolute; inset: 0; overflow: hidden; line-height: 1; opacity: 1; }

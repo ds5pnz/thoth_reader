@@ -102,6 +102,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'quiet') await quietCheck(res);
       if (cfg.scenario === 'structure') await structureCheck(res);
       if (cfg.scenario === 'features') await featuresCheck(res);
+      if (cfg.scenario === 'viewer') await viewerCheck(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -823,4 +824,62 @@ async function colourTruth(firstPage: number, pages: number) {
     await task.destroy().catch(() => {});
   }
   return out;
+}
+
+/** PDF viewer basics: zoom, page indicator / go to page, links and back. */
+async function viewerCheck(res: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  res.viewer = out;
+  clickButton('원본');
+  clickButton('원문');
+  await waitFor(() => canvases() > 0, 20000);
+  const pane = document.querySelector<HTMLElement>('.pdf-pages')!;
+  const pageW = () => document.querySelector<HTMLElement>('.pdf-page[data-page]')?.getBoundingClientRect().width ?? 0;
+  const pageNo = () => Number(document.querySelector<HTMLInputElement>('.pdf-pageno input')?.value ?? -1);
+  const btn = (label: string) => document.querySelector<HTMLButtonElement>(`.pdf-controls button[aria-label="${label}"]`);
+  const total = document.querySelectorAll('.pdf-page[data-page]').length;
+  out.controls = !!document.querySelector('.pdf-controls');
+  // zoom
+  const w0 = pageW();
+  btn('확대')?.click(); await sleep(500);
+  btn('확대')?.click(); await sleep(700);
+  const w1 = pageW();
+  out.zoomIn = { ratio: Math.round((w1 / w0) * 100) / 100, hScroll: pane.scrollWidth > pane.clientWidth + 1, label: document.querySelector('.pdf-zoom')?.textContent };
+  await waitFor(() => canvases() > 0, 8000);
+  const c = [...document.querySelectorAll<HTMLCanvasElement>('.pdf-page canvas')].filter((x) => x.width > 0)[0];
+  out.canvasPixels = c ? c.width * c.height : 0;
+  document.querySelector<HTMLButtonElement>('.pdf-zoom')?.click(); await sleep(700);
+  out.zoomReset = Math.abs(pageW() - w0) < 2;
+  // go to page
+  const target = Math.min(total, 37);
+  const input = document.querySelector<HTMLInputElement>('.pdf-pageno input')!;
+  input.focus();
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+  setter.call(input, String(target));
+  input.dispatchEvent(new Event('input', { bubbles: true }));
+  input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  await sleep(900);
+  out.goto = { asked: target, shown: pageNo(), total };
+  // scrolling updates the indicator
+  pane.scrollTop += (document.querySelector<HTMLElement>('.pdf-row')?.getBoundingClientRect().height ?? 800) * 2;
+  userScroll(pane);
+  await sleep(700);
+  out.afterScroll = pageNo();
+  // links: find a page with an internal link among the first pages after the cover, follow it, come back
+  let followed: Record<string, unknown> | null = null;
+  for (let p = 2; p < Math.min(total, 40) && !followed; p++) {
+    setter.call(input, String(p)); input.focus(); input.dispatchEvent(new Event('input', { bubbles: true })); input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await sleep(900);
+    const links = [...document.querySelectorAll<HTMLButtonElement>(`.pdf-page[data-page="${p - 1}"] .pdf-link`)];
+    const internal = links.find((l) => l.getAttribute('aria-label') === '문서 안의 위치로 이동');
+    if (!internal) continue;
+    const from = pageNo();
+    internal.click();
+    await sleep(1200);
+    const to = pageNo();
+    btn('이전 위치로 돌아가기')?.click();
+    await sleep(900);
+    followed = { linksOnPage: links.length, from, to, moved: to !== from, backTo: pageNo() };
+  }
+  out.link = followed;
 }

@@ -14,7 +14,7 @@ export function cleanLabel(s: unknown): string {
   return String(s ?? '').replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
 }
 
-async function pageOf(doc: PDFDocumentProxy, dest: OutlineNode['dest']): Promise<number | null> {
+export async function pageOf(doc: PDFDocumentProxy, dest: string | unknown[] | null): Promise<number | null> {
   try {
     const explicit = typeof dest === 'string' ? await doc.getDestination(dest) : dest;
     const ref = Array.isArray(explicit) ? explicit[0] : null;
@@ -54,4 +54,20 @@ export async function readPdfOutline(doc: PDFDocumentProxy): Promise<PdfTocEntry
     return out;
   };
   return walk(root, 0, 0);
+}
+
+/** Page and (when the destination names one) the PDF-space y to show at the top. */
+export async function resolveDest(doc: PDFDocumentProxy, dest: unknown): Promise<{ page: number; y: number | null } | null> {
+  if (typeof dest !== 'string' && !Array.isArray(dest)) return null;
+  try {
+    const explicit = typeof dest === 'string' ? await doc.getDestination(dest) : dest;
+    if (!Array.isArray(explicit)) return null;
+    const page = await pageOf(doc, explicit);
+    if (page == null) return null;
+    const kind = (explicit[1] as { name?: unknown } | undefined)?.name;
+    const y = kind === 'XYZ' ? explicit[3] : kind === 'FitH' || kind === 'FitBH' ? explicit[2] : null;
+    return { page, y: typeof y === 'number' && Number.isFinite(y) ? y : null };
+  } catch {
+    return null;
+  }
 }

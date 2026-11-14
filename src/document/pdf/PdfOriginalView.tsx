@@ -14,6 +14,10 @@ import { pdfRectToCss, cssPointToPdf, hitTest } from './coords';
 import { isVisible, pickAnchor, ScrollOrigin, attachUserIntent, Debouncer, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
 import { openSessionPdf, releaseSessionPdf } from './sessionPdf';
 import { setExtractionFocus } from './usePdfExtraction';
+import { getPageLinks, type PdfLink } from './pdfjs';
+import { resolveDest } from './outline';
+import { call } from '../../ipc/client';
+import { useShortcut } from '../../app/shortcuts';
 import { renderMarked, stripInlineTags } from '../../features/translation/marked';
 import type { Mark } from '../../ipc/generated/Mark';
 import { blockBox, expandBox, fitFontSize, harmonizeFontSizes, resolveVerticalOverlaps, pickBackground, textColorFor, type BlockBox, type ItemSize, type Rgb } from './translatedPage';
@@ -22,6 +26,8 @@ export interface PdfOriginalHandle {
   getAnchor: () => { blockId: string; ratio: number } | null;
   scrollToBlock: (blockId: string, ratio?: number, highlight?: boolean) => boolean;
   scrollToSection: (sectionId: string) => void;
+  scrollToPage: (pageIndex: number) => void;
+  currentPage: () => number;
   /** 0 when the 25% line is inside the block's region (spec §10.4), else the distance. */
   anchorErrorPx: (blockId: string, ratio: number) => number | null;
 }
@@ -29,6 +35,19 @@ export interface PdfOriginalHandle {
 const NO_BLOCKS: Block[] = [];
 const MAX_LIVE_CANVASES = 5;
 const MAX_SCALE = 1.8;
+const ZOOM_STEPS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3, 4];
+const ZOOM_KEY = 'thoth.pdfZoom';
+/** Canvas backing-store budget per page; beyond it the page is rendered at a lower density. */
+const MAX_CANVAS_PIXELS = 24_000_000;
+
+function readZoom(): number {
+  try {
+    const v = Number(localStorage.getItem(ZOOM_KEY));
+    return Number.isFinite(v) && v >= 0.5 && v <= 4 ? v : 1;
+  } catch {
+    return 1;
+  }
+}
 const GUTTER = 16;
 /** Below this share of the original size a fitted translation is not worth showing. */
 const MIN_READABLE_RATIO = 0.6;
@@ -59,13 +78,27 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   const canvases = useRef(new Map<number, HTMLCanvasElement>());
   const itemSizes = useRef(new Map<number, ItemSize[]>());
   // Fit to width: one page in original mode, two pages side by side otherwise.
-  const scale = useMemo(() => {
+  const fitScale = useMemo(() => {
     const bw = bases[0]?.bw ?? 0;
     if (!bw || !paneWidth) return 1;
     const cols = mode === 'original' ? 1 : 2;
     const avail = (paneWidth - GUTTER * (cols + 1)) / cols;
     return Math.max(0.3, Math.min(MAX_SCALE, Math.round((avail / bw) * 100) / 100));
   }, [bases, paneWidth, mode]);
+  // User zoom multiplies the fit-to-width scale; wider pages scroll horizontally.
+  const [zoom, setZoomState] = useState(readZoom);
+  const setZoom = useCallback((next: number | ((z: number) => number)) => {
+    setZoomState((z) => {
+      const v = Math.max(0.5, Math.min(4, Math.round((typeof next === 'function' ? next(z) : next) * 100) / 100));
+      try { localStorage.setItem(ZOOM_KEY, String(v)); } catch { /* private mode */ }
+      return v;
+    });
+  }, []);
+  const zoomStep = useCallback((dirn: 1 | -1) => setZoom((z) => (dirn > 0 ? ZOOM_STEPS.find((x) => x > z + 0.001) ?? 4 : [...ZOOM_STEPS].reverse().find((x) => x < z - 0.001) ?? 0.5)), [setZoom]);
+  const scale = Math.max(0.2, Math.round(fitScale * zoom * 100) / 100);
+  const [curPage, setCurPage] = useState(0);
+  const history = useRef<number[]>([]);
+  const [canGoBack, setCanGoBack] = useState(false);
   const pages: PageMeta[] = useMemo(() => bases.map((b) => ({
     index: b.index,
     width: b.bw * scale,
@@ -129,6 +162,14 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
       near.push({ i: Number(n.dataset.page), d });
     });
     near.sort((a, b) => a.d - b.d);
+    // The page under the reading line (25% down) is "the current page".
+    const line = vp.top + vp.height * 0.25;
+    let cur = near[0]?.i ?? 0;
+    for (const n of el.querySelectorAll<HTMLElement>('.pdf-page[data-page]:not(.translated)')) {
+      const r = n.getBoundingClientRect();
+      if (r.top <= line && r.bottom + GUTTER > line) { cur = Number(n.dataset.page); break; }
+    }
+    setCurPage((p) => (p === cur ? p : cur));
     const next = new Set(near.slice(0, MAX_LIVE_CANVASES).map((x) => x.i));
     if (near[0]) setExtractionFocus(session.sessionId, near[0].i);
     setLive((prev) => (prev.size === next.size && [...next].every((x) => prev.has(x)) ? prev : next));
@@ -245,6 +286,65 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     return false;
   }, [pages, blocksByPage]);
 
+  /** Jump to a page (optionally to a PDF-space y on it), remembering where we were. */
+  const scrollToPage = useCallback((index: number, yPdf: number | null = null, remember = true) => {
+    const el = pagesRef.current;
+    const i = Math.max(0, Math.min(pages.length - 1, Math.floor(index)));
+    const node = el?.querySelector<HTMLElement>(`.pdf-page[data-page="${i}"]`);
+    if (!el || !node) return;
+    if (remember) {
+      history.current.push(el.scrollTop);
+      if (history.current.length > 50) history.current.shift();
+      setCanGoBack(true);
+    }
+    let offset = 0;
+    const pv = pages[i]?.viewport;
+    if (yPdf != null && pv) offset = Math.max(0, pv.convertToViewportPoint(0, yPdf)[1]! - 12);
+    origin.current.markProgrammatic(300);
+    el.scrollTop += node.getBoundingClientRect().top - el.getBoundingClientRect().top + offset - (offset ? 0 : 8);
+    relPos.current = el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0;
+    onScrolled(); // a deliberate move: the reading position follows it
+  }, [pages, onScrolled]);
+
+  const goBack = useCallback(() => {
+    const el = pagesRef.current;
+    const top = history.current.pop();
+    setCanGoBack(history.current.length > 0);
+    if (!el || top == null) return;
+    origin.current.markProgrammatic(300);
+    el.scrollTop = top;
+    relPos.current = el.scrollHeight > el.clientHeight ? el.scrollTop / (el.scrollHeight - el.clientHeight) : 0;
+    onScrolled();
+  }, [onScrolled]);
+
+  const followLink = useCallback((link: PdfLink) => {
+    if (link.url) {
+      void call('open_external', { url: link.url }).catch(() => {});
+      return;
+    }
+    if (!doc) return;
+    void resolveDest(doc, link.dest).then((d) => { if (d) scrollToPage(d.page, d.y); });
+  }, [doc, scrollToPage]);
+
+  useShortcut('mod+=', () => zoomStep(1));
+  useShortcut('mod++', () => zoomStep(1));
+  useShortcut('mod+-', () => zoomStep(-1));
+  useShortcut('mod+0', () => setZoom(1));
+  useShortcut('mod+[', () => goBack());
+
+  // Pinch (trackpad sends ctrl+wheel) zooms instead of scrolling.
+  useEffect(() => {
+    const el = pagesRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      setZoom((z) => z * Math.exp(-e.deltaY * 0.01));
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, [setZoom]);
+
   const scrollRetry = useRef<((id: string, r: number) => void) | null>(null);
   scrollRetry.current = (id, r) => { scrollToBlockImpl(id, r); };
 
@@ -256,6 +356,8 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
       return null;
     },
     scrollToBlock: scrollToBlockImpl,
+    scrollToPage: (i: number) => scrollToPage(i),
+    currentPage: () => curPage,
     anchorErrorPx(blockId) {
       const el = pagesRef.current;
       if (!el) return null;
@@ -283,7 +385,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
       const el = pagesRef.current;
       if (node && el) { origin.current.markProgrammatic(300); el.scrollTop += node.getBoundingClientRect().top - el.getBoundingClientRect().top; }
     },
-  }), [anchorId, scrollToBlockImpl, model.sections, pages, blocksByPage]);
+  }), [anchorId, scrollToBlockImpl, model.sections, pages, blocksByPage, scrollToPage, curPage]);
 
   const sectionStateByPage = useMemo(() => new Map(model.sections.map((s) => [Number(s.ordinal), s.state] as const)), [model.sections]);
   // Pages that left the live window give their canvas (already zeroed) and sizes back.
@@ -304,7 +406,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
           const blocks = blocksByPage.get(pm.index) ?? NO_BLOCKS;
           const isLive = live.has(pm.index);
           return (
-            <div key={pm.index} className="pdf-row" style={{ gap: GUTTER, height: pm.height, marginBottom: GUTTER }}>
+            <div key={pm.index} className="pdf-row" style={{ gap: GUTTER, height: pm.height, marginBottom: GUTTER, padding: `0 ${GUTTER}px` }}>
               <PdfPage
                 doc={doc}
                 meta={pm}
@@ -313,6 +415,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
                 blocks={blocks}
                 sectionState={sectionStateByPage.get(pm.index)}
                 highlightBlockId={hlId}
+                onLink={followLink}
                 onPick={(b) => { setAnchorId(b.id); setSelectedId(b.id); }}
                 onRendered={(c, items) => { canvases.current.set(pm.index, c); itemSizes.current.set(pm.index, items); setRendered((prev) => new Map(prev).set(pm.index, (prev.get(pm.index) ?? 0) + 1)); }}
               />
@@ -334,6 +437,19 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
           );
         })}
       </div>
+      {pages.length > 0 && (
+        <PdfControls
+          page={curPage}
+          total={pages.length}
+          zoom={zoom}
+          canGoBack={canGoBack}
+          onPage={(i) => scrollToPage(i)}
+          onBack={goBack}
+          onZoomIn={() => zoomStep(1)}
+          onZoomOut={() => zoomStep(-1)}
+          onZoomReset={() => setZoom(1)}
+        />
+      )}
       {selected && mode !== 'original' && (
         <aside className="pdf-pop" aria-label="선택한 문단의 번역">
           <header>
@@ -348,13 +464,47 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   );
 });
 
-function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockId, onPick, onRendered }: {
-  doc: PDFDocumentProxy | null; meta: PageMeta; scale: number; live: boolean; blocks: Block[]; sectionState?: string; highlightBlockId: string | null; onPick: (b: Block) => void; onRendered: (c: HTMLCanvasElement, items: ItemSize[]) => void;
+function PdfControls({ page, total, zoom, canGoBack, onPage, onBack, onZoomIn, onZoomOut, onZoomReset }: {
+  page: number; total: number; zoom: number; canGoBack: boolean; onPage: (index: number) => void; onBack: () => void; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const commit = () => {
+    const n = Number(draft);
+    setDraft(null);
+    if (draft !== null && Number.isInteger(n) && n >= 1 && n <= total) onPage(n - 1);
+  };
+  return (
+    <div className="pdf-controls" role="toolbar" aria-label="PDF 보기 도구">
+      <button className="btn icon ghost" onClick={onBack} disabled={!canGoBack} title="이전 위치로 (⌘[)" aria-label="이전 위치로 돌아가기">↩</button>
+      <label className="pdf-pageno">
+        <input
+          className="input"
+          inputMode="numeric"
+          aria-label={`쪽 번호, 전체 ${total}쪽`}
+          value={draft ?? String(page + 1)}
+          onFocus={(e) => { setDraft(String(page + 1)); e.currentTarget.select(); }}
+          onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, '').slice(0, 6))}
+          onBlur={commit}
+          onKeyDown={(e) => { if (e.key === 'Enter') { commit(); e.currentTarget.blur(); } else if (e.key === 'Escape') { setDraft(null); e.currentTarget.blur(); } e.stopPropagation(); }}
+        />
+        <span aria-hidden="true">/ {total}</span>
+      </label>
+      <span className="pdf-controls-sep" aria-hidden="true" />
+      <button className="btn icon ghost" onClick={onZoomOut} disabled={zoom <= 0.5} title="축소 (⌘−)" aria-label="축소">−</button>
+      <button className="btn ghost pdf-zoom" onClick={onZoomReset} title="폭에 맞춤 (⌘0)" aria-label={`배율 ${Math.round(zoom * 100)}%, 폭에 맞춤으로 되돌리기`}>{Math.round(zoom * 100)}%</button>
+      <button className="btn icon ghost" onClick={onZoomIn} disabled={zoom >= 4} title="확대 (⌘+)" aria-label="확대">+</button>
+    </div>
+  );
+}
+
+function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockId, onPick, onLink, onRendered }: {
+  doc: PDFDocumentProxy | null; meta: PageMeta; scale: number; live: boolean; blocks: Block[]; sectionState?: string; highlightBlockId: string | null; onPick: (b: Block) => void; onLink: (l: PdfLink) => void; onRendered: (c: HTMLCanvasElement, items: ItemSize[]) => void;
 }) {
   const onRenderedRef = useRef(onRendered);
   onRenderedRef.current = onRendered;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
+  const [links, setLinks] = useState<PdfLink[]>([]);
   useEffect(() => {
     if (!live || !doc || !canvasRef.current) return;
     // Keep the element itself: when the page leaves the live window the <canvas> unmounts in
@@ -370,8 +520,11 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
         return; // damaged page object: leave the page blank
       }
       if (cancelled || !canvasRef.current) return;
-      const dpr = window.devicePixelRatio || 1;
+      // At high zoom a full-density canvas gets huge: cap its pixel count instead.
+      const css = page.getViewport({ scale });
+      const dpr = Math.max(0.5, Math.min(window.devicePixelRatio || 1, Math.sqrt(MAX_CANVAS_PIXELS / Math.max(1, css.width * css.height))));
       const vp = page.getViewport({ scale: scale * dpr });
+      void getPageLinks(page).then((l) => { if (!cancelled) setLinks(l); }).catch(() => {});
       const c = canvasRef.current;
       c.width = Math.floor(vp.width);
       c.height = Math.floor(vp.height);
@@ -400,6 +553,7 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
       ownCanvas.width = 0;
       ownCanvas.height = 0;
       textRef.current?.replaceChildren();
+      setLinks([]);
       page?.cleanup();
     };
   }, [live, doc, meta.index, scale]);
@@ -420,6 +574,10 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
       {hl && hl.location.kind === 'pdf' && meta.viewport && hl.location.rects.map((r, i) => {
         const c = pdfRectToCss(r, meta.viewport!);
         return <div key={i} className="pdf-hl" style={{ left: c.left, top: c.top, width: c.width, height: c.height }} />;
+      })}
+      {live && meta.viewport && links.map((l, i) => {
+        const c = pdfRectToCss({ x: Math.min(l.rect[0], l.rect[2]), y: Math.min(l.rect[1], l.rect[3]), width: Math.abs(l.rect[2] - l.rect[0]), height: Math.abs(l.rect[3] - l.rect[1]) }, meta.viewport!);
+        return <button key={i} type="button" className="pdf-link" style={{ left: c.left, top: c.top, width: c.width, height: c.height }} title={l.url ?? '문서 안의 위치로 이동'} aria-label={l.url ? `링크 열기: ${l.url}` : '문서 안의 위치로 이동'} onClick={(e) => { e.stopPropagation(); onLink(l); }} />;
       })}
       {sectionState === 'failed' && <span className="badge danger page-badge">추출 실패</span>}
       {blocks.length > 0 && blocks.every((b) => b.translationPolicy !== 'auto') && <span className="badge warn page-badge">자동 번역 제한</span>}
