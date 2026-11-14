@@ -34,6 +34,7 @@ pub async fn reader_save_position(core: Core<'_>, window: WebviewWindow, meta: C
         }
         core.db.ensure_writable()?;
         let v = misc::position_save(&core.db.writer, &s.document_id, &args.anchor, &args.view, args.expected_version).await?;
+        let _ = misc::progress_update(&core.db.writer, &s.document_id, args.anchor.block_id.as_deref()).await;
         Ok(serde_json::json!({"version": v}))
     }
     .await;
@@ -100,6 +101,94 @@ pub async fn bookmark_list(core: Core<'_>, meta: CommandMeta, args: DocumentArgs
     let r = async {
         check_id(&args.document_id, "documentId")?;
         misc::bookmark_list(&core.db.reader, &args.document_id).await
+    }
+    .await;
+    Ok(respond(&meta, r))
+}
+
+// ------------------------------------------------------------------ highlights & notes
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AnnotationPutArgs {
+    pub document_id: String,
+    /// Present: change colour / note of an existing annotation.
+    pub annotation_id: Option<String>,
+    pub block_id: String,
+    /// "source" | "translation"
+    pub side: String,
+    pub target_language: Option<String>,
+    pub quote: String,
+    pub occurrence: u32,
+    /// "yellow" | "green" | "blue" | "pink"
+    pub color: String,
+    pub note: String,
+}
+
+#[tauri::command]
+pub async fn annotation_put(core: Core<'_>, meta: CommandMeta, args: AnnotationPutArgs) -> Result<Wire, ()> {
+    let core2 = core.inner().clone();
+    Ok(with_receipt(&core, &meta, "annotation_put", json_of(&args), || async move {
+        check_id(&args.document_id, "documentId")?;
+        check_id(&args.block_id, "blockId")?;
+        if let Some(a) = &args.annotation_id {
+            check_id(a, "annotationId")?;
+        }
+        let quote = args.quote.trim();
+        if !matches!(args.side.as_str(), "source" | "translation")
+            || !matches!(args.color.as_str(), "yellow" | "green" | "blue" | "pink")
+            || quote.is_empty()
+            || quote.len() > 8 * 1024
+            || args.note.len() > 16 * 1024
+            || args.occurrence > 10_000
+        {
+            return Err(AppError::invalid("메모 정보가 올바르지 않습니다."));
+        }
+        if let Some(l) = &args.target_language {
+            crate::commands::core::check_lang(l)?;
+        }
+        let id = misc::annotation_put(&core2.db.writer, misc::AnnotationInput {
+            id: args.annotation_id.as_deref(),
+            document_id: &args.document_id,
+            block_id: &args.block_id,
+            side: &args.side,
+            target_language: args.target_language.as_deref(),
+            quote,
+            occurrence: args.occurrence,
+            color: &args.color,
+            note: args.note.trim(),
+        })
+        .await?;
+        Ok(serde_json::json!({"id": id}))
+    })
+    .await)
+}
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AnnotationDeleteArgs {
+    pub document_id: String,
+    pub annotation_id: String,
+}
+
+#[tauri::command]
+pub async fn annotation_delete(core: Core<'_>, meta: CommandMeta, args: AnnotationDeleteArgs) -> Result<Wire, ()> {
+    let core2 = core.inner().clone();
+    Ok(with_receipt(&core, &meta, "annotation_delete", json_of(&args), || async move {
+        check_id(&args.document_id, "documentId")?;
+        check_id(&args.annotation_id, "annotationId")?;
+        Ok(serde_json::json!({"deleted": misc::annotation_delete(&core2.db.writer, &args.document_id, &args.annotation_id).await?}))
+    })
+    .await)
+}
+
+#[tauri::command]
+pub async fn annotation_list(core: Core<'_>, meta: CommandMeta, args: DocumentArgs) -> Result<Wire, ()> {
+    let r = async {
+        check_id(&args.document_id, "documentId")?;
+        misc::annotation_list(&core.db.reader, &args.document_id).await
     }
     .await;
     Ok(respond(&meta, r))

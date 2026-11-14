@@ -657,6 +657,7 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
         return (
           <FitText
             key={b.id}
+            blockId={b.id}
             text={text || stripInlineTags(preview ?? '')}
             marks={text ? d?.shown?.marks : undefined}
             kind={`${b.kind}/${box.lines}`}
@@ -671,7 +672,7 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
             manual={d?.status === 'manual'}
             streaming={!text && !!preview}
             selected={b.id === highlightBlockId}
-            onClick={() => onPick(b)}
+            onClick={() => { if (!window.getSelection()?.toString()) onPick(b); }}
           />
         );
       })}
@@ -681,8 +682,8 @@ function TranslatedPage({ meta, live, blocks, model, source, items, version, tar
 
 /** Translated text for one block. It always covers the original text region (`cover`) and
  *  may use the free space up to maxWidth/maxHeight; the font shrinks only if that is not enough. */
-function FitText({ text, marks, kind, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, stale, manual, streaming, selected, onClick }: {
-  text: string; marks?: Mark[]; kind: string; cover: { left: number; top: number; width: number; height: number }; maxWidth: number; maxHeight: number; baseSize: number; lineHeight: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; onClick: () => void;
+function FitText({ blockId, text, marks, kind, cover, maxWidth, maxHeight, baseSize, lineHeight, bg, stale, manual, streaming, selected, onClick }: {
+  blockId: string; text: string; marks?: Mark[]; kind: string; cover: { left: number; top: number; width: number; height: number }; maxWidth: number; maxHeight: number; baseSize: number; lineHeight: number; bg: Rgb | undefined; stale?: boolean; manual?: boolean; streaming?: boolean; selected: boolean; onClick: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   // When the region is too small for a readable translation (diagram labels, tight table
@@ -716,6 +717,7 @@ function FitText({ text, marks, kind, cover, maxWidth, maxHeight, baseSize, line
   return (
     <div
       ref={ref}
+      data-block-id={blockId}
       className={`tp-text ${fallback ? 'fallback' : ''} ${stale ? 'stale' : ''} ${manual ? 'manual' : ''} ${streaming ? 'streaming' : ''} ${selected ? 'sel' : ''}`}
       style={{ left: cover.left, top: cover.top, width: maxWidth, minHeight: cover.height, maxHeight, lineHeight, background: fallback ? 'transparent' : `rgb(${color[0]},${color[1]},${color[2]})`, color: fallback ? 'transparent' : textColorFor(color) }}
       aria-label={fallback ? `번역: ${text}` : undefined}

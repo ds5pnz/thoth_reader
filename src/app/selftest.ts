@@ -103,6 +103,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'structure') await structureCheck(res);
       if (cfg.scenario === 'features') await featuresCheck(res);
       if (cfg.scenario === 'viewer') await viewerCheck(res);
+      if (cfg.scenario === 'annotate') await annotateCheck(res, isPdf);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -882,4 +883,73 @@ async function viewerCheck(res: Record<string, unknown>) {
     followed = { linksOnPage: links.length, from, to, moved: to !== from, backTo: pageNo() };
   }
   out.link = followed;
+}
+
+/** Highlights, notes and search tinting in the real webview. Counts only. */
+async function annotateCheck(res: Record<string, unknown>, isPdf: boolean) {
+  const out: Record<string, unknown> = {};
+  res.annotate = out;
+  type Reg = { has(n: string): boolean; get(n: string): { size: number } | undefined };
+  const reg = (CSS as unknown as { highlights?: Reg }).highlights;
+  out.api = !!reg;
+  const size = (n: string) => reg?.get(n)?.size ?? 0;
+  if (isPdf) clickButton('리플로우');
+  clickButton('병렬');
+  await waitFor(() => rows() > 3, 20000);
+  await sleep(800);
+  // select the first ~24 characters of a paragraph that is long enough
+  const src = [...document.querySelectorAll<HTMLElement>('.brow.kind-paragraph > .src')].find((e) => (e.textContent ?? '').trim().length > 60);
+  if (!src) { out.error = 'no paragraph'; return; }
+  const blockId = src.closest<HTMLElement>('.brow')!.dataset.blockId!;
+  const walker = document.createTreeWalker(src, NodeFilter.SHOW_TEXT);
+  const first = walker.nextNode() as Text;
+  const r = document.createRange();
+  r.setStart(first, 0);
+  r.setEnd(first, Math.min(first.data.length, 24));
+  const sel = window.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(r);
+  const barMs = await waitFor(() => !!document.querySelector('.sel-bar'), 3000);
+  out.toolbarMs = barMs;
+  document.querySelector<HTMLButtonElement>('.sel-bar .hl-yellow')?.click();
+  out.paintedMs = await waitFor(() => size('thoth-yellow') > 0, 4000);
+  out.yellowRanges = size('thoth-yellow');
+  // the note list shows it
+  if (!document.querySelector('.sidebar, #reader-sidebar')) document.querySelector<HTMLButtonElement>('button[aria-controls="reader-sidebar"]')?.click();
+  await sleep(300);
+  clickButton('메모');
+  await sleep(500);
+  out.listed = document.querySelectorAll('.note-item').length;
+  // PDF: the same highlight shows on the page's text layer in the original view
+  if (isPdf) {
+    clickButton('원본');
+    await waitFor(() => canvases() > 0, 15000);
+    out.onTextLayerMs = await waitFor(() => size('thoth-yellow') > 0 && !!document.querySelector('.textLayer span'), 12000);
+    out.textLayerRanges = size('thoth-yellow');
+    clickButton('리플로우');
+    await waitFor(() => rows() > 3, 10000);
+  }
+  // search tinting + stepping
+  clickButton('검색');
+  await sleep(300);
+  const word = (src.textContent ?? '').trim().split(/\s+/).find((w) => /^[A-Za-z]{5,}$/.test(w)) ?? 'the';
+  const input = document.querySelector<HTMLInputElement>('.search input[type="search"]');
+  if (input) {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, word);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.form?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    out.hitsMs = await waitFor(() => document.querySelectorAll('.hits li').length > 0, 8000);
+    out.hits = document.querySelectorAll('.hits li').length;
+    out.findTintMs = await waitFor(() => size('thoth-find') > 0, 4000);
+    out.findRanges = size('thoth-find');
+    document.querySelector<HTMLButtonElement>('.search-nav button[aria-label="다음 결과"]')?.click();
+    await sleep(900);
+    out.stepped = !!document.querySelector('.hits button.current');
+  }
+  // survives a reload of the list; then delete
+  clickButton('메모');
+  await sleep(400);
+  [...document.querySelectorAll<HTMLButtonElement>('.note-item button')].find((b) => b.textContent === '삭제')?.click();
+  out.deletedMs = await waitFor(() => document.querySelectorAll('.note-item').length === 0 && size('thoth-yellow') === 0, 4000);
+  void blockId;
 }

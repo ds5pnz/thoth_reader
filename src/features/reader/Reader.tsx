@@ -7,6 +7,8 @@ import { Sidebar } from './Sidebar';
 import { HistoryDialog } from '../translation/HistoryDialog';
 import type { CellActions } from '../translation/TranslationCell';
 import { clearDrafts } from '../translation/TranslationCell';
+import { NotesPanel, SelectionToolbar, useAnnotations, useHighlightPainter } from '../annotations/annotations';
+import { findAll } from '../annotations/quote';
 import type { ContentResolvers } from './SafeContentView';
 import type { Block } from '../../ipc/generated/Block';
 import type { ReaderAnchor } from '../../ipc/generated/ReaderAnchor';
@@ -36,7 +38,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const [historyFor, setHistoryFor] = useState<Block | null>(null);
   const [highlight, setHighlight] = useState<string | null>(null);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
-  const [sidebarTab, setSidebarTabState] = useState<'toc' | 'search' | 'bookmarks'>('toc');
+  const [sidebarTab, setSidebarTabState] = useState<'toc' | 'search' | 'bookmarks' | 'notes'>('toc');
   // Sidebar visibility is a per-device convenience (not document data): localStorage.
   const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
     try { return localStorage.getItem('thoth.sidebarOpen') !== '0'; } catch { return true; }
@@ -49,7 +51,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     }));
   }, []);
   /** Choosing a tab (search shortcut, new bookmark) always reveals the sidebar. */
-  const setSidebarTab = useCallback((t: 'toc' | 'search' | 'bookmarks') => {
+  const setSidebarTab = useCallback((t: 'toc' | 'search' | 'bookmarks' | 'notes') => {
     setSidebarTabState(t);
     setSidebarOpen(true);
     try { localStorage.setItem('thoth.sidebarOpen', '1'); } catch { /* storage unavailable */ }
@@ -296,6 +298,32 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   };
 
   const [bookmarksVersion, setBookmarksVersion] = useState(0);
+  // Highlights and notes
+  const readerRef = useRef<HTMLDivElement>(null);
+  const annotations = useAnnotations(session?.documentId, targetLanguage);
+  const blocksByPdfPage = useMemo(() => {
+    const m = new Map<number, Block[]>();
+    for (const [, bs] of model.blocks) for (const b of bs) if (b.location.kind === 'pdf') (m.get(b.location.pageIndex) ?? m.set(b.location.pageIndex, []).get(b.location.pageIndex)!).push(b);
+    for (const l of m.values()) l.sort((a, b) => a.ordinal - b.ordinal);
+    return m;
+  }, [model.blocks]);
+  const pageBlocks = useCallback((page: number) => blocksByPdfPage.get(page) ?? [], [blocksByPdfPage]);
+  // Search: every match in what is on screen is tinted while a query is active.
+  const [findQuery, setFindQuery] = useState('');
+  const findExtra = useMemo(() => ({
+    name: 'thoth-find',
+    ranges: () => {
+      const el = readerRef.current;
+      if (!el || !findQuery) return [];
+      const out: Range[] = [];
+      for (const n of el.querySelectorAll('.brow > .src, .tcell-text:not(.preview), .pdf-page:not(.translated) .textLayer, .tp-text')) {
+        out.push(...findAll(n, findQuery, 100));
+        if (out.length > 600) break;
+      }
+      return out;
+    },
+  }), [findQuery]);
+  useHighlightPainter(readerRef, annotations.items, pageBlocks, session?.sessionId, findExtra);
   useShortcut('mod+d', () => {
     const s = sessionRef.current;
     const a = currentAnchor();
@@ -418,7 +446,8 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const restrictions = (session.metadata?.restrictions as string[] | undefined) ?? [];
   const title = (session.metadata?.title as string) || (session.metadata?.pdfTitle as string) || session.title;
   return (
-    <div className="reader">
+    <div className="reader" ref={readerRef}>
+      <SelectionToolbar root={readerRef} pageBlocks={pageBlocks} onCreate={(a) => void annotations.create(a)} />
       <header className="toolbar">
         <button className={`btn icon ${sidebarOpen ? 'active' : 'ghost'}`} onClick={toggleSidebar} aria-pressed={sidebarOpen} aria-controls="reader-sidebar" aria-label={sidebarOpen ? '사이드바 닫기' : '사이드바 열기'} title={sidebarOpen ? '사이드바 닫기 (⌘\\)' : '사이드바 열기 (⌘\\)'}>
           <IconSidebar />
@@ -473,6 +502,8 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
         {sidebarOpen && <Sidebar
           tab={sidebarTab}
           bookmarksVersion={bookmarksVersion}
+          onFindQuery={setFindQuery}
+          notes={<NotesPanel items={annotations.items} onJump={(blockId, sectionId) => void revealBlock(blockId, sectionId)} onUpdate={(a, patch) => void annotations.update(a, patch)} onRemove={(a) => void annotations.remove(a)} />}
           onTab={setSidebarTab}
           session={session}
           model={model}

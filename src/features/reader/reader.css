@@ -165,3 +165,32 @@
 .brow.kind-list_item .src, .brow.kind-list_item .tcell { padding-left: 1.2em; position: relative; }
 .brow.kind-list_item .src::before, .brow.kind-list_item .tcell::before { content: "•"; position: absolute; left: .2em; color: var(--fg-faint); }
 .src strong { font-weight: 650; }
+
+/* Highlights (CSS Custom Highlight API) and notes */
+::highlight(thoth-yellow) { background-color: rgba(255, 214, 10, .45); }
+::highlight(thoth-green) { background-color: rgba(64, 200, 110, .38); }
+::highlight(thoth-blue) { background-color: rgba(70, 150, 255, .34); }
+::highlight(thoth-pink) { background-color: rgba(255, 105, 160, .36); }
+::highlight(thoth-find) { background-color: rgba(255, 150, 40, .5); }
+::highlight(thoth-find-current) { background-color: rgba(255, 90, 20, .8); }
+.sel-bar { position: fixed; z-index: 30; display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 999px; background: var(--bg-elev); border: 1px solid var(--border); box-shadow: 0 6px 20px -6px rgba(0, 0, 0, .4); }
+.sel-bar form { display: flex; gap: 6px; align-items: center; }
+.sel-bar .input { width: 200px; padding: 3px 8px; }
+.hl-dot { width: 18px; height: 18px; flex: none; padding: 0; border-radius: 999px; border: 1px solid rgba(0, 0, 0, .18); cursor: pointer; display: inline-block; }
+.hl-dot.small { width: 12px; height: 12px; }
+span.hl-dot { cursor: default; width: 10px; height: 10px; margin-top: 4px; }
+.hl-yellow { background: #ffd60a; } .hl-green { background: #40c86e; } .hl-blue { background: #4696ff; } .hl-pink { background: #ff69a0; }
+.notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.note-item { border: 1px solid var(--border); border-radius: 8px; background: var(--bg-elev); padding: 8px; }
+.note-quote { display: flex; gap: 8px; align-items: flex-start; width: 100%; padding: 0; border: 0; background: transparent; text-align: left; cursor: pointer; color: inherit; font: inherit; }
+.note-quote:disabled { cursor: default; opacity: .6; }
+.note-text { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; overflow-wrap: anywhere; font-size: 13px; line-height: 1.45; }
+.note-body { margin: 6px 0 0 18px; font-size: 13px; color: var(--fg-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.note-actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; }
+.note-edit { margin-top: 6px; }
+.note-edit textarea { width: 100%; box-sizing: border-box; resize: vertical; }
+.side-empty { padding: 12px 8px; font-size: 13px; }
+.tp-text:not(.fallback) { -webkit-user-select: text; user-select: text; }
+
+.search-nav { display: flex; align-items: center; gap: 6px; margin: 6px 0; font-size: 12px; font-variant-numeric: tabular-nums; }
+.hits button.current { background: var(--accent-soft); outline: 1px solid var(--accent); }

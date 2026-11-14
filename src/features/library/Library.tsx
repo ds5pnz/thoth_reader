@@ -195,6 +195,7 @@ export function Library({ onOpen, onSettings }: { onOpen: (id: string) => void; 
             const imprint = displayImprint(d);
             const restrictions = (d.metadata?.restrictions as string[] | undefined) ?? [];
             const blocked = d.state === 'failed' || d.state === 'importing';
+            const progress = typeof d.metadata?.progress === 'number' && d.lastOpenedAt != null ? Math.min(1, Math.max(0, d.metadata.progress)) : null;
             const stateLabel = STATE_LABEL[d.state];
             const pages = typeof d.metadata?.pageCount === 'number' ? `${d.metadata.pageCount}쪽` : '';
             const detail = [d.format.toUpperCase(), pages, `${(d.byteSize / 1024 / 1024).toFixed(1)} MB`].filter(Boolean).join(' · ');
@@ -205,6 +206,7 @@ export function Library({ onOpen, onSettings }: { onOpen: (id: string) => void; 
                     <Cover doc={d} />
                     {stateLabel && <span className={`cover-flag ${d.state === 'failed' ? 'danger' : ''}`}>{stateLabel}</span>}
                     {d.lastOpenedAt == null && !stateLabel && <span className="cover-flag new">새 책</span>}
+                    {progress != null && <span className="cover-progress" aria-hidden="true"><span style={{ width: `${Math.max(2, progress * 100)}%` }} /></span>}
                   </span>
                   <span className="book-title">{title}</span>
                   {authors && <span className="book-author">{authors}</span>}
@@ -213,7 +215,7 @@ export function Library({ onOpen, onSettings }: { onOpen: (id: string) => void; 
                     {detail}
                     {restrictions.length > 0 && <span className="badge warn" title={restrictions.join(', ')}>제한 {restrictions.length}</span>}
                   </span>
-                  <span className="book-read">{d.lastOpenedAt != null ? `${relativeDay(Number(d.lastOpenedAt))} 읽음` : '아직 읽지 않음'}</span>
+                  <span className="book-read">{d.lastOpenedAt != null ? `${relativeDay(Number(d.lastOpenedAt))} 읽음${progress != null ? ` · ${Math.round(progress * 100)}%` : ''}` : '아직 읽지 않음'}</span>
                 </button>
                 <button className="book-delete" onClick={() => setConfirmDelete(d)} aria-label={`${title} 삭제`} title="삭제"><IconTrash /></button>
               </li>

@@ -198,6 +198,7 @@ pub async fn document_close(core: Core<'_>, window: WebviewWindow, meta: Command
             if a.validate().is_ok() && a.document_id == s.document_id {
                 let cur = misc::position_get(&core.db.reader, &s.document_id).await?.map(|p| p.2).unwrap_or(0);
                 let _ = misc::position_save(&core.db.writer, &s.document_id, a, args.view.as_ref().unwrap_or(&serde_json::json!({})), cur).await;
+                let _ = misc::progress_update(&core.db.writer, &s.document_id, a.block_id.as_deref()).await;
             }
         }
         // Close the session (and revoke its asset token) even when cancelling jobs fails.

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-annotation-put"
+description = "Enables the annotation_put command without any pre-configured scope."
+commands.allow = ["annotation_put"]
+
+[[permission]]
+identifier = "deny-annotation-put"
+description = "Denies the annotation_put command without any pre-configured scope."
+commands.deny = ["annotation_put"]

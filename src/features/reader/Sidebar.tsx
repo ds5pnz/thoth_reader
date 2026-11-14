@@ -1,3 +1,4 @@
+import { useShortcut } from '../../app/shortcuts';
 import { useEffect, useRef, useState } from 'react';
 import { call, errorMessage, mutate } from '../../ipc/client';
 import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
@@ -9,10 +10,12 @@ import type { ReaderModel } from './useReaderSession';
 
 type TocEntry = { label: string; spineIndex: number; fragment?: string | null; children?: TocEntry[] };
 
-export function Sidebar({ tab, onTab, session, model, onJump, onSection, currentAnchor, bookmarksVersion = 0 }: {
+export function Sidebar({ tab, onTab, session, model, onJump, onSection, currentAnchor, bookmarksVersion = 0, notes, onFindQuery }: {
+  onFindQuery?: (q: string) => void;
+  notes?: React.ReactNode;
   bookmarksVersion?: number;
-  tab: 'toc' | 'search' | 'bookmarks';
-  onTab: (t: 'toc' | 'search' | 'bookmarks') => void;
+  tab: 'toc' | 'search' | 'bookmarks' | 'notes';
+  onTab: (t: 'toc' | 'search' | 'bookmarks' | 'notes') => void;
   session: ReaderSessionDto;
   model: ReaderModel;
   onJump: (blockId: string, sectionId?: string) => void;
@@ -25,10 +28,12 @@ export function Sidebar({ tab, onTab, session, model, onJump, onSection, current
         <button role="tab" aria-selected={tab === 'toc'} aria-pressed={tab === 'toc'} onClick={() => onTab('toc')}>목차</button>
         <button role="tab" aria-selected={tab === 'search'} aria-pressed={tab === 'search'} onClick={() => onTab('search')}>검색</button>
         <button role="tab" aria-selected={tab === 'bookmarks'} aria-pressed={tab === 'bookmarks'} onClick={() => onTab('bookmarks')}>북마크</button>
+        <button role="tab" aria-selected={tab === 'notes'} aria-pressed={tab === 'notes'} onClick={() => onTab('notes')}>메모</button>
       </div>
       <div className="side-body">
         {tab === 'toc' && <Toc session={session} model={model} onSection={onSection} />}
-        {tab === 'search' && <Search session={session} onJump={onJump} />}
+        {tab === 'search' && <Search session={session} onJump={onJump} onFindQuery={onFindQuery} />}
+        {tab === 'notes' && notes}
         {tab === 'bookmarks' && <Bookmarks session={session} onJump={onJump} currentAnchor={currentAnchor} version={bookmarksVersion} />}
       </div>
     </aside>
@@ -78,7 +83,7 @@ function highlightSnippet(h: SearchHit) {
   return <>{u.slice(0, h.snippetMatchStartU16)}<mark>{u.slice(h.snippetMatchStartU16, h.snippetMatchEndU16)}</mark>{u.slice(h.snippetMatchEndU16)}</>;
 }
 
-function Search({ session, onJump }: { session: ReaderSessionDto; onJump: (blockId: string, sectionId?: string) => void }) {
+function Search({ session, onJump, onFindQuery }: { session: ReaderSessionDto; onJump: (blockId: string, sectionId?: string) => void; onFindQuery?: (q: string) => void }) {
   const [q, setQ] = useState('');
   const [scope, setScope] = useState<'all' | 'source' | 'translation'>('all');
   const [page, setPage] = useState<SearchPage | null>(null);
@@ -87,8 +92,23 @@ function Search({ session, onJump }: { session: ReaderSessionDto; onJump: (block
   const [err, setErr] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   useEffect(() => { inputRef.current?.focus(); }, []);
+  // Result stepping (⌘G / ⇧⌘G) and on-page match highlighting.
+  const [current, setCurrent] = useState(-1);
+  const findRef = useRef(onFindQuery);
+  findRef.current = onFindQuery;
+  useEffect(() => () => findRef.current?.(''), []);
+  const go = (i: number) => {
+    if (hits.length === 0) return;
+    const n = ((i % hits.length) + hits.length) % hits.length;
+    setCurrent(n);
+    const h = hits[n]!;
+    onJump(h.blockId, h.sectionId);
+  };
+  useShortcut('mod+g', () => go(current + 1), { allowInInputs: true });
+  useShortcut('mod+shift+g', () => go(current - 1), { allowInInputs: true });
   const run = async (cursor: number | null) => {
-    if (!q.trim()) return;
+    if (!q.trim()) { findRef.current?.(''); setHits([]); setPage(null); setCurrent(-1); return; }
+    if (!cursor) { findRef.current?.(q.trim()); setCurrent(-1); }
     setBusy(true);
     setErr(null);
     try {
@@ -111,12 +131,20 @@ function Search({ session, onJump }: { session: ReaderSessionDto; onJump: (block
           {page.method === 'substring' ? '1~2글자: 이 문서 안 부분 문자열 검색' : '3글자 이상: 색인 검색'} · 색인 범위 {Number(page.indexedSections)}/{Number(page.totalSections)} 섹션
         </p>
       )}
+      {hits.length > 0 && (
+        <div className="search-nav">
+          <span className="faint">{current >= 0 ? `${current + 1} / ` : ''}{hits.length}{page?.nextCursor != null ? '+' : ''}건</span>
+          <span className="spacer" />
+          <button className="btn small" onClick={() => go(current - 1)} title="이전 결과 (⇧⌘G)" aria-label="이전 결과">↑</button>
+          <button className="btn small" onClick={() => go(current + 1)} title="다음 결과 (⌘G)" aria-label="다음 결과">↓</button>
+        </div>
+      )}
       {busy && <p className="faint">검색 중…</p>}
       {err && <p className="badge danger">{err}</p>}
       <ul className="hits">
         {hits.map((h, i) => (
           <li key={`${h.blockId}-${h.scope}-${i}`}>
-            <button onClick={() => onJump(h.blockId, h.sectionId)}>
+            <button className={i === current ? 'current' : undefined} aria-current={i === current ? 'true' : undefined} onClick={() => go(i)}>
               <span className="badge">{h.scope === 'source' ? '원문' : '번역'}</span> {highlightSnippet(h)}
             </button>
           </li>

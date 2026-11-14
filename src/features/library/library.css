@@ -40,3 +40,6 @@
 .pending { list-style: none; max-width: 920px; margin: 12px auto 0; padding: 0 28px; }
 .pending li { display: flex; justify-content: space-between; gap: 12px; padding: 6px 10px; border-radius: 6px; background: var(--bg-sunken); margin-bottom: 4px; }
 .pending li.error { background: var(--danger-soft); }
+
+.cover-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 4px; background: rgba(0, 0, 0, .35); }
+.cover-progress > span { display: block; height: 100%; background: var(--accent); }

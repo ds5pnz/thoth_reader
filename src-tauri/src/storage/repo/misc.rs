@@ -100,6 +100,136 @@ pub async fn bookmark_list(pool: &SqlitePool, document_id: &str) -> AppResult<Ve
         .collect()
 }
 
+// ---------------------------------------------------------------- annotations
+
+#[derive(Debug, Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct AnnotationRow {
+    pub id: String,
+    pub document_id: String,
+    /// Block in the *current* extraction (re-resolved by source hash when ids changed);
+    /// `None` when the paragraph no longer exists.
+    pub block_id: Option<String>,
+    pub section_id: Option<String>,
+    pub side: String,
+    pub target_language: Option<String>,
+    pub quote: String,
+    pub occurrence: u32,
+    pub color: String,
+    pub note: String,
+    #[ts(type = "Record<string, unknown>")]
+    pub location: serde_json::Value,
+    #[ts(type = "number")]
+    pub created_at: i64,
+    #[ts(type = "number")]
+    pub updated_at: i64,
+}
+
+pub struct AnnotationInput<'a> {
+    pub id: Option<&'a str>,
+    pub document_id: &'a str,
+    pub block_id: &'a str,
+    pub side: &'a str,
+    pub target_language: Option<&'a str>,
+    pub quote: &'a str,
+    pub occurrence: u32,
+    pub color: &'a str,
+    pub note: &'a str,
+}
+
+/// Create, or (with `id`) change colour / note of, an annotation. The block must belong to
+/// the document; its source hash and location are recorded for later re-anchoring.
+pub async fn annotation_put(pool: &SqlitePool, a: AnnotationInput<'_>) -> AppResult<String> {
+    let now = now_ms();
+    if let Some(id) = a.id {
+        let n = sqlx::query("update annotations set color = ?, note = ?, updated_at = ? where id = ? and document_id = ?")
+            .bind(a.color)
+            .bind(a.note)
+            .bind(now)
+            .bind(id)
+            .bind(a.document_id)
+            .execute(pool)
+            .await?
+            .rows_affected();
+        return if n == 1 { Ok(id.to_string()) } else { Err(AppError::not_found("메모")) };
+    }
+    let row: Option<(String, String)> = sqlx::query_as(
+        "select b.source_hash, b.location_json from blocks b join extractions e on e.id = b.extraction_id where b.id = ? and e.document_id = ?",
+    )
+    .bind(a.block_id)
+    .bind(a.document_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((source_hash, location)) = row else { return Err(AppError::not_found("문단")) };
+    let id = new_uuid();
+    sqlx::query(
+        "insert into annotations(id, document_id, block_id, source_hash, side, target_language, quote, occurrence, color, note, location_json, created_at, updated_at)
+         values (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    )
+    .bind(&id)
+    .bind(a.document_id)
+    .bind(a.block_id)
+    .bind(source_hash)
+    .bind(a.side)
+    .bind(a.target_language)
+    .bind(a.quote)
+    .bind(a.occurrence as i64)
+    .bind(a.color)
+    .bind(a.note)
+    .bind(location)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await?;
+    Ok(id)
+}
+
+pub async fn annotation_delete(pool: &SqlitePool, document_id: &str, id: &str) -> AppResult<bool> {
+    Ok(sqlx::query("delete from annotations where id = ? and document_id = ?").bind(id).bind(document_id).execute(pool).await?.rows_affected() == 1)
+}
+
+/// All annotations of a document, each resolved to a block of the active extraction: the
+/// original block when it is still there, else the first block with the same source text.
+pub async fn annotation_list(pool: &SqlitePool, document_id: &str) -> AppResult<Vec<AnnotationRow>> {
+    let rows = sqlx::query(
+        "select a.*,
+                coalesce(
+                  (select b.id from blocks b where b.id = a.block_id and b.extraction_id = d.active_extraction_id),
+                  (select b.id from blocks b where b.extraction_id = d.active_extraction_id and b.source_hash = a.source_hash order by b.ordinal limit 1)
+                ) as cur_block
+         from annotations a join documents d on d.id = a.document_id
+         where a.document_id = ? order by a.created_at",
+    )
+    .bind(document_id)
+    .fetch_all(pool)
+    .await?;
+    let mut out = Vec::with_capacity(rows.len());
+    for r in &rows {
+        let block_id: Option<String> = r.get("cur_block");
+        let section_id: Option<String> = match &block_id {
+            Some(b) => sqlx::query_scalar("select section_id from blocks where id = ?").bind(b).fetch_optional(pool).await?,
+            None => None,
+        };
+        out.push(AnnotationRow {
+            id: r.get("id"),
+            document_id: r.get("document_id"),
+            block_id,
+            section_id,
+            side: r.get("side"),
+            target_language: r.get("target_language"),
+            quote: r.get("quote"),
+            occurrence: r.get::<i64, _>("occurrence") as u32,
+            color: r.get("color"),
+            note: r.get("note"),
+            location: serde_json::from_str(r.get::<String, _>("location_json").as_str()).unwrap_or(serde_json::Value::Null),
+            created_at: r.get("created_at"),
+            updated_at: r.get("updated_at"),
+        });
+    }
+    Ok(out)
+}
+
 // ---------------------------------------------------------------- settings
 
 pub async fn setting_get(pool: &SqlitePool, key: &str) -> AppResult<Option<(serde_json::Value, i64)>> {
@@ -342,4 +472,31 @@ pub async fn delete_document_rows(pool: &SqlitePool, document_id: &str) -> AppRe
     }
     tx.commit().await?;
     Ok(())
+}
+
+/// Reading progress (0..1) of a position: its section's place in the book plus the block's
+/// place in that section. Stored on the document so the library can show it without a query
+/// per book.
+pub async fn progress_update(pool: &SqlitePool, document_id: &str, block_id: Option<&str>) -> AppResult<Option<f64>> {
+    let Some(block_id) = block_id else { return Ok(None) };
+    let row: Option<(i64, i64, i64, i64)> = sqlx::query_as(
+        "select s.ordinal, b.ordinal,
+                (select count(*) from blocks x where x.section_id = b.section_id),
+                (select count(*) from sections y where y.extraction_id = b.extraction_id)
+         from blocks b join sections s on s.id = b.section_id
+         join extractions e on e.id = b.extraction_id
+         where b.id = ? and e.document_id = ?",
+    )
+    .bind(block_id)
+    .bind(document_id)
+    .fetch_optional(pool)
+    .await?;
+    let Some((section, block, blocks, sections)) = row else { return Ok(None) };
+    if sections <= 0 {
+        return Ok(None);
+    }
+    let p = ((section as f64 + block as f64 / blocks.max(1) as f64) / sections as f64).clamp(0.0, 1.0);
+    let p = (p * 1000.0).round() / 1000.0;
+    sqlx::query("update documents set metadata_json = json_set(metadata_json, '$.progress', ?) where id = ?").bind(p).bind(document_id).execute(pool).await?;
+    Ok(Some(p))
 }
