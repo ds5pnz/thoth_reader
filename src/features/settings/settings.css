@@ -1,0 +1,21 @@
+.settings { width: min(980px, calc(100vw - 32px)); }
+.settings header .seg { margin-right: auto; margin-left: 16px; }
+.settings-grid { display: grid; grid-template-columns: 300px 1fr; gap: 16px; }
+.settings h3 { font-size: 13px; margin: 0 0 8px; }
+.settings label { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; font-size: 12px; color: var(--fg-muted); }
+.settings label.switch { flex-direction: row; align-items: center; gap: 6px; color: var(--fg); }
+.settings .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 6px 0; }
+.settings .row label { margin-bottom: 0; }
+.card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 12px; background: var(--bg); }
+.prov-list { list-style: none; padding: 0; margin: 0 0 8px; display: flex; flex-direction: column; gap: 4px; }
+.prov-list li { display: flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; }
+.prov-list li.sel { border-color: var(--accent); background: var(--accent-soft); }
+.prov-pick { flex: 1; text-align: left; border: 0; background: transparent; cursor: pointer; display: flex; flex-direction: column; min-width: 0; }
+.prov-pick span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.consent { border: 1px solid var(--warn); background: var(--warn-soft); border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
+.consent h4 { margin: 0 0 6px; }
+.consent code { display: block; padding: 4px 6px; background: var(--bg-elev); border-radius: 4px; word-break: break-all; }
+.small-note { font-size: 11px; }
+.gloss { width: 100%; border-collapse: collapse; }
+.gloss td, .gloss th { padding: 3px; text-align: left; font-weight: 500; font-size: 12px; }
+.gloss input { width: 100%; }
