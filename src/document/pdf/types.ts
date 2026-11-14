@@ -14,6 +14,9 @@ export interface PdfTextItemLike {
   hasEOL: boolean;
   /** Fill colour the item was painted with (`#rrggbb`), when it could be determined. */
   color?: string | null;
+  /** Colour per stretch of `str` (UTF-16 offsets): one item often mixes colours, because
+   *  text extraction merges neighbouring glyph runs whatever their colour. */
+  colorRuns?: { start: number; end: number; color: string }[];
 }
 
 /** PDF.js `TextStyle` (+ optional real font facts resolved from `commonObjs`). */

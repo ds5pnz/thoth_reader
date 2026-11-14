@@ -17,16 +17,16 @@ describe('painted text colours', () => {
     ]);
   });
   it('assigns colours to items whose boundaries differ from the paint operators', () => {
-    const items = [{ str: 'See Clo' }, { str: 'ud Versus' }, { str: ' ' }, { str: 'end' }] as { str: string; color?: string | null }[];
+    const items = [{ str: 'See Clo' }, { str: 'ud Versus' }, { str: ' ' }, { str: 'end' }] as { str: string; color?: string | null; colorRuns?: { start: number; end: number; color: string }[] }[];
     const ok = assignItemColors(items, [{ text: 'See ', color: '#000000' }, { text: 'Cloud Versus', color: '#b00000' }, { text: ' end', color: '#000000' }]);
     expect(ok).toBe(true);
     expect(items.map((i) => i.color)).toEqual(['#000000', '#b00000', null, '#000000']);
   });
   it('ligatures and dropped glyphs still line up; unrelated streams give no colours', () => {
-    const items = [{ str: 'office' }, { str: 'files' }] as { str: string; color?: string | null }[];
+    const items = [{ str: 'office' }, { str: 'files' }] as { str: string; color?: string | null; colorRuns?: { start: number; end: number; color: string }[] }[];
     expect(assignItemColors(items, [{ text: 'oﬃce', color: '#112233' }, { text: 'x', color: '#000000' }, { text: 'ﬁles', color: '#445566' }])).toBe(true);
     expect(items.map((i) => i.color)).toEqual(['#112233', '#445566']);
-    const other = [{ str: 'completely different text' }] as { str: string; color?: string | null }[];
+    const other = [{ str: 'completely different text' }] as { str: string; color?: string | null; colorRuns?: { start: number; end: number; color: string }[] }[];
     expect(assignItemColors(other, [{ text: 'zzzz qqqq', color: '#ff0000' }])).toBe(false);
     expect(other[0]!.color).toBeUndefined();
   });
@@ -63,5 +63,48 @@ describe('accent colour runs', () => {
       { t: 'strong', c: [{ t: 'color', v: '#cc0000', c: [{ t: 'text', v: 'red' }] }] },
       { t: 'text', v: ' z' },
     ]);
+  });
+});
+
+describe('colour alignment does not drift', () => {
+  it('item characters that were never painted do not pull later colours forward', () => {
+    // The extracted text has characters the paint stream lacks (here "X" markers that recur
+    // later in the text): a naive forward search jumps ahead and every later colour lands early.
+    const black = 'machine can handle, you can potentially spread the load across multiple machines. See ';
+    const red = 'Scalability on page 49';
+    const painted = [{ text: black, color: '#000000' }, { text: red, color: '#b00000' }, { text: '. Next sentence can also mention scalability again.', color: '#000000' }];
+    const items = [
+      { str: 'machine can handle, ' }, { str: 'S' }, { str: 'you can potentially spread ' }, { str: 'p' },
+      { str: 'the load across multiple machines. See ' }, { str: red }, { str: '. Next sentence can also mention scalability again.' },
+    ] as { str: string; color?: string | null; colorRuns?: { start: number; end: number; color: string }[] }[];
+    expect(assignItemColors(items, painted)).toBe(true);
+    expect(items[4]!.color).toBe('#000000');
+    expect(items[5]!.color).toBe('#b00000');
+    expect(items[6]!.color).toBe('#000000');
+  });
+  it('painted glyphs missing from the items are skipped the same way', () => {
+    const painted = [{ text: 'geograph-', color: '#000000' }, { text: 'ically close. See ', color: '#000000' }, { text: 'Describing Performance', color: '#b00000' }, { text: ' now.', color: '#000000' }];
+    const items = [{ str: 'geographically close. See ' }, { str: 'Describing Performance' }, { str: ' now.' }] as { str: string; color?: string | null; colorRuns?: { start: number; end: number; color: string }[] }[];
+    expect(assignItemColors(items, painted)).toBe(true);
+    expect(items.map((i) => i.color)).toEqual(['#000000', '#b00000', '#000000']);
+  });
+});
+
+describe('colours inside one item', () => {
+  it('an item that mixes colours gets a run per colour, at the right offsets', () => {
+    const str = 'over. See “Reliability” on page 43 and Chapter 6.';
+    const items = [{ str }] as { str: string; color?: string | null; colorRuns?: { start: number; end: number; color: string }[] }[];
+    const ok = assignItemColors(items, [
+      { text: 'over. See ', color: '#000000' },
+      { text: '“Reliability” on page 43', color: '#b00000' },
+      { text: ' and ', color: '#000000' },
+      { text: 'Chapter 6', color: '#b00000' },
+      { text: '.', color: '#000000' },
+    ]);
+    expect(ok).toBe(true);
+    const red = items[0]!.colorRuns!.filter((r) => r.color === '#b00000').map((r) => str.slice(r.start, r.end));
+    expect(red).toEqual(['“Reliability” on page 43', 'Chapter 6']);
+    const black = items[0]!.colorRuns!.filter((r) => r.color === '#000000').map((r) => str.slice(r.start, r.end).trim());
+    expect(black).toEqual(['over. See', 'and', '.']);
   });
 });

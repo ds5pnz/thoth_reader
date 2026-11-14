@@ -116,35 +116,91 @@ const INK = (s: string) => s.normalize('NFKC').replace(/\s+/gu, '');
  * extracted items in parallel (both are in content-stream order). When the two streams do
  * not line up well enough the page gets no colours at all rather than wrong ones.
  */
-export function assignItemColors(items: { str: string; color?: string | null }[], painted: readonly PaintedText[]): boolean {
-  const chars: string[] = [];
+export function assignItemColors(items: { str: string; color?: string | null; colorRuns?: { start: number; end: number; color: string }[] }[], painted: readonly PaintedText[]): boolean {
+  const pc: string[] = [];
   const cols: (string | null)[] = [];
-  for (const p of painted) for (const ch of INK(p.text)) { chars.push(ch); cols.push(p.color); }
+  for (const p of painted) for (const ch of INK(p.text)) { pc.push(ch); cols.push(p.color); }
+  // Item ink characters, each remembering its item and its UTF-16 position in `str`.
+  const ic: string[] = [];
+  const owner: number[] = [];
+  const at: number[] = [];
+  items.forEach((it, idx) => {
+    let pos = 0;
+    for (const cp of it.str) {
+      for (const ch of INK(cp)) { ic.push(ch); owner.push(idx); at.push(pos); }
+      pos += cp.length;
+    }
+  });
+  if (ic.length === 0) return false;
+  const got: (string | null | undefined)[] = new Array(ic.length);
+  // Both streams are in content order but differ in places (glyphs the extractor drops or
+  // adds, hyphens, ligatures). Never jump on a single matching letter: that walks ahead of
+  // the real position and every later colour lands too early. Resynchronise only where the
+  // next few characters agree, skipping whichever side needs the shorter skip.
+  const GRAM = 5;
+  const gram = (arr: string[], p: number) => (p + GRAM <= arr.length ? arr.slice(p, p + GRAM).join('') : null);
+  const index = (arr: string[]) => {
+    const m = new Map<string, number[]>();
+    for (let p = 0; p + GRAM <= arr.length; p++) {
+      const g = arr.slice(p, p + GRAM).join('');
+      const l = m.get(g);
+      if (l) l.push(p); else m.set(g, [p]);
+    }
+    return m;
+  };
+  const pcIndex = index(pc);
+  const icIndex = index(ic);
+  // first occurrence of `g` at or after `from` (positions are ascending)
+  const next = (m: Map<string, number[]>, g: string | null, from: number) => {
+    const l = g ? m.get(g) : undefined;
+    if (!l) return -1;
+    let lo = 0; let hi = l.length;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (l[mid]! < from) lo = mid + 1; else hi = mid; }
+    return lo < l.length ? l[lo]! : -1;
+  };
+  let i = 0;
   let k = 0;
   let matched = 0;
-  let total = 0;
-  const result: (string | null)[] = [];
-  for (const it of items) {
-    const votes = new Map<string, number>();
-    for (const ch of INK(it.str)) {
-      total++;
-      let j = k;
-      // resync within a short window (text extraction may drop or reorder a few glyphs)
-      while (j < chars.length && j < k + 48 && chars[j] !== ch) j++;
-      if (j < chars.length && chars[j] === ch) {
-        matched++;
-        const c = cols[j];
-        if (c) votes.set(c, (votes.get(c) ?? 0) + 1);
-        k = j + 1;
-      }
+  while (i < ic.length && k < pc.length) {
+    if (ic[i] === pc[k]) {
+      got[i] = cols[k];
+      matched++; i++; k++;
+      continue;
     }
+    // Where does the text at `i` continue in the paint stream, and where does the paint at
+    // `k` continue in the text? Take the shorter skip (a block may be missing on either side).
+    const kTo = next(pcIndex, gram(ic, i), k + 1);
+    const iTo = next(icIndex, gram(pc, k), i + 1);
+    if (kTo >= 0 && (iTo < 0 || kTo - k <= iTo - i)) k = kTo;
+    else if (iTo >= 0) i = iTo;
+    else { i++; k++; } // a substituted character
+  }
+  if (matched / ic.length < 0.9) return false;
+  // Per item: runs of one colour (bridging whitespace and unmatched characters), plus the
+  // majority colour.
+  const runs: { start: number; end: number; color: string }[][] = items.map(() => []);
+  for (let j = 0; j < ic.length; j++) {
+    const c = got[j];
+    if (!c) continue;
+    const list = runs[owner[j]!]!;
+    const last = list[list.length - 1];
+    const end = at[j]! + ic[j]!.length;
+    if (last && last.color === c) last.end = Math.max(last.end, end);
+    else {
+      if (last) last.end = Math.min(last.end, at[j]!); // a bridged run stops where the next begins
+      list.push({ start: at[j]!, end, color: c });
+    }
+  }
+  items.forEach((it, idx) => {
+    const list = runs[idx]!;
+    const weight = new Map<string, number>();
+    for (const r of list) weight.set(r.color, (weight.get(r.color) ?? 0) + (r.end - r.start));
     let best: string | null = null;
     let n = 0;
-    for (const [c, v] of votes) if (v > n) { best = c; n = v; }
-    result.push(best);
-  }
-  if (total === 0 || matched / total < 0.9) return false;
-  items.forEach((it, i) => { it.color = result[i] ?? null; });
+    for (const [c, v] of weight) if (v > n) { best = c; n = v; }
+    it.color = best;
+    it.colorRuns = list;
+  });
   return true;
 }
 

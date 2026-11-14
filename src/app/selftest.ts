@@ -6,7 +6,7 @@ import { call } from '../ipc/client';
 import type { ImportCandidate } from '../ipc/generated/ImportCandidate';
 import type { ImportResult } from '../ipc/generated/ImportResult';
 
-type Hooks = { session: () => { sessionId: string; metadata?: Record<string, unknown> } | null;
+type Hooks = { session: () => { sessionId: string; assetToken: string; metadata?: Record<string, unknown> } | null;
   reloadLibrary: () => Promise<void>; open: (id: string) => void; close: () => void; anchor: () => unknown; anchorError: () => number | null; reloadSettings: () => Promise<void> };
 declare global {
   interface Window { __thoth?: Partial<Hooks> }
@@ -745,5 +745,82 @@ async function featuresCheck(res: Record<string, unknown>) {
     };
   };
   if (colourPage >= 0) (res.features as Record<string, unknown>).colourPage = await visit(colourPage);
+  if (colourPage >= 0) (res.features as Record<string, unknown>).colourTruth = await colourTruth(Math.max(colourPage, Number((globalThis as { __thothPdfPage?: number }).__thothPdfPage ?? 0)), 24).catch((e) => ({ error: String((e as Error).message) }));
   if (continuesPage >= 0) (res.features as Record<string, unknown>).continuesPage = await visit(continuesPage);
+}
+
+/**
+ * Ground truth for extracted item colours: render the page and look at the ink actually
+ * under each text item. Compares "chromatic vs neutral" and, for chromatic ink, the hue.
+ */
+async function colourTruth(firstPage: number, pages: number) {
+  const token = window.__thoth?.session?.()?.assetToken;
+  if (!token) return { error: 'no session' };
+  const { loadPdfDocument } = await import('../document/pdf/pdfjs');
+  const { buildPageInput } = await import('../document/pdf/pageInput');
+  const { doc, task } = await loadPdfDocument({ url: `thoth-doc://localhost/${token}/pdf`, onPassword: async () => null });
+  const chroma = (r: number, g: number, b: number) => Math.max(r, g, b) - Math.min(r, g, b);
+  const out = { pages: 0, pagesWithColours: 0, mixedItems: 0, items: 0, chromaticAssigned: 0, chromaticInk: 0, agree: 0, assignedButNeutralInk: 0, inkButNeutralAssigned: 0, hueMismatch: 0, unknown: 0 };
+  try {
+    for (let p = firstPage; p < Math.min(doc.numPages, firstPage + pages); p++) {
+      const page = await doc.getPage(p + 1);
+      const input = await buildPageInput(page);
+      out.pages++;
+      if (input.items.some((i) => i.color)) out.pagesWithColours++;
+      const SCALE = 2;
+      const vp = page.getViewport({ scale: SCALE });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.floor(vp.width); canvas.height = Math.floor(vp.height);
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })!;
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport: vp, canvas } as Parameters<typeof page.render>[0]).promise;
+      for (const it of input.items) {
+        if (!it.str.trim() || it.str.trim().length < 3) continue;
+        const [a, b, , d, e, f] = it.transform as [number, number, number, number, number, number];
+        if (Math.abs(b) > 0.01 || a <= 0 || it.width <= 0) continue; // horizontal text only
+        const h = Math.abs(d) || it.height;
+        if (!it.colorRuns) { out.items++; out.unknown++; continue; }
+        if (it.colorRuns.length > 1) out.mixedItems++;
+        for (const run of it.colorRuns) {
+          const piece = it.str.slice(run.start, run.end);
+          if (piece.replace(/\s/g, '').length < 4) continue;
+          // the run's share of the item box (proportional widths are close enough once trimmed)
+          const fa = run.start / it.str.length;
+          const fb = run.end / it.str.length;
+          const pad = (fb - fa) * 0.18;
+          const [x0, y0] = vp.convertToViewportPoint(e + it.width * (fa + pad), f + h * 0.75);
+          const [x1, y1] = vp.convertToViewportPoint(e + it.width * (fb - pad), f + h * 0.05);
+          const x = Math.max(0, Math.floor(Math.min(x0, x1))); const y = Math.max(0, Math.floor(Math.min(y0, y1)));
+          const w = Math.min(canvas.width - x, Math.ceil(Math.abs(x1 - x0))); const hh = Math.min(canvas.height - y, Math.ceil(Math.abs(y1 - y0)));
+          if (w < 4 || hh < 4) continue;
+          const px = ctx.getImageData(x, y, w, hh).data;
+          // ink = the darkest fifth of non-white pixels (anti-aliased edges wash colours out)
+          const ink: [number, number, number, number][] = [];
+          for (let q = 0; q < px.length; q += 4) {
+            const lum = 0.3 * px[q]! + 0.59 * px[q + 1]! + 0.11 * px[q + 2]!;
+            if (lum < 200) ink.push([lum, px[q]!, px[q + 1]!, px[q + 2]!]);
+          }
+          if (ink.length < 12) continue;
+          ink.sort((m, n) => m[0] - n[0]);
+          const top = ink.slice(0, Math.max(6, Math.floor(ink.length / 5)));
+          const avg = [1, 2, 3].map((c) => top.reduce((sum, v) => sum + v[c as 1 | 2 | 3], 0) / top.length) as [number, number, number];
+          out.items++;
+          const ar = parseInt(run.color.slice(1, 3), 16); const ag = parseInt(run.color.slice(3, 5), 16); const ab = parseInt(run.color.slice(5, 7), 16);
+          const assignedChromatic = chroma(ar, ag, ab) > 70;
+          const inkChromatic = chroma(...avg) > 70;
+          if (assignedChromatic) out.chromaticAssigned++;
+          if (inkChromatic) out.chromaticInk++;
+          if (assignedChromatic && !inkChromatic) out.assignedButNeutralInk++;
+          else if (!assignedChromatic && inkChromatic) out.inkButNeutralAssigned++;
+          else if (assignedChromatic && inkChromatic && Math.hypot(ar - avg[0], ag - avg[1], ab - avg[2]) > 110) out.hueMismatch++;
+          else out.agree++;
+        }
+      }
+      canvas.width = 0; canvas.height = 0;
+      page.cleanup();
+    }
+  } finally {
+    await task.destroy().catch(() => {});
+  }
+  return out;
 }

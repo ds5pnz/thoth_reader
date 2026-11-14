@@ -281,7 +281,11 @@ function buildDraft(
       if (p.frag) {
         const st = (p.frag.style.bold ? 1 : 0) | (p.frag.style.italic ? 2 : 0);
         if (st) styleRuns.push({ rawStart: raw.length, rawEnd: raw.length + p.text.length, s: st });
-        if (p.frag.color && !p.frag.isSpace) colorRuns.push({ rawStart: raw.length, rawEnd: raw.length + p.text.length, color: p.frag.color });
+        for (const r of p.frag.colorRuns ?? []) {
+          const a = Math.max(0, Math.min(p.text.length, r.start));
+          const b = Math.max(a, Math.min(p.text.length, r.end));
+          if (b > a) colorRuns.push({ rawStart: raw.length + a, rawEnd: raw.length + b, color: r.color });
+        }
         textNodes.push({ path: `item:${p.frag.itemIndex}`, rawStartU16: raw.length, rawLenU16: p.text.length, nodeOffsetU16: 0 });
         itemRanges.push({ itemIndex: p.frag.itemIndex, startU16: 0, endU16: p.frag.str.length });
       }
