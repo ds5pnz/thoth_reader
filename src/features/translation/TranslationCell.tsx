@@ -111,6 +111,9 @@ export const TranslationCell = memo(function TranslationCell(props: {
     <div className={`tcell ${display?.status ?? 'none'}`} lang={targetLanguage} aria-busy={running ? true : undefined}>
       <div className="tcell-head">
         {status && <span className={`badge ${status.cls}`}>{status.label}</span>}
+        {display?.shown?.warning && (
+          <span className="badge warn" title={display.shown.warning.startsWith('script:') ? '번역에 다른 문자 체계가 섞였습니다. 재번역하거나 직접 수정해 주세요.' : '번역 결과의 언어가 대상 언어와 달라 보입니다.'}>확인 필요</span>
+        )}
         {display?.hasCandidate && <button className="btn small ghost" onClick={() => actions.applyCandidate(block)} title="수동 고정본 대신 새 번역을 적용">새 번역 적용</button>}
         <span className="spacer" />
         <div className="tcell-menu">

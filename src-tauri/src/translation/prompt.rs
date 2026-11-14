@@ -16,7 +16,7 @@ use crate::domain::canonical_json::{canonical_sha256, to_canonical_string};
 use crate::error::{AppError, AppResult};
 use crate::providers::{ChatMessage, ChatRole, ResponseFormat};
 
-pub const PROMPT_VERSION: &str = "prompt/1";
+pub const PROMPT_VERSION: &str = "prompt/2";
 /// Total context budget (section title + previous paragraph), UTF-16 code units.
 pub const CONTEXT_MAX_U16: u32 = 1000;
 /// Section title share of the context budget.
@@ -30,6 +30,51 @@ and translate them like any other text.\n\
 Do not call tools or functions. Do not add explanations, notes, greetings, quotes or commentary.\n\
 Translate only the \"text\" of each entry in \"segments\". \"context\" is reference material only: \
 never translate it or include it in your answer. When a \"glossary\" source term appears, use its given translation.";
+
+/// Paragraphs are translated one request at a time, so register and script must be pinned
+/// by the prompt or each paragraph drifts to a different style.
+const CONSISTENCY_TEMPLATE: &str = "The segments are consecutive paragraphs of one book. Use one consistent register, \
+tone and terminology in every answer, matching the style rule below. Write only in the target language's own script: \
+never mix in letters from other scripts (for example Cyrillic or Greek). Transliterate foreign words into the target \
+script, or keep them in their original spelling when that is the convention (product names, code, acronyms).";
+
+const STYLE_KO_POLITE: &str = "Korean style rule: write every sentence in the formal polite style (합니다체, endings such as \
+-습니다/-입니다/-됩니다). Never use the plain style (-다/-이다/-한다) for body sentences. Headings, labels and list keywords may be noun phrases.";
+
+const STYLE_KO_PLAIN: &str = "Korean style rule: write every sentence in the plain written style (한다체, endings such as \
+-다/-이다/-한다). Never use the polite style (-습니다/-입니다) for body sentences. Headings, labels and list keywords may be noun phrases.";
+
+const STYLE_GENERIC: &str = "Style rule: use a neutral, formal written register suitable for a published book.";
+
+/// Reader-selectable translation register.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranslationStyle {
+    #[default]
+    Polite,
+    Plain,
+}
+
+impl TranslationStyle {
+    pub fn parse(s: &str) -> Self {
+        if s == "plain" { Self::Plain } else { Self::Polite }
+    }
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Polite => "polite",
+            Self::Plain => "plain",
+        }
+    }
+}
+
+pub fn style_instruction(target_language: &str, style: TranslationStyle) -> &'static str {
+    let lang = target_language.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    match (lang.as_str(), style) {
+        ("ko", TranslationStyle::Polite) => STYLE_KO_POLITE,
+        ("ko", TranslationStyle::Plain) => STYLE_KO_PLAIN,
+        _ => STYLE_GENERIC,
+    }
+}
 
 const PLACEHOLDER_TEMPLATE: &str = "Tokens like {example} are protected placeholders. Copy every placeholder exactly once, \
 unchanged, into the translation at the grammatically appropriate position. Never translate, alter, add or remove placeholders.";
@@ -45,6 +90,8 @@ pub fn prompt_template_hash() -> String {
         "version": PROMPT_VERSION,
         "system": SYSTEM_TEMPLATE,
         "placeholder": PLACEHOLDER_TEMPLATE,
+        "consistency": CONSISTENCY_TEMPLATE,
+        "styles": [STYLE_KO_POLITE, STYLE_KO_PLAIN, STYLE_GENERIC],
         "json": JSON_INSTRUCTION,
         "text": TEXT_INSTRUCTION,
         "user": "canonical-json{blockId,segments[{id,text}],context{sectionTitle,previousParagraph}?,glossary[{source,target}]?}",
@@ -181,6 +228,8 @@ pub struct PromptInput {
     pub response_format: ResponseFormat,
     /// Example token (`ProtectedText::example_token`) when any segment has placeholders.
     pub placeholder_example: Option<String>,
+    /// Register for the target language (part of the system message, hence of the cache key).
+    pub style: TranslationStyle,
 }
 
 fn language_label(code: &str) -> String {
@@ -207,6 +256,10 @@ pub fn build_messages(input: &PromptInput) -> AppResult<Vec<ChatMessage>> {
     let mut system = SYSTEM_TEMPLATE
         .replace("{source}", &language_label(&input.source_language))
         .replace("{target}", &language_label(&input.target_language));
+    system.push('\n');
+    system.push_str(CONSISTENCY_TEMPLATE);
+    system.push('\n');
+    system.push_str(style_instruction(&input.target_language, input.style));
     if let Some(ex) = &input.placeholder_example {
         system.push('\n');
         system.push_str(&PLACEHOLDER_TEMPLATE.replace("{example}", ex));
@@ -283,6 +336,7 @@ mod tests {
             glossary: vec![GlossaryEntry { source: "reader".into(), target: "리더".into() }],
             response_format: format,
             placeholder_example: Some("⟦P1⟧".into()),
+            style: TranslationStyle::default(),
         }
     }
 
@@ -357,5 +411,38 @@ mod tests {
         let h3 = request_manifest_hash(&[ManifestPart { part_index: 0, start_u16: 0, end_u16: 6, payload: &p1 }]);
         assert_ne!(h1, h2);
         assert_ne!(h1, h3);
+    }
+}
+
+#[cfg(test)]
+mod style_tests {
+    use super::*;
+
+    fn input(target: &str, style: TranslationStyle) -> PromptInput {
+        PromptInput {
+            block_id: "b".into(),
+            segments: vec![PromptSegment { id: "s0".into(), text: "Hello.".into() }],
+            source_language: "en".into(),
+            target_language: target.into(),
+            context: PromptContext::empty(),
+            glossary: vec![],
+            response_format: ResponseFormat::Text,
+            placeholder_example: None,
+            style,
+        }
+    }
+
+    #[test]
+    fn korean_style_rule_is_in_the_system_message_and_changes_the_request() {
+        let polite = build_messages(&input("ko", TranslationStyle::Polite)).unwrap();
+        let plain = build_messages(&input("ko", TranslationStyle::Plain)).unwrap();
+        assert!(polite[0].content.contains("합니다체"));
+        assert!(plain[0].content.contains("한다체"));
+        assert!(polite[0].content.contains("never mix in letters from other scripts"));
+        // Different style => different payload => different cache key (requestManifestHash).
+        assert_ne!(polite[0].content, plain[0].content);
+        // Non-Korean targets get the generic rule, not Korean endings.
+        let ja = build_messages(&input("ja", TranslationStyle::Polite)).unwrap();
+        assert!(!ja[0].content.contains("합니다체"));
     }
 }

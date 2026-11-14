@@ -84,6 +84,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'modes20') await modes20(res, isPdf);
       if (cfg.scenario === 'security') await securityScan(res);
       if (cfg.scenario === 'outage') await outage(res);
+      if (cfg.scenario === 'style') await styleRun(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -183,8 +184,18 @@ async function translationChecks(res: Record<string, unknown>, documentId: strin
   res.translatedCells = translated();
   res.translateWindowMs = Math.round(performance.now() - t0);
   // Manual edit on the first translated cell: double-click, type, Cmd+Enter.
-  res.samples = [...document.querySelectorAll<HTMLElement>('.brow')].filter((r) => r.querySelector('.tcell-text')).slice(0, 2).map((r) => ({ src: (r.querySelector('.src')?.textContent ?? '').slice(0, 90), ko: (r.querySelector('.tcell-text')?.textContent ?? '').slice(0, 90) }));
   res.failedCells = document.querySelectorAll('.tcell .badge.danger').length;
+  // Register consistency (counts only): Korean body sentences should all be polite (…니다.)
+  // with the default style; plain endings (…다. without 니다) indicate drift.
+  const texts = [...document.querySelectorAll<HTMLElement>('.brow:not(.kind-heading) .tcell-text')].map((x) => x.textContent ?? '');
+  const sentences = texts.flatMap((t) => t.split(/(?<=[.!?])\s+/)).filter((x) => /[가-힣]/.test(x) && /[.!?]$/.test(x.trim()));
+  res.style = {
+    cells: texts.length,
+    sentences: sentences.length,
+    polite: sentences.filter((x) => /(니다|세요|까요|시오)[.!?]$/.test(x.trim())).length,
+    plain: sentences.filter((x) => /다[.!?]$/.test(x.trim()) && !/니다[.!?]$/.test(x.trim())).length,
+    scriptWarnings: [...document.querySelectorAll('.tcell .badge')].filter((b) => b.textContent === '확인 필요').length,
+  };
   const cell = [...document.querySelectorAll<HTMLElement>('.tcell-text')].find((x) => (x.textContent ?? '').trim().length > 0);
   if (cell) {
     cell.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
@@ -301,4 +312,24 @@ async function outage(res: Record<string, unknown>) {
     failedBadges: [...document.querySelectorAll('.tcell .badge')].filter((b) => b.textContent === '실패' || b.textContent === '재시도 대기').length,
     banner: document.querySelector('.banner.warn')?.textContent?.slice(0, 60) ?? null,
   };
+}
+
+/** Translate several screens of body text so register consistency can be counted from the DB. */
+async function styleRun(res: Record<string, unknown>) {
+  clickButton('병렬');
+  await waitFor(() => rows() > 0 && !!document.querySelector('.reflow'), 15000);
+  const scroller = document.querySelector<HTMLElement>('.reflow');
+  let total = 0;
+  for (const top of [3000, 3700, 4400, 5100, 5800]) {
+    if (!scroller) break;
+    scroller.scrollTop = top;
+    userScroll(scroller);
+    // wait until every visible auto cell has text or failed
+    await waitFor(() => {
+      const vis = [...document.querySelectorAll<HTMLElement>('.brow')].filter((r) => { const b = r.getBoundingClientRect(); return b.bottom > 80 && b.top < window.innerHeight; });
+      return vis.length > 0 && vis.every((r) => !r.querySelector('.tcell') || r.querySelector('.tcell-text') || r.querySelector('.tcell.excluded') || r.querySelector('.badge.danger'));
+    }, WAIT);
+    total = translated();
+  }
+  res.styleRun = { translatedVisible: total };
 }

@@ -809,6 +809,18 @@ pub struct DisplayRevision {
     pub origin: String,
     pub profile_id: Option<String>,
     pub cache_key: Option<String>,
+    /// e.g. "script:cyrillic" or "language" when the output looks wrong; a hint, not a failure.
+    pub warning: Option<String>,
+}
+
+pub fn warning_of(metadata: &serde_json::Value) -> Option<String> {
+    if let Some(s) = metadata.get("scriptWarning").and_then(|v| v.as_str()) {
+        return Some(format!("script:{s}"));
+    }
+    if metadata.get("languageWarning").and_then(|v| v.as_bool()) == Some(true) {
+        return Some("language".into());
+    }
+    None
 }
 
 pub async fn heads_with_text(pool: &SqlitePool, block_ids: &[String], lang: &str) -> AppResult<Vec<(HeadRow, Option<DisplayRevision>, Option<DisplayRevision>)>> {
@@ -817,7 +829,7 @@ pub async fn heads_with_text(pool: &SqlitePool, block_ids: &[String], lang: &str
         let ph = vec!["?"; chunk.len()].join(",");
         let sql = format!(
             "select h.block_id, h.manual_revision_id, h.generated_revision_id, h.version,
-                    m.text as mtext, m.origin as morigin, g.text as gtext, g.profile_id as gprofile, g.cache_key as gkey
+                    m.text as mtext, m.origin as morigin, g.text as gtext, g.profile_id as gprofile, g.cache_key as gkey, g.metadata_json as gmeta
              from translation_heads h
              left join translation_revisions m on m.id = h.manual_revision_id
              left join translation_revisions g on g.id = h.generated_revision_id
@@ -829,8 +841,8 @@ pub async fn heads_with_text(pool: &SqlitePool, block_ids: &[String], lang: &str
         }
         for r in q.fetch_all(pool).await? {
             let head = HeadRow { block_id: r.get(0), target_language: lang.into(), manual_revision_id: r.get(1), generated_revision_id: r.get(2), version: r.get(3) };
-            let manual = head.manual_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("mtext"), origin: r.get("morigin"), profile_id: None, cache_key: None });
-            let generated = head.generated_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("gtext"), origin: "generated".into(), profile_id: r.get("gprofile"), cache_key: r.get("gkey") });
+            let manual = head.manual_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("mtext"), origin: r.get("morigin"), profile_id: None, cache_key: None, warning: None });
+            let generated = head.generated_revision_id.clone().map(|id| DisplayRevision { revision_id: id, text: r.get("gtext"), origin: "generated".into(), profile_id: r.get("gprofile"), cache_key: r.get("gkey"), warning: r.get::<Option<String>, _>("gmeta").and_then(|m| serde_json::from_str::<serde_json::Value>(&m).ok()).and_then(|m| warning_of(&m)) });
             out.push((head, manual, generated));
         }
     }

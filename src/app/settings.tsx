@@ -16,6 +16,7 @@ export type SettingsMap = {
   readingMode?: 'parallel' | 'interleaved' | 'original';
   pdfView?: 'original' | 'reflow';
   privacyAcknowledged?: boolean;
+  translationStyle?: 'polite' | 'plain';
 };
 
 type Versioned = Record<string, { value: unknown; version: number }>;

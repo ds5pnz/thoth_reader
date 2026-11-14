@@ -98,6 +98,7 @@ pub struct ProfileContext {
     pub model_fingerprint: String,
     pub glossary: Vec<GlossaryEntry>,
     pub glossary_version: String,
+    pub style: prompt::TranslationStyle,
 }
 
 /// The session's effective profile: same settings as `base`, languages from the session.
@@ -148,7 +149,9 @@ pub async fn profile_context(db: &Db, base: &translations::ProfileRow, src: &str
         ),
         None => (vec![], "v0".into()),
     };
+    let style = misc::setting_get(&db.reader, "translationStyle").await?.and_then(|v| v.0.as_str().map(prompt::TranslationStyle::parse)).unwrap_or_default();
     Ok(ProfileContext {
+        style,
         context_limit: snap["contextLimit"].as_u64().map(|v| v as u32),
         profile,
         provider,
@@ -211,6 +214,7 @@ pub struct PreparedJob {
     pub profile_id: String,
     pub target_language: String,
     pub source_hash: String,
+    pub source_text: String,
     pub block_id: String,
     pub cache_key: String,
     pub descriptor: serde_json::Value,
@@ -270,6 +274,7 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
             glossary: glossary.clone(),
             response_format: p.response_format,
             placeholder_example: if protected.has_placeholders() { Some(protected.example_token()) } else { None },
+            style: p.style,
         })?;
         let request = TranslationRequest {
             request_id: String::new(),
@@ -320,6 +325,7 @@ pub async fn prepare(db: &Db, s: &Session, p: &ProfileContext, b: &Block, ctx: O
         profile_id: p.profile.id.clone(),
         target_language: tgt_lang,
         source_hash: b.source_hash.clone(),
+        source_text: b.source_text.clone(),
         block_id: b.id.clone(),
         cache_key: cache_key::cache_key(&descriptor),
         descriptor,
@@ -347,5 +353,11 @@ pub fn join_parts(parts: &[String], target_language: &str) -> String {
 }
 
 pub fn language_warning(text: &str, target_language: &str) -> bool {
-    validation::language_mismatch(text, target_language)
+    // Short strings are mostly names/titles that legitimately stay in the source script.
+    text.chars().filter(|c| c.is_alphabetic()).count() >= 40 && validation::language_mismatch(text, target_language)
+}
+
+/// Name of a script leaked into the translation, if any (shown as a "확인 필요" hint).
+pub fn script_warning(pj: &PreparedJob, text: &str) -> Option<&'static str> {
+    validation::unexpected_script(&pj.source_text, text, &pj.target_language)
 }

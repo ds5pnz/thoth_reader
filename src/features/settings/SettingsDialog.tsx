@@ -236,6 +236,13 @@ function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provi
         <label>temperature<input className="input" value={temp} onChange={(e) => setTemp(e.target.value)} size={5} /></label>
         <label>문맥 한도(토큰)<input className="input" value={ctx} onChange={(e) => setCtx(e.target.value)} size={7} placeholder="자동" /></label>
       </div>
+      <label>번역 문체 (한국어)
+        <div className="seg">
+          <button type="button" aria-pressed={(settings.translationStyle ?? 'polite') === 'polite'} onClick={() => void set('translationStyle', 'polite')}>합니다체</button>
+          <button type="button" aria-pressed={settings.translationStyle === 'plain'} onClick={() => void set('translationStyle', 'plain')}>한다체</button>
+        </div>
+        <span className="faint">문단마다 따로 번역하므로 문체를 고정합니다. 바꾸면 보이는 문단부터 새 문체로 다시 번역되고 이전 번역은 이력에 남습니다.</span>
+      </label>
       <button className="btn primary" disabled={!model.trim()} onClick={() => void create()}>프로필 적용</button>
       {activeProfileId && <p className="faint">현재 프로필 ID {activeProfileId.slice(0, 8)}…</p>}
       {msg && <p className="muted">{msg}</p>}

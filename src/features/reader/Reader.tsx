@@ -106,6 +106,17 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const userAnchor = useRef<ReaderAnchor | null>(null);
   const currentAnchor = useCallback((): ReaderAnchor | null => userAnchor.current ?? measureAnchor(), [measureAnchor]);
 
+  // Style / glossary changes alter the cache key: refresh display state so stale cells are
+  // marked and visible blocks are requested again with the new setting.
+  const styleKey = `${settings.translationStyle ?? 'polite'}|${JSON.stringify(settings.glossary ?? [])}`;
+  const lastStyleKey = useRef(styleKey);
+  useEffect(() => {
+    if (lastStyleKey.current === styleKey) return;
+    lastStyleKey.current = styleKey;
+    // Reloading display state re-renders the list, which re-reports the visible blocks.
+    void resync();
+  }, [styleKey, resync]);
+
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     window.__thoth = {

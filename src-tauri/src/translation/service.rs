@@ -159,7 +159,7 @@ impl TranslationService {
     }
 
     pub async fn on_settings_changed(&self, key: &str) {
-        if matches!(key, "glossary" | "promptTemplate") {
+        if matches!(key, "glossary" | "promptTemplate" | "translationStyle") {
             // Context changes the cache key; queued work for the old key is dropped.
             let keys: Vec<String> = self.queue.lock().unwrap().waiting.keys().cloned().collect();
             for k in keys {
@@ -230,7 +230,7 @@ impl TranslationService {
                 None => (translations::HeadRow { block_id: b.id.clone(), target_language: lang.clone(), ..Default::default() }, None, None),
             };
             let cached = match &current_key {
-                Some(k) => translations::cache_lookup(&self.db.reader, k).await?.map(|r| translations::DisplayRevision { revision_id: r.id, text: r.text, origin: r.origin, profile_id: r.profile_id, cache_key: r.cache_key }),
+                Some(k) => translations::cache_lookup(&self.db.reader, k).await?.map(|r| translations::DisplayRevision { warning: translations::warning_of(&r.metadata), revision_id: r.id, text: r.text, origin: r.origin, profile_id: r.profile_id, cache_key: r.cache_key }),
                 None => None,
             };
             let mut has_candidate = false;
@@ -796,7 +796,7 @@ impl TranslationService {
             cache_key: &e.cache_key,
             descriptor: &e.prepared.descriptor,
             text: &text,
-            metadata: &serde_json::json!({"generation": e.generation, "force": e.force, "parts": e.prepared.parts.len(), "languageWarning": prepare::language_warning(&text, &e.prepared.target_language)}),
+            metadata: &serde_json::json!({"generation": e.generation, "force": e.force, "parts": e.prepared.parts.len(), "languageWarning": prepare::language_warning(&text, &e.prepared.target_language), "scriptWarning": prepare::script_warning(&e.prepared, &text)}),
             is_current_profile: is_current,
             force: e.force,
         })

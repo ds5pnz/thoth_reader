@@ -163,6 +163,36 @@ pub fn looks_like_tool_call(raw: &str) -> bool {
     false
 }
 
+/// Scripts a model sometimes leaks into an answer ("오리гами"). Returns the name of a script
+/// that appears in `output` although it is neither the target script nor present in the source.
+pub fn unexpected_script(source: &str, output: &str, target_language: &str) -> Option<&'static str> {
+    const SCRIPTS: &[(&str, char, char, &[&str])] = &[
+        ("cyrillic", '\u{0400}', '\u{052F}', &["ru", "uk", "bg", "sr", "mk", "be", "kk", "mn"]),
+        ("greek", '\u{0370}', '\u{03FF}', &["el"]),
+        ("arabic", '\u{0600}', '\u{06FF}', &["ar", "fa", "ur"]),
+        ("hebrew", '\u{0590}', '\u{05FF}', &["he", "yi"]),
+        ("thai", '\u{0E00}', '\u{0E7F}', &["th"]),
+        ("devanagari", '\u{0900}', '\u{097F}', &["hi", "mr", "ne"]),
+    ];
+    let lang = target_language.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    for (name, lo, hi, langs) in SCRIPTS {
+        if langs.contains(&lang.as_str()) {
+            continue;
+        }
+        let has = |t: &str| t.chars().any(|c| (*lo..=*hi).contains(&c) && c.is_alphabetic());
+        // Greek letters are common in maths/units: require at least two in a row there.
+        let leaked = if *name == "greek" {
+            output.chars().collect::<Vec<_>>().windows(3).any(|w| w.iter().all(|c| (*lo..=*hi).contains(c) && c.is_alphabetic()))
+        } else {
+            has(output)
+        };
+        if leaked && !has(source) {
+            return Some(name);
+        }
+    }
+    None
+}
+
 /// True when the text clearly is not in the target script. Only a few scripts are checked;
 /// other languages never warn. Short texts never warn.
 pub fn language_mismatch(text: &str, target_language: &str) -> bool {
@@ -253,5 +283,16 @@ mod tests {
         assert!(!language_mismatch("Hi", "ko"));
         assert!(!language_mismatch("Hello there", "xx"));
         assert!(language_mismatch("안녕하세요 여러분", "en"));
+    }
+
+    #[test]
+    fn leaked_script_is_detected_only_when_absent_from_source() {
+        assert_eq!(unexpected_script("Origami needs paper.", "오리гами에는 종이가 필요합니다.", "ko"), Some("cyrillic"));
+        assert_eq!(unexpected_script("Origami needs paper.", "오리가미에는 종이가 필요합니다.", "ko"), None);
+        // Source already has Cyrillic (a quoted name): not a leak.
+        assert_eq!(unexpected_script("The word мир means peace.", "мир는 평화를 뜻합니다.", "ko"), None);
+        // Single Greek letters in formulas are fine.
+        assert_eq!(unexpected_script("The angle is small.", "각도 θ 는 작습니다.", "ko"), None);
+        assert_eq!(unexpected_script("Hello", "Привет", "ru"), None);
     }
 }

@@ -3,4 +3,8 @@
 /**
  * Display summary for many blocks at once.
  */
-export type DisplayRevision = { revisionId: string, text: string, origin: string, profileId: string | null, cacheKey: string | null, };
+export type DisplayRevision = { revisionId: string, text: string, origin: string, profileId: string | null, cacheKey: string | null, 
+/**
+ * e.g. "script:cyrillic" or "language" when the output looks wrong; a hint, not a failure.
+ */
+warning: string | null, };

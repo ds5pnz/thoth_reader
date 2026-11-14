@@ -155,7 +155,7 @@ pub async fn search_query(core: Core<'_>, window: WebviewWindow, meta: CommandMe
 pub const SETTING_KEYS: &[&str] = &[
     "theme", "fontSize", "fontFamily", "lineHeight", "defaultTargetLanguage", "defaultSourceLanguage",
     "activeProfileId", "autoTranslate", "syncScroll", "glossary", "promptTemplate", "diskWarningBytes",
-    "readingMode", "pdfView", "privacyAcknowledged",
+    "readingMode", "pdfView", "privacyAcknowledged", "translationStyle",
 ];
 
 pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
@@ -172,6 +172,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "diskWarningBytes" => v.as_u64().is_some(),
         "readingMode" => matches!(v.as_str(), Some("parallel" | "interleaved" | "original")),
         "pdfView" => matches!(v.as_str(), Some("original" | "reflow")),
+        "translationStyle" => matches!(v.as_str(), Some("polite" | "plain")),
         _ => false,
     };
     if ok { Ok(()) } else { Err(AppError::invalid(format!("설정 값이 올바르지 않습니다: {key}"))) }
