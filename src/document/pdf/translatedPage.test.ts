@@ -17,7 +17,7 @@ describe('translated page helpers', () => {
     expect(box.top).toBe(40); // 200 - (150 + 10)
     expect(box.height).toBe(22);
     expect(box.lines).toBe(2);
-    expect(box.fontSize).toBe(8);
+    expect(box.fontSize).toBeCloseTo(7.4, 5);
   });
   it('fits the font size by binary search and respects the minimum', () => {
     expect(fitFontSize(12, () => true)).toBe(12);

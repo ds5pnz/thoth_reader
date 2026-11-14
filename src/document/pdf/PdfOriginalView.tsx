@@ -463,7 +463,7 @@ function TranslatedPage({ meta, live, blocks, model, source, version, targetLang
             manual={d?.status === 'manual'}
             streaming={!text && !!preview}
             selected={b.id === highlightBlockId}
-            centered={b.kind === 'heading' && box.lines === 1 && box.centered}
+            centered={false}
             onClick={() => onPick(b)}
           />
         );

@@ -124,3 +124,7 @@ textarea.input { width: 100%; resize: vertical; line-height: 1.55; }
 .modal footer { padding: 10px 16px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Controls are not selectable text (a stray drag made button labels look highlighted). */
+button, .btn, .seg, .toolbar, .lib-header, .side-tabs, .badge { -webkit-user-select: none; user-select: none; }
+.doc-title { -webkit-user-select: text; user-select: text; }

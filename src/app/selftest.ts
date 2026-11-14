@@ -418,6 +418,14 @@ async function pdfLayout(res: Record<string, unknown>) {
     failed: document.querySelectorAll('.tp-slot.failed').length,
     horizontalScroll: pane ? pane.scrollWidth > pane.clientWidth + 1 : null,
   };
+  // Overlays must fully hide the original underneath, also when a translation is stale.
+  const opaque = (els: HTMLElement[]) => els.every((t) => { const cs = getComputedStyle(t); const m = /rgba?\(([^)]+)\)/.exec(cs.backgroundColor); const a = m ? m[1]!.split(',').map((x) => x.trim())[3] : '0'; return cs.opacity === '1' && (a === undefined || Number(a) === 1); });
+  const freshOpaque = opaque(texts);
+  await call('settings_patch', { key: 'translationStyle', value: 'plain', expectedVersion: null }).catch(() => {});
+  await window.__thoth?.reloadSettings?.();
+  await waitFor(() => document.querySelectorAll('.tp-text.stale').length > 0, 8000);
+  const stale = [...document.querySelectorAll<HTMLElement>('.tp-text.stale')];
+  res.opacity = { freshOpaque, staleCount: stale.length, staleOpaque: opaque(stale), buttonSelectable: getComputedStyle(document.querySelector('.seg button')!).webkitUserSelect !== 'none' };
   // popover: click a translated block
   texts[0]?.click();
   await sleep(300);

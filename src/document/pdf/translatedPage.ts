@@ -28,7 +28,7 @@ export function blockBox(b: Pick<Block, 'location'>, viewport: ViewportLike & { 
   const mid = (left + right) / 2;
   return {
     left, top, width: right - left, height: bottom - top,
-    fontSize: Math.max(5, median * 0.8),
+    fontSize: Math.max(5, median * 0.74),
     lines: css.length,
     centered: pageW > 0 && Math.abs(mid - pageW / 2) < pageW * 0.04 && left > pageW * 0.15,
   };
