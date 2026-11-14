@@ -1,0 +1,140 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [12 0 R 14 0 R 16 0 R 18 0 R] /Count 4 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic /Encoding /WinAnsiEncoding >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>
+endobj
+10 0 obj
+<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 64 >>
+stream
+Chç≤◊4Y~£»%Joîπﬁ;`Ö™œ,Qvõ¿ÂBgå±÷3X}¢«$Inì∏›:_Ñ©Œ+Puöø‰Afã∞’2W|°
+endstream
+endobj
+11 0 obj
+<<  /Length 1525 >>
+stream
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 72 756 Tm (Thoth Reader Fixture \227 Layout Recovery Notes) Tj ET
+BT /F2 20 Tf 0 Tw 0 Ts 1 0 0 1 72 700 Tm (Recovering Reading Order from PDF Text) Tj ET
+BT /F2 13 Tf 0 Tw 0 Ts 1 0 0 1 72 664 Tm (1 Introduction) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 640 Tm (Reading a PDF is not the same as reading its text. The file stores glyphs at absolute positions, and nothing) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 626.03 Tm (in the format says which line follows which or where a paragraph ends. A reader that wants to reflow the) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 612.06 Tm (text must rebuild that structure from geometry alone, line by line and column by column.) Tj ET
+BT /F3 7 Tf 0 Tw 0 Ts 1 0 0 1 539.065 644 Tm (1) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 590.09 Tm (This fixture exercises the simplest case: a single column of body text with a title, a few headings and a) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 576.12 Tm (footnote. Even here the recon-) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 562.15 Tm (struction has to cope with a superscript marker, a running header that repeats on every page, and page) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 548.18 Tm (numbers that change from one page to the next.) Tj ET
+BT /F3 6 Tf 0 Tw 0 Ts 1 0 0 1 72 95 Tm (1) Tj ET
+BT /F3 8 Tf 0 Tw 0 Ts 1 0 0 1 78 92 Tm (Footnotes are set in a smaller type at the bottom of the page and should be kept separate from the body text above them.) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 288 36 Tm (Page 1) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R >> >> /Contents 11 0 R >>
+endobj
+13 0 obj
+<<  /Length 1958 >>
+stream
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 72 756 Tm (Thoth Reader Fixture \227 Layout Recovery Notes) Tj ET
+BT /F2 13 Tf 0 Tw 0 Ts 1 0 0 1 72 700 Tm (2 Method) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 676 Tm (Lines are formed by grouping glyph runs that share a baseline and a font size. Runs that sit slightly above) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 662.03 Tm (the baseline, such as footnote markers, are attached to the line they decorate instead of starting a new one.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 648.06 Tm (Compound names such as Thoth-) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 634.09 Tm (Reader keep their hyphen when the line is joined.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 612.12 Tm (Paragraphs are then assembled from consecutive lines using vertical spacing, indentation and punctuation.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 598.15 Tm (A large gap or an indented first line starts a new paragraph, and a short line that ends a sentence usually) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 584.18 Tm (closes one.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 562.21 Tm (\225) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 86 562.21 Tm (Glyph runs are normalised so that rotated text is read along its own baseline.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 544.24 Tm (\225) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 86 544.24 Tm (Columns are separated by looking for tall rivers of white space between text.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 526.27 Tm (\225) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 86 526.27 Tm (Headings, captions and footnotes are classified from font size and position.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 504.3 Tm (The final paragraph on this page is deliberately cut in the middle of a sentence so that the extractor can) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 490.33 Tm (mark it as a candidate for continuation on the next page, without merging the two halves into) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 288 36 Tm (Page 2) Tj ET
+endstream
+endobj
+14 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R >> >> /Contents 13 0 R >>
+endobj
+15 0 obj
+<<  /Length 1063 >>
+stream
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 72 756 Tm (Thoth Reader Fixture \227 Layout Recovery Notes) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 700 Tm (one block. Merging across pages is left to a later version, because a wrong merge is much harder to undo) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 686.03 Tm (than a missing one.) Tj ET
+BT /F2 13 Tf 0 Tw 0 Ts 1 0 0 1 72 658.06 Tm (3 Results) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 634.06 Tm (On these synthetic pages the reading order is fully determined by the layout, which makes them useful as) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 620.09 Tm (regression tests rather than as a measure of real-world quality.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 598.12 Tm (1.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 88 598.12 Tm (Every block keeps the rectangles of its lines in PDF user space.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 580.15 Tm (2.) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 88 580.15 Tm (Every block records which text items and which code units it came from.) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 288 36 Tm (Page 3) Tj ET
+endstream
+endobj
+16 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R >> >> /Contents 15 0 R >>
+endobj
+17 0 obj
+<<  /Length 455 >>
+stream
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 72 756 Tm (Thoth Reader Fixture \227 Layout Recovery Notes) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 700 Tm (The last page is short. It only exists so that the running header and the page number appear on at least) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 686.03 Tm (three pages, which is the minimum the extractor needs before it calls something a running element.) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 288 36 Tm (Page 4) Tj ET
+endstream
+endobj
+18 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R >> >> /Contents 17 0 R >>
+endobj
+xref
+0 19
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000143 00000 n 
+0000000240 00000 n 
+0000000342 00000 n 
+0000000441 00000 n 
+0000000541 00000 n 
+0000000636 00000 n 
+0000000703 00000 n 
+0000000801 00000 n 
+0000001010 00000 n 
+0000002589 00000 n 
+0000002777 00000 n 
+0000004789 00000 n 
+0000004977 00000 n 
+0000006094 00000 n 
+0000006282 00000 n 
+0000006790 00000 n 
+trailer
+<< /Size 19 /Root 1 0 R >>
+startxref
+6978
+%%EOF

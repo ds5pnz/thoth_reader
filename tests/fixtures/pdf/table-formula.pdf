@@ -1,0 +1,95 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [12 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic /Encoding /WinAnsiEncoding >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>
+endobj
+10 0 obj
+<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 64 >>
+stream
+Chç≤◊4Y~£»%Joîπﬁ;`Ö™œ,Qvõ¿ÂBgå±÷3X}¢«$Inì∏›:_Ñ©Œ+Puöø‰Afã∞’2W|°
+endstream
+endobj
+11 0 obj
+<<  /Length 2314 >>
+stream
+BT /F2 14 Tf 0 Tw 0 Ts 1 0 0 1 72 720 Tm (Tables, Formulas and Code) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 696 Tm (Tables and formulas are not reflowed. They are kept as preserved blocks so that their layout is shown) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 682.03 Tm (from the original page and they are never sent for automatic translation.) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 72 662.06 Tm (Table 1: Synthetic measurements used by the extractor tests.) Tj ET
+BT /F2 9 Tf 0 Tw 0 Ts 1 0 0 1 90 642.06 Tm (Metric) Tj ET
+BT /F2 9 Tf 0 Tw 0 Ts 1 0 0 1 260 642.06 Tm (Target) Tj ET
+BT /F2 9 Tf 0 Tw 0 Ts 1 0 0 1 400 642.06 Tm (Measured) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 90 628.06 Tm (Precision) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 260 628.06 Tm (0.98) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 400 628.06 Tm (1.00) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 90 614.06 Tm (Recall) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 260 614.06 Tm (0.95) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 400 614.06 Tm (1.00) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 90 600.06 Tm (Order accuracy) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 260 600.06 Tm (0.98) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 400 600.06 Tm (1.00) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 574.06 Tm (The formula below is a single display line made of italic letters, symbols and an equation number.) Tj ET
+BT /F4 12 Tf 0 Tw 0 Ts 1 0 0 1 220 550.09 Tm (f) Tj ET
+BT /F3 12 Tf 0 Tw 0 Ts 1 0 0 1 225 550.09 Tm (\() Tj ET
+BT /F4 12 Tf 0 Tw 0 Ts 1 0 0 1 229 550.09 Tm (x) Tj ET
+BT /F3 12 Tf 0 Tw 0 Ts 1 0 0 1 235 550.09 Tm (\) =) Tj ET
+BT /F6 14 Tf 0 Tw 0 Ts 1 0 0 1 255 550.09 Tm (S) Tj ET
+BT /F4 12 Tf 0 Tw 0 Ts 1 0 0 1 268 550.09 Tm (a) Tj ET
+BT /F4 8 Tf 0 Tw 0 Ts 1 0 0 1 274 547.09 Tm (i) Tj ET
+BT /F4 12 Tf 0 Tw 0 Ts 1 0 0 1 279 550.09 Tm (x) Tj ET
+BT /F4 8 Tf 0 Tw 0 Ts 1 0 0 1 285 555.09 Tm (i) Tj ET
+BT /F3 12 Tf 0 Tw 0 Ts 1 0 0 1 500 550.09 Tm (\(1\)) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 522.09 Tm (A short code listing follows; its indentation must survive extraction.) Tj ET
+BT /F5 9 Tf 0 Tw 0 Ts 1 0 0 1 90 502.12 Tm (function add\(a, b\) {) Tj ET
+BT /F5 9 Tf 0 Tw 0 Ts 1 0 0 1 90 491.12 Tm (    return a + b;) Tj ET
+BT /F5 9 Tf 0 Tw 0 Ts 1 0 0 1 90 480.12 Tm (}) Tj ET
+BT /F3 11 Tf 0 Tw 0 Ts 1 0 0 1 72 459.12 Tm (After the code the prose resumes and should be translated normally.) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R >> >> /Contents 11 0 R >>
+endobj
+xref
+0 13
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000122 00000 n 
+0000000219 00000 n 
+0000000321 00000 n 
+0000000420 00000 n 
+0000000520 00000 n 
+0000000615 00000 n 
+0000000682 00000 n 
+0000000780 00000 n 
+0000000989 00000 n 
+0000003357 00000 n 
+trailer
+<< /Size 13 /Root 1 0 R >>
+startxref
+3545
+%%EOF

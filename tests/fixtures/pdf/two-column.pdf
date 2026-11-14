@@ -1,0 +1,114 @@
+%PDF-1.7
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [12 0 R 14 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman /Encoding /WinAnsiEncoding >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Italic /Encoding /WinAnsiEncoding >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Symbol >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold /Encoding /WinAnsiEncoding >>
+endobj
+10 0 obj
+<< /Type /XObject /Subtype /Image /Width 8 /Height 8 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length 64 >>
+stream
+Chç≤◊4Y~£»%Joîπﬁ;`Ö™œ,Qvõ¿ÂBgå±÷3X}¢«$Inì∏›:_Ñ©Œ+Puöø‰Afã∞’2W|°
+endstream
+endobj
+11 0 obj
+<<  /Length 2355 >>
+stream
+BT /F2 18 Tf 0 Tw 0 Ts 1 0 0 1 130 720 Tm (Reading Order in Multi-Column Pages) Tj ET
+BT /F1 10 Tf 0 Tw 0 Ts 1 0 0 1 245 700 Tm (Thoth Fixture Authors) Tj ET
+BT /F4 10 Tf 0 Tw 0 Ts 1 0 0 1 72 676 Tm (Abstract. Two-column layouts are common in papers and magazines. The extractor must read the left column) Tj ET
+BT /F4 10 Tf 0 Tw 0 Ts 1 0 0 1 72 664 Tm (completely before the right one, and it must never interleave lines that merely share a baseline.) Tj ET
+BT /F2 11 Tf 0 Tw 0 Ts 1 0 0 1 72 638 Tm (1 Introduction) Tj ET
+BT /F3 10 Tf 0.471 Tw 0 Ts 1 0 0 1 84 622 Tm (Multi-column pages place two or more text columns) Tj ET
+BT /F3 10 Tf 4.757 Tw 0 Ts 1 0 0 1 72 610 Tm (side by side. Their lines are often aligned to a) Tj ET
+BT /F3 10 Tf 3.095 Tw 0 Ts 1 0 0 1 72 598 Tm (common baseline grid, so a naive reader that sorts) Tj ET
+BT /F3 10 Tf 2.027 Tw 0 Ts 1 0 0 1 72 586 Tm (glyphs by height alone produces sentences that jump) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 72 574 Tm (across the gutter on every line.) Tj ET
+BT /F3 10 Tf 2.255 Tw 0 Ts 1 0 0 1 84 562 Tm (The gutter between columns is a vertical band of) Tj ET
+BT /F3 10 Tf 4.483 Tw 0 Ts 1 0 0 1 72 550 Tm (white space that runs through most of the page.) Tj ET
+BT /F3 10 Tf 2.318 Tw 0 Ts 1 0 0 1 72 538 Tm (Finding it is the first step towards a correct reading) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 72 526 Tm (order for the body text on the page.) Tj ET
+BT /F3 10 Tf 0.421 Tw 0 Ts 1 0 0 1 315 638 Tm (Once the gutter is known, every line can be assigned to) Tj ET
+BT /F3 10 Tf 0.557 Tw 0 Ts 1 0 0 1 315 626 Tm (the column on its side. Lines that cross the gutter, such) Tj ET
+BT /F3 10 Tf 1.568 Tw 0 Ts 1 0 0 1 315 614 Tm (as a title or a wide figure caption, split the page into) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 315 602 Tm (zones that are read from top to bottom.) Tj ET
+BT /F2 11 Tf 0 Tw 0 Ts 1 0 0 1 315 586 Tm (2 Background) Tj ET
+BT /F3 10 Tf 0.416 Tw 0 Ts 1 0 0 1 327 570 Tm (Inside each zone the left column is read first and the) Tj ET
+BT /F3 10 Tf 5.001 Tw 0 Ts 1 0 0 1 315 558 Tm (right column second. Within a column the lines) Tj ET
+BT /F3 10 Tf 3.439 Tw 0 Ts 1 0 0 1 315 546 Tm (simply follow each other from top to bottom, and) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 315 534 Tm (paragraphs are separated by indentation.) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 300 36 Tm (1) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R >> >> /Contents 11 0 R >>
+endobj
+13 0 obj
+<<  /Length 1630 >>
+stream
+BT /F3 10 Tf 2.255 Tw 0 Ts 1 0 0 1 84 720 Tm (The gutter between columns is a vertical band of) Tj ET
+BT /F3 10 Tf 4.483 Tw 0 Ts 1 0 0 1 72 708 Tm (white space that runs through most of the page.) Tj ET
+BT /F3 10 Tf 2.318 Tw 0 Ts 1 0 0 1 72 696 Tm (Finding it is the first step towards a correct reading) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 72 684 Tm (order for the body text on the page.) Tj ET
+BT /F3 10 Tf 0.416 Tw 0 Ts 1 0 0 1 327 720 Tm (Inside each zone the left column is read first and the) Tj ET
+BT /F3 10 Tf 5.001 Tw 0 Ts 1 0 0 1 315 708 Tm (right column second. Within a column the lines) Tj ET
+BT /F3 10 Tf 3.439 Tw 0 Ts 1 0 0 1 315 696 Tm (simply follow each other from top to bottom, and) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 315 684 Tm (paragraphs are separated by indentation.) Tj ET
+q 468 0 0 150 72 502 cm /Im1 Do Q
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 72 482 Tm (Figure 1: A wide caption that crosses the gutter splits the page into two zones of columns.) Tj ET
+BT /F3 10 Tf 3.289 Tw 0 Ts 1 0 0 1 84 458 Tm (Below the figure the two columns resume. This) Tj ET
+BT /F3 10 Tf 1.764 Tw 0 Ts 1 0 0 1 72 446 Tm (second zone must be read after the caption and must) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 72 434 Tm (again keep the left column before the right column.) Tj ET
+BT /F3 10 Tf 0.091 Tw 0 Ts 1 0 0 1 327 458 Tm (The right column of the second zone closes the page.) Tj ET
+BT /F3 10 Tf 1.139 Tw 0 Ts 1 0 0 1 315 446 Tm (Its first line shares a baseline with the first line of the) Tj ET
+BT /F3 10 Tf 0 Tw 0 Ts 1 0 0 1 315 434 Tm (left column in the same zone.) Tj ET
+BT /F1 9 Tf 0 Tw 0 Ts 1 0 0 1 300 36 Tm (2) Tj ET
+endstream
+endobj
+14 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R /F2 4 0 R /F3 5 0 R /F4 6 0 R /F5 7 0 R /F6 8 0 R /F7 9 0 R >> /XObject << /Im1 10 0 R >> >> /Contents 13 0 R >>
+endobj
+xref
+0 15
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000129 00000 n 
+0000000226 00000 n 
+0000000328 00000 n 
+0000000427 00000 n 
+0000000527 00000 n 
+0000000622 00000 n 
+0000000689 00000 n 
+0000000787 00000 n 
+0000000996 00000 n 
+0000003405 00000 n 
+0000003593 00000 n 
+0000005277 00000 n 
+trailer
+<< /Size 15 /Root 1 0 R >>
+startxref
+5492
+%%EOF
