@@ -10,7 +10,7 @@ import type { ReaderModel } from '../../features/reader/useReaderSession';
 import { TranslationCell, type CellActions } from '../../features/translation/TranslationCell';
 import { pdfRectToCss, cssPointToPdf, hitTest } from './coords';
 import { isVisible, pickAnchor, ScrollOrigin, Debouncer, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
-import { openSessionPdf } from './sessionPdf';
+import { openSessionPdf, releaseSessionPdf } from './sessionPdf';
 
 export interface PdfOriginalHandle {
   getAnchor: () => { blockId: string; ratio: number } | null;
@@ -21,7 +21,7 @@ export interface PdfOriginalHandle {
 const MAX_LIVE_CANVASES = 5;
 const SCALE = 1.35;
 
-type PageMeta = { index: number; width: number; height: number; viewport: PageViewport };
+type PageMeta = { index: number; width: number; height: number; viewport: PageViewport | null };
 
 export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   session: ReaderSessionDto;
@@ -54,22 +54,17 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   // Load the PDF via the thoth-doc protocol (Range requests, bundled worker, eval off).
   useEffect(() => {
     let cancelled = false;
-    let opened: PDFDocumentProxy | null = null;
     openSessionPdf(session).then(async (d) => {
-      if (cancelled) { void d.destroy(); return; }
-      opened = d;
-      const metas: PageMeta[] = [];
-      for (let i = 0; i < d.numPages; i++) {
-        // Page viewports are cheap; sizes are needed for layout before rendering.
-        const p = await d.getPage(i + 1);
-        const vp = p.getViewport({ scale: SCALE });
-        metas.push({ index: i, width: vp.width, height: vp.height, viewport: vp });
-        if (i > 2000) break;
-      }
+      if (cancelled) return;
+      // Only page 1 is measured eagerly; other pages use its size until they come near
+      // the viewport (2,000-page documents must not touch every page up front).
+      const p1 = await d.getPage(1);
+      const vp1 = p1.getViewport({ scale: SCALE });
+      const metas: PageMeta[] = Array.from({ length: d.numPages }, (_, i) => ({ index: i, width: vp1.width, height: vp1.height, viewport: i === 0 ? vp1 : null }));
       if (!cancelled) { setDoc(d); setPages(metas); }
     }).catch((e: unknown) => setError(String((e as Error)?.message ?? e)));
-    return () => { cancelled = true; void opened?.destroy(); };
-  }, [session]);
+    return () => { cancelled = true; releaseSessionPdf(session); };
+  }, [session.assetToken]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const sectionByPage = useMemo(() => {
     const m = new Map<number, string>();
@@ -107,7 +102,18 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     const next = new Set(near.slice(0, MAX_LIVE_CANVASES).map((x) => x.i));
     setLive((prev) => (prev.size === next.size && [...next].every((x) => prev.has(x)) ? prev : next));
     for (const i of next) { const sid = sectionByPage.get(i); if (sid) loadSection(sid); }
-  }, [pages.length, sectionByPage, loadSection]);
+    // Measure real viewports for live pages (rotation/crop may differ per page).
+    if (doc) {
+      for (const i of next) {
+        if (pages[i] && !pages[i]!.viewport) {
+          void doc.getPage(i + 1).then((pg) => {
+            const vp = pg.getViewport({ scale: SCALE });
+            setPages((prev) => prev.map((m) => (m.index === i ? { ...m, viewport: vp, width: vp.width, height: vp.height } : m)));
+          });
+        }
+      }
+    }
+  }, [pages, doc, sectionByPage, loadSection]);
 
   // Visibility: viewport ∩ block rects (same rule as the reflow view).
   const report = useCallback(() => {
@@ -117,13 +123,14 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     const ids: string[] = [];
     const cands: { id: string; top: number; bottom: number }[] = [];
     for (const pm of pages) {
-      if (!live.has(pm.index)) continue;
+      if (!live.has(pm.index) || !pm.viewport) continue;
+      const pv = pm.viewport;
       const node = el.querySelector<HTMLElement>(`[data-page="${pm.index}"]`);
       if (!node) continue;
       const pr = node.getBoundingClientRect();
       for (const b of blocksByPage.get(pm.index) ?? []) {
         if (b.location.kind !== 'pdf' || !b.location.rects.length || !translatable(b)) continue;
-        const css = b.location.rects.map((r) => pdfRectToCss(r, pm.viewport));
+        const css = b.location.rects.map((r) => pdfRectToCss(r, pv));
         const top = pr.top + Math.min(...css.map((c) => c.top));
         const bottom = pr.top + Math.max(...css.map((c) => c.top + c.height));
         if (isVisible({ top, bottom, height: bottom - top }, { top: vp.top, bottom: vp.bottom, height: vp.height })) ids.push(b.id);
@@ -165,7 +172,15 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
       if (!b || b.location.kind !== 'pdf' || !b.location.rects.length) continue;
       const node = el.querySelector<HTMLElement>(`[data-page="${pm.index}"]`);
       if (!node) return false;
-      const css = b.location.rects.map((r) => pdfRectToCss(r, pm.viewport));
+      if (!pm.viewport) {
+        // Bring the page in first; the caller retries after measurement.
+        origin.current.markProgrammatic(300);
+        el.scrollTop = node.offsetTop;
+        setTimeout(() => scrollRetry.current?.(blockId, ratio), 120);
+        return true;
+      }
+      const pvp = pm.viewport;
+      const css = b.location.rects.map((r) => pdfRectToCss(r, pvp));
       const top = Math.min(...css.map((c) => c.top));
       const bottom = Math.max(...css.map((c) => c.top + c.height));
       origin.current.markProgrammatic(300);
@@ -176,6 +191,9 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     }
     return false;
   }, [pages, blocksByPage]);
+
+  const scrollRetry = useRef<((id: string, r: number) => void) | null>(null);
+  scrollRetry.current = (id, r) => { scrollToBlockImpl(id, r); };
 
   useImperativeHandle(ref, () => ({
     getAnchor() {
@@ -277,6 +295,7 @@ function PdfPage({ doc, meta, live, blocks, sectionState, highlightBlockId, onPi
   const onClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (window.getSelection()?.toString()) return; // text selection, not a block pick
     const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
+    if (!meta.viewport) return;
     const p = cssPointToPdf(e.clientX - r.left, e.clientY - r.top, meta.viewport);
     const b = hitTest(blocks, p, 2);
     if (b) onPick(b);
@@ -285,8 +304,8 @@ function PdfPage({ doc, meta, live, blocks, sectionState, highlightBlockId, onPi
     <div className="pdf-page" data-page={meta.index} style={{ width: meta.width, height: meta.height }} onClick={onClick}>
       {live ? <canvas ref={canvasRef} aria-hidden="true" /> : null}
       <div ref={textRef} className="textLayer" />
-      {hl && hl.location.kind === 'pdf' && hl.location.rects.map((r, i) => {
-        const c = pdfRectToCss(r, meta.viewport);
+      {hl && hl.location.kind === 'pdf' && meta.viewport && hl.location.rects.map((r, i) => {
+        const c = pdfRectToCss(r, meta.viewport!);
         return <div key={i} className="pdf-hl" style={{ left: c.left, top: c.top, width: c.width, height: c.height }} />;
       })}
       {sectionState === 'failed' && <span className="badge danger page-badge">추출 실패</span>}

@@ -11,7 +11,8 @@ export function setPasswordAsker(fn: PasswordAsker) {
   asker = fn;
 }
 
-const cache = new Map<string, Promise<PDFDocumentProxy>>();
+type Entry = { p: Promise<{ doc: PDFDocumentProxy; task: { destroy(): Promise<void> } }>; refs: number };
+const cache = new Map<string, Entry>();
 
 export function sessionPdfUrl(session: ReaderSessionDto) {
   return `thoth-doc://localhost/${session.assetToken}/pdf`;
@@ -20,34 +21,25 @@ export function sessionPdfUrl(session: ReaderSessionDto) {
 /** One PDFDocumentProxy per session token shared by the renderer and the extractor. */
 export function openSessionPdf(session: ReaderSessionDto): Promise<PDFDocumentProxy> {
   const key = session.assetToken;
-  let p = cache.get(key);
-  if (!p) {
-    p = loadPdfDocument({ url: sessionPdfUrl(session), onPassword: (r) => asker(r) }).then((x) => x.doc);
+  let e = cache.get(key);
+  if (!e) {
+    const p = loadPdfDocument({ url: sessionPdfUrl(session), onPassword: (r) => asker(r) });
+    e = { p, refs: 0 };
     p.catch(() => cache.delete(key));
-    cache.set(key, p);
+    cache.set(key, e);
   }
-  return p.then((d) => wrap(d, key));
+  e.refs += 1;
+  return e.p.then((x) => x.doc);
 }
 
-// destroy() from one consumer must not kill the shared document; real destroy on release.
-const refs = new Map<string, number>();
-function wrap(d: PDFDocumentProxy, key: string): PDFDocumentProxy {
-  refs.set(key, (refs.get(key) ?? 0) + 1);
-  return new Proxy(d, {
-    get(target, prop, recv) {
-      if (prop === 'destroy') {
-        return async () => {
-          const n = (refs.get(key) ?? 1) - 1;
-          refs.set(key, n);
-          if (n <= 0) {
-            refs.delete(key);
-            cache.delete(key);
-            await target.destroy();
-          }
-        };
-      }
-      const v = Reflect.get(target, prop, recv);
-      return typeof v === 'function' ? v.bind(target) : v;
-    },
-  });
+/** Release one reference; the worker and network are torn down with the last one. */
+export function releaseSessionPdf(session: ReaderSessionDto): void {
+  const key = session.assetToken;
+  const e = cache.get(key);
+  if (!e) return;
+  e.refs -= 1;
+  if (e.refs <= 0) {
+    cache.delete(key);
+    void e.p.then((x) => x.task.destroy()).catch(() => {});
+  }
 }

@@ -6,7 +6,7 @@ import { call } from '../../ipc/client';
 import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
 import type { ExtractionBeginResult } from '../../ipc/generated/ExtractionBeginResult';
 import type { Block } from '../../ipc/generated/Block';
-import { openSessionPdf } from './sessionPdf';
+import { openSessionPdf, releaseSessionPdf } from './sessionPdf';
 import { buildPageInput } from './pageInput';
 import { PdfExtractClient } from './extractClient';
 import { canonicalJson } from '../../domain/canonicalJson';
@@ -122,7 +122,7 @@ export function usePdfExtraction(session: ReaderSessionDto | null, refreshSectio
           await new Promise((r) => setTimeout(r, i === 0 ? 0 : 30));
         }
       } finally {
-        void doc.destroy();
+        releaseSessionPdf(session);
       }
     })().catch(() => {});
     return () => { cancelled = true; client.dispose(); };
