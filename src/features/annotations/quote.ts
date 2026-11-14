@@ -83,3 +83,59 @@ export function findAll(container: Node, query: string, cap = 200): Range[] {
   }
   return out;
 }
+
+/** Like [`inkOf`], limited to the part of the document inside `range` (any document). */
+export function inkOfRange(range: Range): InkText {
+  const nodes: Text[] = [];
+  const offsets: number[] = [];
+  let text = '';
+  const root = range.commonAncestorContainer;
+  const doc = root.ownerDocument ?? (root as Document);
+  const take = (t: Text) => {
+    const from = t === range.startContainer ? range.startOffset : 0;
+    const to = t === range.endContainer ? range.endOffset : t.data.length;
+    for (let i = from; i < to; i++) {
+      const ch = t.data[i]!;
+      if (/\s/u.test(ch)) continue;
+      text += ch;
+      nodes.push(t);
+      offsets.push(i);
+    }
+  };
+  if (root.nodeType === 3) {
+    take(root as Text);
+    return { text, nodes, offsets };
+  }
+  const walker = doc.createTreeWalker(root, 4 /* NodeFilter.SHOW_TEXT */);
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (range.intersectsNode(n)) take(n as Text);
+  }
+  return { text, nodes, offsets };
+}
+
+function rangeIn(doc: Document, t: InkText, start: number, length: number): Range | null {
+  const end = start + length - 1;
+  if (start < 0 || length <= 0 || end >= t.nodes.length) return null;
+  const r = doc.createRange();
+  r.setStart(t.nodes[start]!, t.offsets[start]!);
+  r.setEnd(t.nodes[end]!, t.offsets[end]! + 1);
+  return r;
+}
+
+export function findQuoteInRange(range: Range, quote: string, occurrence: number): Range | null {
+  const t = inkOfRange(range);
+  const q = ink(quote);
+  const doc = range.startContainer.ownerDocument;
+  return doc ? rangeIn(doc, t, nthIndex(t.text, q, occurrence), q.length) : null;
+}
+
+/** Ink characters of `range` that come before the point (node, offset). */
+export function inkBefore(range: Range, node: Node, offset: number): number {
+  const r = range.cloneRange();
+  try {
+    r.setEnd(node, offset);
+  } catch {
+    return 0;
+  }
+  return inkOfRange(r).text.length;
+}

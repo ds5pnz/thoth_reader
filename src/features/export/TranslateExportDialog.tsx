@@ -11,7 +11,7 @@ import { chaptersOf, etaClock, formatEta, parsePageRanges, sectionsInRanges, typ
 import { exportSideBySide, exportTypeset, type ExportProgress } from './pdfExport';
 
 type Scope = 'all' | 'pages' | 'chapters';
-type Format = 'pdf-sbs' | 'pdf' | 'html' | 'markdown' | 'text';
+type Format = 'pdf-sbs' | 'pdf' | 'epub' | 'html' | 'markdown' | 'text';
 
 export function BatchLine({ batch }: { batch: BatchStatus }) {
   const settled = batch.done + batch.failed + batch.skipped;
@@ -47,7 +47,7 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
   const [scope, setScope] = useState<Scope>('all');
   const [pages, setPages] = useState(`${currentPage + 1}-${Math.min(sections.length, currentPage + 10)}`);
   const [picked, setPicked] = useState<Set<number>>(new Set());
-  const [format, setFormat] = useState<Format>(isPdf ? 'pdf-sbs' : 'pdf');
+  const [format, setFormat] = useState<Format>(isPdf ? 'pdf-sbs' : 'epub');
   const [bilingual, setBilingual] = useState(false);
   const [busy, setBusy] = useState<ExportProgress | 'saving' | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -152,6 +152,7 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
             <div className="tx-row">
               <select className="input" value={format} onChange={(e) => setFormat(e.target.value as Format)} disabled={exporting} aria-label="형식">
                 {isPdf && <option value="pdf-sbs">PDF — 원문과 번역 나란히</option>}
+                <option value="epub">EPUB — 번역된 전자책</option>
                 <option value="pdf">PDF — 번역문 조판</option>
                 <option value="html">HTML</option>
                 <option value="markdown">Markdown</option>
@@ -161,6 +162,7 @@ export function TranslateExportDialog({ session, sections, batch, onBatch, curre
             </div>
             <p className="faint tx-note">
               {format === 'pdf-sbs' ? '쪽마다 왼쪽에 원문, 오른쪽에 번역을 놓습니다. 번역되지 않은 문단은 원문 그대로 남습니다. 글자는 이미지로 저장됩니다.' :
+                format === 'epub' ? (isPdf ? '번역문을 전자책으로 만듭니다. 글자는 그대로 살아 있고, PDF 원본의 그림은 포함되지 않습니다.' : '번역문을 전자책으로 만듭니다. 글자는 그대로 살아 있고 책의 그림도 포함됩니다.') :
                 format === 'pdf' ? '번역문을 A4로 조판합니다. 그림은 포함되지 않고, 글자는 이미지로 저장됩니다.' :
                   '글만 내보냅니다. 번역되지 않은 문단은 원문으로 들어갑니다.'}
             </p>

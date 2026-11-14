@@ -131,6 +131,10 @@ export function useHighlightPainter(root: RefObject<HTMLElement | null>, items: 
 
 export interface SelectionTarget { blockId: string; side: 'source' | 'translation'; quote: string; occurrence: number; rect: DOMRect }
 
+/** A selection made somewhere this document cannot see (the EPUB iframe). */
+export const EXTERNAL_SELECTION = 'thoth:selection';
+export interface ExternalSelection { target: SelectionTarget | null; clear: () => void }
+
 /** What the current text selection refers to, if it lies inside one paragraph. */
 export function selectionTarget(root: HTMLElement, pageBlocks: (page: number) => readonly Block[]): SelectionTarget | null {
   const s = window.getSelection();
@@ -206,6 +210,7 @@ export function SelectionToolbar({ root, pageBlocks, onCreate, onTranslate, para
   const [note, setNote] = useState('');
   const barRef = useRef<HTMLDivElement>(null);
   const keep = useRef(false);
+  const external = useRef<ExternalSelection | null>(null);
   keep.current = result !== null;
   const pb = useRef(pageBlocks);
   pb.current = pageBlocks;
@@ -217,17 +222,29 @@ export function SelectionToolbar({ root, pageBlocks, onCreate, onTranslate, para
         if (barRef.current?.contains(document.activeElement)) return; // typing a note
         if (keep.current) return; // showing a translation of the (now cleared) selection
         const el = root.current;
-        setTarget(el ? selectionTarget(el, pb.current) : null);
+        const own = el ? selectionTarget(el, pb.current) : null;
+        if (!own && external.current) return; // the iframe's selection is still there
+        external.current = null;
+        setTarget(own);
         setNoting(false);
         setNote('');
         setResult(null);
       }, 180);
     };
+    const onExternal = (e: Event) => {
+      const d = (e as CustomEvent<ExternalSelection>).detail;
+      if (barRef.current?.contains(document.activeElement) || keep.current) return;
+      external.current = d.target ? d : null;
+      setTarget(d.target);
+      setNoting(false);
+      setNote('');
+    };
     document.addEventListener('selectionchange', update);
-    return () => { window.clearTimeout(timer); document.removeEventListener('selectionchange', update); };
+    window.addEventListener(EXTERNAL_SELECTION, onExternal);
+    return () => { window.clearTimeout(timer); document.removeEventListener('selectionchange', update); window.removeEventListener(EXTERNAL_SELECTION, onExternal); };
   }, [root]);
   if (!target) return null;
-  const close = () => { setResult(null); keep.current = false; window.getSelection()?.removeAllRanges(); setTarget(null); };
+  const close = () => { setResult(null); keep.current = false; external.current?.clear(); external.current = null; window.getSelection()?.removeAllRanges(); setTarget(null); };
   const copied = (ok: boolean) => toast({ kind: ok ? 'info' : 'error', text: ok ? '복사했습니다.' : '복사하지 못했습니다.' });
   const pair = paragraphPair?.(target.blockId) ?? null;
   const translate = async () => {

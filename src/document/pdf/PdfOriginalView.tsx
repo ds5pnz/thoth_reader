@@ -73,6 +73,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   const [doc, setDoc] = useState<PDFDocumentProxy | null>(null);
   const [bases, setBases] = useState<PageBase[]>([]);
   const [paneWidth, setPaneWidth] = useState(0);
+  const [paneHeight, setPaneHeight] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [rendered, setRendered] = useState<Map<number, number>>(new Map());
   const canvases = useRef(new Map<number, HTMLCanvasElement>());
@@ -101,8 +102,27 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
       return v;
     });
   }, []);
-  const zoomStep = useCallback((dirn: 1 | -1) => setZoom((z) => (dirn > 0 ? ZOOM_STEPS.find((x) => x > z + 0.001) ?? 4 : [...ZOOM_STEPS].reverse().find((x) => x < z - 0.001) ?? 0.5)), [setZoom]);
-  const scale = Math.max(0.2, Math.round(fitScale * zoom * 100) / 100);
+  const zoomStepFrom = useCallback((dirn: 1 | -1) => setZoom((z) => (dirn > 0 ? ZOOM_STEPS.find((x) => x > z + 0.001) ?? 4 : [...ZOOM_STEPS].reverse().find((x) => x < z - 0.001) ?? 0.5)), [setZoom]);
+  // "Fit page": the whole page height in view. Stays in effect (window resizes follow it)
+  // until the reader zooms by hand.
+  const [fitPage, setFitPageState] = useState(() => { try { return localStorage.getItem('thoth.pdfFit') === 'page'; } catch { return false; } });
+  const setFitPage = useCallback((on: boolean) => { try { localStorage.setItem('thoth.pdfFit', on ? 'page' : 'width'); } catch { /* private mode */ } setFitPageState(on); }, []);
+  const pageZoom = useMemo(() => {
+    const bh = bases[0]?.bh ?? 0;
+    if (!bh || !paneHeight) return 1;
+    return Math.max(0.2, Math.min(1, (paneHeight - GUTTER * 2) / (bh * fitScale)));
+  }, [bases, paneHeight, fitScale]);
+  const effectiveZoom = fitPage ? pageZoom : zoom;
+  const scale = Math.max(0.2, Math.round(fitScale * effectiveZoom * 100) / 100);
+  // Manual zoom starts from what is on screen (also when leaving "fit page").
+  const fitRef = useRef({ fitPage, pageZoom });
+  fitRef.current = { fitPage, pageZoom };
+  const zoomStep = useCallback((dirn: 1 | -1) => {
+    if (fitRef.current.fitPage) { setZoom(fitRef.current.pageZoom); setFitPage(false); }
+    zoomStepFrom(dirn);
+  }, [setZoom, setFitPage, zoomStepFrom]);
+  const fitWidth = useCallback(() => { setFitPage(false); setZoom(1); }, [setFitPage, setZoom]);
+  const [near, setNear] = useState(false);
   const [curPage, setCurPage] = useState(0);
   const history = useRef<number[]>([]);
   const [canGoBack, setCanGoBack] = useState(false);
@@ -235,9 +255,10 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   useEffect(() => {
     const el = pagesRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setPaneWidth(el.clientWidth));
+    const ro = new ResizeObserver(() => { setPaneWidth(el.clientWidth); setPaneHeight(el.clientHeight); });
     ro.observe(el);
     setPaneWidth(el.clientWidth);
+    setPaneHeight(el.clientHeight);
     return () => ro.disconnect();
   }, []);
 
@@ -336,7 +357,17 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   useShortcut('mod+=', () => zoomStep(1));
   useShortcut('mod++', () => zoomStep(1));
   useShortcut('mod+-', () => zoomStep(-1));
-  useShortcut('mod+0', () => setZoom(1));
+  useShortcut('mod+0', () => fitWidth());
+  // Page by page: Space / Shift+Space, ← →, Page Up / Page Down.
+  const curRef = useRef(curPage);
+  curRef.current = curPage;
+  const stepPage = useCallback((d: 1 | -1) => scrollToPage(curRef.current + d * (spread ? 2 : 1), null, false), [scrollToPage, spread]);
+  useShortcut(' ', () => stepPage(1));
+  useShortcut('shift+ ', () => stepPage(-1));
+  useShortcut('arrowright', () => stepPage(1));
+  useShortcut('arrowleft', () => stepPage(-1));
+  useShortcut('pagedown', () => stepPage(1));
+  useShortcut('pageup', () => stepPage(-1));
   useShortcut('mod+[', () => goBack());
 
   // Pinch (trackpad sends ctrl+wheel) zooms instead of scrolling.
@@ -346,11 +377,12 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
     const onWheel = (e: WheelEvent) => {
       if (!e.ctrlKey) return;
       e.preventDefault();
+      if (fitRef.current.fitPage) { setZoom(fitRef.current.pageZoom); setFitPage(false); }
       setZoom((z) => z * Math.exp(-e.deltaY * 0.01));
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, [setZoom]);
+  }, [setZoom, setFitPage]);
 
   const scrollRetry = useRef<((id: string, r: number) => void) | null>(null);
   scrollRetry.current = (id, r) => { scrollToBlockImpl(id, r); };
@@ -414,7 +446,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   const hlId = highlightBlockId ?? selectedId;
   void syncScroll; // both pages share one scroller: nothing to synchronise
   return (
-    <div className="pdf-split only">
+    <div className="pdf-split only" onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const n = r.bottom - e.clientY < 110; setNear((v) => (v === n ? v : n)); }} onMouseLeave={() => setNear(false)}>
       <div ref={pagesRef} className={`pdf-pages ${mode === 'original' ? 'single' : 'dual'} ${night ? 'night' : ''}`} onScroll={onScroll} tabIndex={0} aria-label="PDF 페이지">
         {pageRows.map((row) => (
           <div key={row[0]!.index} className="pdf-row" style={{ gap: spread ? 2 : GUTTER, height: Math.max(...row.map((x) => x.height)), marginBottom: GUTTER, padding: `0 ${GUTTER}px` }}>
@@ -459,13 +491,16 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
         <PdfControls
           page={curPage}
           total={pages.length}
-          zoom={zoom}
+          zoom={effectiveZoom}
+          near={near}
+          fit={fitPage ? 'page' : Math.abs(zoom - 1) < 0.005 ? 'width' : null}
+          onFitWidth={fitWidth}
+          onFitPage={() => setFitPage(true)}
           canGoBack={canGoBack}
           onPage={(i) => scrollToPage(i)}
           onBack={goBack}
           onZoomIn={() => zoomStep(1)}
           onZoomOut={() => zoomStep(-1)}
-          onZoomReset={() => setZoom(1)}
           spread={mode === 'original' ? spreadPref : null}
           onSpread={toggleSpread}
           night={night}
@@ -486,9 +521,10 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   );
 });
 
-function PdfControls({ page, total, zoom, canGoBack, onPage, onBack, onZoomIn, onZoomOut, onZoomReset, spread, onSpread, night, onNight }: {
+function PdfControls({ page, total, zoom, near, fit, onFitWidth, onFitPage, canGoBack, onPage, onBack, onZoomIn, onZoomOut, spread, onSpread, night, onNight }: {
+  near: boolean; fit: 'width' | 'page' | null; onFitWidth: () => void; onFitPage: () => void;
   spread: boolean | null; onSpread: () => void; night: boolean; onNight: () => void;
-  page: number; total: number; zoom: number; canGoBack: boolean; onPage: (index: number) => void; onBack: () => void; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
+  page: number; total: number; zoom: number; canGoBack: boolean; onPage: (index: number) => void; onBack: () => void; onZoomIn: () => void; onZoomOut: () => void;
 }) {
   const [draft, setDraft] = useState<string | null>(null);
   const commit = () => {
@@ -497,7 +533,7 @@ function PdfControls({ page, total, zoom, canGoBack, onPage, onBack, onZoomIn, o
     if (draft !== null && Number.isInteger(n) && n >= 1 && n <= total) onPage(n - 1);
   };
   return (
-    <div className="pdf-controls" role="toolbar" aria-label="PDF 보기 도구">
+    <div className={`pdf-controls ${near ? 'near' : ''}`} role="toolbar" aria-label="PDF 보기 도구">
       <button className="btn icon ghost" onClick={onBack} disabled={!canGoBack} title="이전 위치로 (⌘[)" aria-label="이전 위치로 돌아가기">↩</button>
       <label className="pdf-pageno">
         <input
@@ -514,8 +550,10 @@ function PdfControls({ page, total, zoom, canGoBack, onPage, onBack, onZoomIn, o
       </label>
       <span className="pdf-controls-sep" aria-hidden="true" />
       <button className="btn icon ghost" onClick={onZoomOut} disabled={zoom <= 0.5} title="축소 (⌘−)" aria-label="축소">−</button>
-      <button className="btn ghost pdf-zoom" onClick={onZoomReset} title="폭에 맞춤 (⌘0)" aria-label={`배율 ${Math.round(zoom * 100)}%, 폭에 맞춤으로 되돌리기`}>{Math.round(zoom * 100)}%</button>
+      <span className="pdf-zoom" aria-label={`배율 ${Math.round(zoom * 100)}%`}>{Math.round(zoom * 100)}%</span>
       <button className="btn icon ghost" onClick={onZoomIn} disabled={zoom >= 4} title="확대 (⌘+)" aria-label="확대">+</button>
+      <button className={`btn ghost ${fit === 'width' ? 'active' : ''}`} onClick={onFitWidth} aria-pressed={fit === 'width'} title="폭에 맞춤 (⌘0)">폭 맞춤</button>
+      <button className={`btn ghost ${fit === 'page' ? 'active' : ''}`} onClick={onFitPage} aria-pressed={fit === 'page'} title="한 쪽이 화면에 다 보이게">쪽 맞춤</button>
       <span className="pdf-controls-sep" aria-hidden="true" />
       <button className={`btn ghost ${night ? 'active' : ''}`} onClick={onNight} aria-pressed={night} title="어두운 페이지 (색 반전)">야간</button>
       {spread !== null && (

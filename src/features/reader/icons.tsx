@@ -19,3 +19,19 @@ export const IconGear = () => (
 export const IconSidebar = () => (
   <svg {...base}><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.8" /><path d="M6 2.8v10.4" /></svg>
 );
+
+export const IconLibrary = () => (
+  <svg {...base}><path d="M2.6 2.8h2.6v10.4H2.6zM6.2 2.8h2.6v10.4H6.2z" /><path d="m10.2 4 2.4-.7 2.2 9.3-2.4.7z" /></svg>
+);
+
+export const IconExport = () => (
+  <svg {...base}><path d="M8 10V2.4M5.2 5 8 2.2 10.8 5" /><path d="M3 9.4v3a1.2 1.2 0 0 0 1.2 1.2h7.6A1.2 1.2 0 0 0 13 12.4v-3" /></svg>
+);
+
+export const IconFullscreen = () => (
+  <svg {...base}><path d="M2.6 6V2.6H6M10 2.6h3.4V6M13.4 10v3.4H10M6 13.4H2.6V10" /></svg>
+);
+
+export const IconFullscreenExit = () => (
+  <svg {...base}><path d="M6 2.6V6H2.6M13.4 6H10V2.6M10 13.4V10h3.4M2.6 10H6v3.4" /></svg>
+);

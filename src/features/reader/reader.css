@@ -7,8 +7,11 @@
 .lang-pair .arrow { color: var(--fg-faint); }
 .banner { padding: 6px 14px; font-size: 12px; display: flex; gap: 8px; align-items: center; border-bottom: 1px solid var(--border); }
 .banner.warn { background: var(--warn-soft); color: var(--warn); }
-.reader-body { flex: 1; display: flex; min-height: 0; }
-.sidebar { width: 260px; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-sunken); min-height: 0; }
+.reader-body { flex: 1; display: flex; min-height: 0; min-width: 0; }
+/* The reading view takes what is left and scrolls inside itself: without this a zoomed PDF
+   row widens the whole pane instead of scrolling. */
+.reader-body > :not(.sidebar) { min-width: 0; }
+.sidebar { width: 260px; flex: none; border-right: 1px solid var(--border); display: flex; flex-direction: column; background: var(--bg-sunken); min-height: 0; }
 .side-tabs { margin: 8px; }
 .side-tabs button { flex: 1; }
 .side-body { flex: 1; overflow: auto; padding: 0 8px 16px; }
@@ -85,22 +88,22 @@
 .hist-text { margin: 6px 0 0; white-space: pre-wrap; font-family: var(--reader-font); }
 
 /* EPUB original */
-.epub-original { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.epub-original { flex: 1; display: flex; flex-direction: column; min-height: 0; position: relative; }
 .epub-host { flex: 1; min-height: 0; background: var(--bg-elev); }
 
 /* PDF original + layout-preserving translated page */
-.pdf-split { flex: 1; display: flex; min-height: 0; position: relative; }
-.pdf-pages { flex: 1; overflow: auto; background: var(--bg-sunken); padding: 16px 0 40vh; position: relative; }
+.pdf-split { flex: 1; display: flex; min-height: 0; min-width: 0; position: relative; }
+.pdf-pages { flex: 1; min-width: 0; overflow: auto; background: var(--bg-sunken); padding: 16px 0 40vh; position: relative; }
 .pdf-row { display: flex; justify-content: center; align-items: flex-start; box-sizing: border-box; min-width: max-content; }
 .pdf-link { position: absolute; z-index: 3; padding: 0; border: 0; background: transparent; cursor: pointer; border-radius: 2px; }
 .pdf-link:hover, .pdf-link:focus-visible { background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 1px solid color-mix(in srgb, var(--accent) 55%, transparent); }
-.pdf-controls { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 92%, transparent); border: 1px solid var(--border); box-shadow: 0 4px 16px -6px rgba(0, 0, 0, .35); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); font-size: 13px; font-variant-numeric: tabular-nums; opacity: .55; transition: opacity .15s ease; }
-.pdf-controls:hover, .pdf-controls:focus-within { opacity: 1; }
+.pdf-controls { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 2px; padding: 4px 6px; border-radius: 999px; background: color-mix(in srgb, var(--bg-elev) 92%, transparent); border: 1px solid var(--border); box-shadow: 0 4px 16px -6px rgba(0, 0, 0, .35); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); font-size: 13px; font-variant-numeric: tabular-nums; opacity: 0; pointer-events: none; transition: opacity .15s ease; }
+.pdf-controls.near, .pdf-controls:hover, .pdf-controls:focus-within { opacity: 1; pointer-events: auto; }
 .pdf-controls .btn { border-radius: 999px; min-width: 28px; padding: 3px 8px; }
 .pdf-pageno { display: inline-flex; align-items: center; gap: 6px; padding: 0 6px; color: var(--fg-muted); white-space: nowrap; }
 .pdf-pageno .input { width: 4.2em; padding: 2px 6px; text-align: right; font-variant-numeric: tabular-nums; }
 .pdf-controls-sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
-.pdf-zoom { min-width: 4.2em; }
+.pdf-zoom { min-width: 3.4em; text-align: center; color: var(--fg-muted); }
 @media (prefers-reduced-motion: reduce) { .pdf-controls { transition: none; } }
 .pdf-page { position: relative; flex: none; background: white; box-shadow: 0 1px 4px rgba(0,0,0,.15); overflow: hidden; }
 .pdf-page canvas { display: block; width: 100%; height: 100%; }
@@ -239,3 +242,22 @@ span.hl-dot { cursor: default; width: 10px; height: 10px; margin-top: 4px; }
 .sel-bar.with-result { border-radius: 12px; align-items: stretch; transform: translateY(-100%); margin-top: 36px; }
 .sel-result { width: 340px; max-width: 70vw; }
 .sel-result p { margin: 2px 4px 6px; font-size: 14px; line-height: 1.55; max-height: 40vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* EPUB original view: page turning */
+.epub-host.paged { padding: 18px 44px 46px; box-sizing: border-box; }
+.epub-turn { position: absolute; top: 0; bottom: 0; width: 44px; border: 0; background: transparent; color: var(--fg-faint); font-size: 30px; cursor: pointer; z-index: 4; }
+.epub-turn:hover, .epub-turn:focus-visible { background: color-mix(in srgb, var(--fg) 6%, transparent); color: var(--fg); }
+.epub-turn.prev { left: 0; } .epub-turn.next { right: 0; }
+.epub-controls { gap: 8px; }
+.epub-controls .seg button { font-size: 12px; padding: 3px 9px; }
+
+.epub-original:focus { outline: none; }
+.epub-hover-strip { position: absolute; left: 60px; right: 60px; bottom: 0; height: 30px; z-index: 5; }
+
+/* Full screen: only the book. The toolbar slides in while the pointer is at the top edge. */
+.reader.fs { position: relative; }
+.reader.fs > .toolbar { position: absolute; top: 0; left: 0; right: 0; z-index: 20; transform: translateY(-100%); transition: transform .16s ease; box-shadow: 0 6px 18px -8px rgba(0, 0, 0, .4); }
+.reader.fs.bar-shown > .toolbar, .reader.fs > .toolbar:focus-within { transform: none; }
+.fs-top-strip { position: absolute; top: 0; left: 0; right: 0; height: 6px; z-index: 19; }
+.tx-open { display: inline-flex; align-items: center; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { .reader.fs > .toolbar { transition: none; } }

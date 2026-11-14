@@ -39,7 +39,7 @@ pub struct Item {
 
 const NON_BODY: [&str; 3] = ["running_header", "running_footer", "page_number"];
 
-fn esc(s: &str) -> String {
+pub fn esc(s: &str) -> String {
     let mut o = String::with_capacity(s.len() + 8);
     for c in s.chars() {
         match c {
@@ -76,6 +76,10 @@ fn pieces(text: &str, marks: &[Mark]) -> Vec<(String, bool, bool, Option<String>
         out.push((piece, bold, italic, color));
     }
     out
+}
+
+pub fn inline_html(text: &str, marks: &[Mark]) -> String {
+    inline(text, marks, Format::Html)
 }
 
 fn inline(text: &str, marks: &[Mark], f: Format) -> String {
@@ -306,7 +310,9 @@ pub async fn export_translation(core: State<'_, Arc<AppCore>>, window: WebviewWi
     let r = async {
         let s = core.sessions.get(&args.session_id, window.label())?;
         check_ids(&args.section_ids, 100_000, "sectionIds")?;
+        let epub = args.format == "epub";
         let format = match args.format.as_str() {
+            "epub" => Format::Html,
             "html" => Format::Html,
             "markdown" => Format::Markdown,
             "text" => Format::Text,
@@ -319,7 +325,9 @@ pub async fn export_translation(core: State<'_, Arc<AppCore>>, window: WebviewWi
             return Err(AppError::invalid("내보낼 범위에 추출된 본문이 없습니다."));
         }
         let mut items: Vec<Item> = Vec::new();
+        let mut per_section: Vec<(String, usize)> = Vec::new(); // (section id, first item index)
         for sec in &sections {
+            per_section.push((sec.clone(), items.len()));
             let mut after: Option<u32> = None;
             loop {
                 let page = extraction::blocks_of_section(&core.db.reader, &ex, sec, after, 300).await?;
@@ -349,6 +357,99 @@ pub async fn export_translation(core: State<'_, Arc<AppCore>>, window: WebviewWi
         let doc = documents::get(&core.db.reader, &s.document_id).await?.ok_or_else(|| AppError::not_found("문서"))?;
         let title = doc.metadata.get("title").and_then(|v| v.as_str()).or_else(|| doc.metadata.get("pdfTitle").and_then(|v| v.as_str())).unwrap_or(&doc.title).to_string();
         let lang = s.state.lock().unwrap().target_language.clone();
+        if epub {
+            let report = serde_json::json!({"saved": true, "paragraphs": items.len(), "translatable": translatable, "untranslated": untranslated});
+            let Some(path) = pick_save_path(&window, format!("{} ({lang}).epub", safe_file_stem(&title)), "epub").await else {
+                return Ok(serde_json::json!({"saved": false}));
+            };
+            // Chapters: one per section, titled from the table of contents where it points there.
+            let ordinals: std::collections::HashMap<String, i64> = extraction::list_sections(&core.db.reader, &ex).await?.into_iter().map(|x| (x.id, x.ordinal)).collect();
+            let mut toc_titles: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+            fn walk(v: &serde_json::Value, out: &mut std::collections::HashMap<i64, String>) {
+                for e in v.as_array().into_iter().flatten() {
+                    if let (Some(i), Some(l)) = (e.get("spineIndex").and_then(|x| x.as_i64()), e.get("label").and_then(|x| x.as_str())) {
+                        out.entry(i).or_insert_with(|| l.trim().to_string());
+                    }
+                    if let Some(c) = e.get("children") {
+                        walk(c, out);
+                    }
+                }
+            }
+            if let Some(t) = doc.metadata.get("toc") {
+                walk(t, &mut toc_titles);
+            }
+            let mut all = items;
+            let mut chapters: Vec<super::epub_out::Chapter> = Vec::new();
+            for (k, (sec, start)) in per_section.iter().enumerate().rev() {
+                let tail = all.split_off(*start);
+                if tail.is_empty() {
+                    continue;
+                }
+                let ord = ordinals.get(sec).copied().unwrap_or(k as i64);
+                let from_heading = tail.iter().find(|i| i.block.kind == BlockKind::Heading).map(|i| i.translation.as_ref().map(|t| t.0.clone()).unwrap_or_else(|| i.block.source_text.clone()));
+                let title_c = from_heading.or_else(|| toc_titles.get(&ord).cloned()).filter(|t| !t.trim().is_empty()).unwrap_or_else(|| format!("{}", ord + 1));
+                chapters.push(super::epub_out::Chapter { title: title_c.chars().take(200).collect(), items: tail });
+            }
+            chapters.reverse();
+            // The book's own images (sanitised copies), only those the exported blocks show.
+            let mut images: std::collections::BTreeMap<String, super::epub_out::Image> = std::collections::BTreeMap::new();
+            if let (Some(dir), Some(map)) = (s.derived_dir.read().unwrap().clone(), doc.metadata.get("resources").and_then(|v| v.as_object())) {
+                fn ids(nodes: &[SafeNode], out: &mut Vec<String>) {
+                    for n in nodes {
+                        match n {
+                            SafeNode::ImageRef { resource_id, .. } | SafeNode::MathRef { resource_id, .. } => out.push(resource_id.clone()),
+                            SafeNode::Strong { c } | SafeNode::Emphasis { c } | SafeNode::Color { c, .. } | SafeNode::Link { c, .. } | SafeNode::TableCell { c, .. } => ids(c, out),
+                            _ => {}
+                        }
+                    }
+                }
+                let mut wanted_ids = Vec::new();
+                for ch in &chapters {
+                    for it in &ch.items {
+                        ids(&it.block.content, &mut wanted_ids);
+                    }
+                }
+                let mut total: u64 = 0;
+                for id in wanted_ids {
+                    if images.contains_key(&id) || !crate::domain::is_valid_id(&id) && !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                        continue;
+                    }
+                    let Some(href) = map.get(&id).and_then(|v| v.as_str()) else { continue };
+                    let mime = match href.rsplit('.').next().map(|e| e.to_ascii_lowercase()).as_deref() {
+                        Some("png") => "image/png",
+                        Some("jpg") | Some("jpeg") => "image/jpeg",
+                        Some("gif") => "image/gif",
+                        Some("webp") => "image/webp",
+                        _ => continue, // SVG and anything else stays out
+                    };
+                    let Some(p) = crate::document::paths::safe_join(&dir, href) else { continue };
+                    let Ok(bytes) = std::fs::read(&p) else { continue };
+                    total += bytes.len() as u64;
+                    if total > 600 * 1024 * 1024 {
+                        break;
+                    }
+                    let ext = href.rsplit('.').next().unwrap_or("img").to_ascii_lowercase();
+                    images.insert(id.clone(), super::epub_out::Image { name: format!("{id}.{ext}"), mime, bytes });
+                }
+            }
+            let authors: Vec<String> = doc.metadata.get("authors").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()).unwrap_or_default();
+            let (doc_id, bilingual) = (doc.id.clone(), args.bilingual);
+            tokio::task::spawn_blocking(move || {
+                let partial = path.with_extension("epub.partial");
+                let book = super::epub_out::Book { id: &doc_id, title: &title, language: &lang, authors: &authors, bilingual };
+                let r = std::fs::File::create(&partial).map_err(AppError::from).and_then(|f| super::epub_out::write_epub(std::io::BufWriter::new(f), &book, &chapters, &images));
+                match r {
+                    Ok(()) => std::fs::rename(&partial, &path).map_err(AppError::from),
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&partial);
+                        Err(e)
+                    }
+                }
+            })
+            .await
+            .map_err(|_| AppError::internal("내보내기 작업이 중단되었습니다."))??;
+            return Ok(report);
+        }
         let text = render(&title, &lang, &items, format, args.bilingual);
         let ext = match format {
             Format::Html => "html",

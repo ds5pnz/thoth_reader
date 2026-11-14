@@ -27,6 +27,7 @@
     "allow-bookmark-put",
     "allow-bookmark-delete",
     "allow-bookmark-list",
+    "allow-window-fullscreen",
     "allow-annotation-put",
     "allow-annotation-delete",
     "allow-annotation-list",

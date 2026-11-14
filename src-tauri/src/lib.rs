@@ -58,6 +58,7 @@ macro_rules! app_handlers {
             commands::reader::bookmark_delete,
             commands::reader::bookmark_list,
             commands::reader::annotation_put,
+            commands::reader::window_fullscreen,
             commands::reader::annotation_delete,
             commands::reader::annotation_list,
             commands::reader::search_query,

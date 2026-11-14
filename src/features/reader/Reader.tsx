@@ -19,7 +19,7 @@ import { useSettings } from '../../app/settings';
 import { useToast } from '../../app/toast';
 import { useShortcut } from '../../app/shortcuts';
 import { flagOf } from '../../domain/flags';
-import { IconGear, IconPause, IconPlay, IconSidebar } from './icons';
+import { IconExport, IconFullscreen, IconFullscreenExit, IconGear, IconLibrary, IconPause, IconPlay, IconSidebar } from './icons';
 import { lazy, Suspense } from 'react';
 import type { EpubOriginalHandle } from '../../document/epub/EpubOriginalView';
 // epub.js (and its xmldom dependency) only loads when original EPUB mode is opened.
@@ -302,6 +302,29 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
 
   const [bookmarksVersion, setBookmarksVersion] = useState(0);
   const [exportOpen, setExportOpen] = useState(false);
+  // Full screen: nothing but the book. The toolbar comes back while the pointer is at the top.
+  const [fullscreen, setFullscreenState] = useState(false);
+  const [barShown, setBarShown] = useState(false);
+  const setFullscreen = useCallback(async (on: boolean) => {
+    try {
+      const r = await call<{ fullscreen: boolean }>('window_fullscreen', { on });
+      setFullscreenState(r.fullscreen);
+      setBarShown(false);
+      // The button just clicked would keep the toolbar open through :focus-within.
+      (document.activeElement as HTMLElement | null)?.blur?.();
+    } catch { /* window refused: stay as is */ }
+  }, []);
+  useEffect(() => {
+    // Left by the system (green button, Mission Control): follow it.
+    const sync = () => void call<{ fullscreen: boolean }>('window_fullscreen', { on: null }).then((r) => setFullscreenState(r.fullscreen)).catch(() => {});
+    let t = 0;
+    const onResize = () => { window.clearTimeout(t); t = window.setTimeout(sync, 400); };
+    window.addEventListener('resize', onResize);
+    return () => { window.clearTimeout(t); window.removeEventListener('resize', onResize); };
+  }, []);
+  useEffect(() => () => { void call('window_fullscreen', { on: false }).catch(() => {}); }, []);
+  useShortcut('mod+shift+f', () => void setFullscreen(!fullscreen));
+  useShortcut('escape', () => void setFullscreen(false), { enabled: fullscreen });
   // Highlights and notes
   const readerRef = useRef<HTMLDivElement>(null);
   const annotations = useAnnotations(session?.documentId, targetLanguage);
@@ -450,7 +473,8 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const restrictions = (session.metadata?.restrictions as string[] | undefined) ?? [];
   const title = (session.metadata?.title as string) || (session.metadata?.pdfTitle as string) || session.title;
   return (
-    <div className="reader" ref={readerRef}>
+    <div className={`reader ${fullscreen ? 'fs' : ''} ${fullscreen && barShown ? 'bar-shown' : ''}`} ref={readerRef}>
+      {fullscreen && <div className="fs-top-strip" onMouseEnter={() => setBarShown(true)} aria-hidden="true" />}
       <SelectionToolbar
         root={readerRef}
         pageBlocks={pageBlocks}
@@ -464,11 +488,11 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           return null;
         }}
       />
-      <header className="toolbar">
+      <header className="toolbar" onMouseLeave={() => { if (fullscreen) setBarShown(false); }} onFocus={() => { if (fullscreen) setBarShown(true); }} onBlur={(e) => { if (fullscreen && !e.currentTarget.contains(e.relatedTarget as Node | null)) setBarShown(false); }}>
         <button className={`btn icon ${sidebarOpen ? 'active' : 'ghost'}`} onClick={toggleSidebar} aria-pressed={sidebarOpen} aria-controls="reader-sidebar" aria-label={sidebarOpen ? '사이드바 닫기' : '사이드바 열기'} title={sidebarOpen ? '사이드바 닫기 (⌘\\)' : '사이드바 열기 (⌘\\)'}>
           <IconSidebar />
         </button>
-        <button className="btn ghost" onClick={() => void close()} aria-label="라이브러리로 돌아가기">← 라이브러리</button>
+        <button className="btn icon ghost" onClick={() => void close()} aria-label="서재로 돌아가기" title="서재로 돌아가기"><IconLibrary /></button>
         <h1 className="doc-title" title={title}>{title}</h1>
         {restrictions.length > 0 && <span className="badge warn" title={restrictions.join(', ')}>제한된 문서</span>}
         {model.indexProgress && model.indexProgress.ready + model.indexProgress.failed < model.indexProgress.total && (
@@ -491,10 +515,12 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           <span className="arrow" aria-hidden="true">→</span>
           <span className="flag">{flagOf(targetLanguage) ?? targetLanguage}</span>
         </span>
-        <button className={`btn ghost tx-open ${model.batch?.state === 'running' ? 'running' : ''}`} onClick={() => setExportOpen(true)} title="범위 번역 · 내보내기">
-          {model.batch?.state === 'running'
-            ? `번역 ${model.batch.total > 0 ? Math.round(((model.batch.done + model.batch.failed + model.batch.skipped) / model.batch.total) * 100) : 0}% · ${formatEta(model.batch.etaSeconds)}`
-            : '내보내기'}
+        <button className={`btn ghost tx-open ${model.batch?.state === 'running' ? 'running' : 'icon'}`} onClick={() => setExportOpen(true)} title="범위 번역 · 내보내기" aria-label="범위 번역 · 내보내기">
+          <IconExport />
+          {model.batch?.state === 'running' && <span>{`${model.batch.total > 0 ? Math.round(((model.batch.done + model.batch.failed + model.batch.skipped) / model.batch.total) * 100) : 0}% · ${formatEta(model.batch.etaSeconds)}`}</span>}
+        </button>
+        <button className={`btn icon ${fullscreen ? 'active' : 'ghost'}`} onClick={() => void setFullscreen(!fullscreen)} aria-pressed={fullscreen} aria-label={fullscreen ? '전체 화면 끝내기' : '전체 화면'} title={fullscreen ? '전체 화면 끝내기 (Esc)' : '전체 화면 (⇧⌘F)'}>
+          {fullscreen ? <IconFullscreenExit /> : <IconFullscreen />}
         </button>
         <button className={`btn icon ${paused ? 'active' : 'ghost'}`} onClick={() => void togglePause()} aria-pressed={paused} aria-label={paused ? '자동 번역 재개' : '자동 번역 일시정지'} title={paused ? '자동 번역 재개' : '자동 번역 일시정지'}>
           {paused ? <IconPlay /> : <IconPause />}
@@ -520,7 +546,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
         </div>
       )}
       <div className="reader-body">
-        {sidebarOpen && <Sidebar
+        {sidebarOpen && !fullscreen && <Sidebar
           tab={sidebarTab}
           bookmarksVersion={bookmarksVersion}
           onFindQuery={setFindQuery}
@@ -565,7 +591,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
             />
           ) : showOriginalEpub ? (
             <Suspense fallback={<div className="muted" style={{ padding: 24 }}>원본 보기를 불러오는 중…</div>}>
-              <EpubOriginalView ref={epubRef} session={session} model={model} loadSection={loadSection} onScrolled={onScrolled} openExternal={resolvers.openExternal} />
+              <EpubOriginalView ref={epubRef} session={session} model={model} loadSection={loadSection} onScrolled={onScrolled} openExternal={resolvers.openExternal} annotations={annotations.items} />
             </Suspense>
           ) : (
             <ReflowView

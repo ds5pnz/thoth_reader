@@ -1,11 +1,22 @@
 // Original (source-only) EPUB mode: epub.js renders the *sanitized* package served by the
 // thoth-doc protocol. Scripts are never allowed; the iframe is sandboxed without allow-scripts.
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import ePub, { type Book, type Rendition } from 'epubjs';
 import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
 import type { ReaderModel } from '../../features/reader/useReaderSession';
 import type { Block } from '../../ipc/generated/Block';
 import { blockForCfi, cfiStart } from './cfi';
+import type { AnnotationRow } from '../../ipc/generated/AnnotationRow';
+import { EXTERNAL_SELECTION, HIGHLIGHT_COLORS, type ExternalSelection } from '../../features/annotations/annotations';
+import { countOccurrences, findQuoteInRange, ink, inkBefore, inkOfRange } from '../../features/annotations/quote';
+import { useShortcut } from '../../app/shortcuts';
+
+type Flow = 'scrolled' | 'paged';
+const FLOW_KEY = 'thoth.epubFlow';
+const COLUMNS_KEY = 'thoth.epubColumns';
+const HIGHLIGHT_CSS: Record<string, string> = { yellow: 'rgba(255, 214, 10, .45)', green: 'rgba(64, 200, 110, .38)', blue: 'rgba(70, 150, 255, .34)', pink: 'rgba(255, 105, 160, .36)' };
+const pref = (k: string, d: string) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const savePref = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } };
 
 export interface EpubOriginalHandle {
   getAnchor: () => { blockId: string; ratio: number } | null;
@@ -30,12 +41,22 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
   loadSection: (id: string) => void;
   onScrolled: () => void;
   openExternal: (url: string) => void;
-}>(function EpubOriginalView({ session, model, loadSection, onScrolled, openExternal }, ref) {
+  annotations?: readonly AnnotationRow[];
+}>(function EpubOriginalView({ session, model, loadSection, onScrolled, openExternal, annotations = [] }, ref) {
   const host = useRef<HTMLDivElement>(null);
   const rendition = useRef<Rendition | null>(null);
   const book = useRef<Book | null>(null);
   const currentCfi = useRef<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Reading layout: continuous scroll, or pages turned left/right (optionally two columns).
+  const [flow, setFlowState] = useState<Flow>(() => (pref(FLOW_KEY, 'scrolled') === 'paged' ? 'paged' : 'scrolled'));
+  const [columns, setColumnsState] = useState<1 | 2>(() => (pref(COLUMNS_KEY, '1') === '2' ? 2 : 1));
+  const flowRef = useRef(flow);
+  flowRef.current = flow;
+  const [renderTick, setRenderTick] = useState(0);
+  const [near, setNear] = useState(false);
+  const annotationsRef = useRef(annotations);
+  annotationsRef.current = annotations;
   const allBlocks = useRef<Block[]>([]);
   allBlocks.current = [...model.blocks.values()].flat();
   const currentIndex = useRef<number | null>(null);
@@ -59,7 +80,9 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
     const r = b.renderTo(host.current, {
       width: '100%',
       height: '100%',
-      flow: 'scrolled-doc',
+      flow: flow === 'paged' ? 'paginated' : 'scrolled-doc',
+      spread: flow === 'paged' && columns === 2 ? 'always' : 'none',
+      minSpreadWidth: 0,
       allowScriptedContent: false,
       allowPopups: false,
       // WKWebView does not load sandboxed srcdoc documents reliably; blob URLs do load.
@@ -72,7 +95,11 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
     (b.spine as unknown as { hooks: { serialize: { register: (fn: (out: string, section: { output: string }) => void) => void } } }).hooks.serialize.register((_out, section) => {
       section.output = absolutizeResourceRefs(section.output, assetBase);
     });
-    r.themes.default({ body: { 'font-size': 'var(--reader-size, 17px)', 'line-height': 'var(--reader-line, 1.6)' } });
+    r.themes.default({
+      body: { 'font-size': 'var(--reader-size, 17px)', 'line-height': 'var(--reader-line, 1.6)' },
+      ...Object.fromEntries(HIGHLIGHT_COLORS.map((c) => [`::highlight(thoth-${c})`, { 'background-color': HIGHLIGHT_CSS[c]! }])),
+    });
+    r.on('rendered', () => setRenderTick((t) => t + 1));
     r.on('relocated', (loc: { start: { cfi: string; index: number } }) => {
       currentCfi.current = loc.start.cfi;
       const sec = sectionsRef.current.find((s) => Number((s.locator as { spineIndex?: number }).spineIndex) === loc.start.index);
@@ -82,7 +109,7 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       if (performance.now() > programmaticUntil.current) onScrolledRef.current();
     });
     // Links inside the document never navigate the app; external http(s) go through Rust.
-    r.hooks.content.register((contents: { document: Document }) => {
+    r.hooks.content.register((contents: { document: Document; window: Window }) => {
       contents.document.addEventListener('click', (e) => {
         const a = (e.target as HTMLElement | null)?.closest?.('a[href]') as HTMLAnchorElement | null;
         if (!a) return;
@@ -92,6 +119,8 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
         }
       }, true);
     });
+    // Changing the layout re-creates the rendition: come back to where the reader was.
+    const resume = currentCfi.current;
     const start = session.position?.blockId ? allBlocks.current.find((x) => x.id === session.position?.blockId) : undefined;
     b.opened.catch((e: unknown) => console.error('epub open failed', String((e as Error)?.message ?? e)));
     if (import.meta.env.DEV) {
@@ -103,7 +132,7 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
     }
     // The first display() relocates too; it is not the user scrolling.
     programmaticUntil.current = performance.now() + 1500;
-    pendingDisplay.current = r.display(start ? cfiStart(start) ?? undefined : undefined).catch((e: unknown) => { console.error('epub display failed', String((e as Error)?.message ?? e)); setError(String(e)); });
+    pendingDisplay.current = r.display(resume ?? (start ? cfiStart(start) ?? undefined : undefined)).catch((e: unknown) => { console.error('epub display failed', String((e as Error)?.message ?? e)); setError(String(e)); });
     return () => {
       rendition.current = null;
       book.current = null;
@@ -112,7 +141,116 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       void settle.catch(() => {}).then(() => { try { r.destroy(); b.destroy(); } catch { /* already torn down */ } });
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session.assetToken]);
+  }, [session.assetToken, flow, columns]);
+
+  /** DOM range of a block in the rendered chapter, or null (not rendered / a point location). */
+  const blockRange = (b: Block): Range | null => {
+    const r = rendition.current;
+    if (!r || b.location.kind !== 'epub' || !b.location.cfiRange.includes(',')) return null;
+    try {
+      return (r as unknown as { getRange: (c: string) => Range | null }).getRange(b.location.cfiRange);
+    } catch {
+      return null;
+    }
+  };
+  const spineBlocks = () => {
+    const idx = currentIndex.current;
+    return allBlocks.current.filter((b) => b.location.kind === 'epub' && b.location.spineIndex === idx).sort((x, y) => x.ordinal - y.ordinal);
+  };
+
+  // A selection inside the book's iframe → the shared selection toolbar.
+  const reportSelection = useRef<(doc: Document, win: Window) => void>(() => {});
+  reportSelection.current = (doc, win) => {
+    const send = (detail: ExternalSelection) => window.dispatchEvent(new CustomEvent(EXTERNAL_SELECTION, { detail }));
+    const sel = win.getSelection();
+    const clear = () => { try { win.getSelection()?.removeAllRanges(); } catch { /* frame gone */ } };
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) { send({ target: null, clear }); return; }
+    const range = sel.getRangeAt(0);
+    const quote = sel.toString().replace(/\s+/gu, ' ').trim();
+    const q = ink(quote);
+    if (!q || quote.length > 4000) { send({ target: null, clear }); return; }
+    // The paragraph that contains the whole selection.
+    let hit: { b: Block; br: Range } | null = null;
+    for (const b of spineBlocks()) {
+      const br = blockRange(b);
+      if (!br || br.startContainer.ownerDocument !== doc) continue;
+      if (br.compareBoundaryPoints(Range.START_TO_START, range) <= 0 && br.compareBoundaryPoints(Range.END_TO_END, range) >= 0) hit = { b, br };
+      else if (hit && br.compareBoundaryPoints(Range.START_TO_START, range) > 0) break;
+    }
+    const frame = host.current?.querySelector<HTMLIFrameElement>('iframe');
+    if (import.meta.env.DEV) (window as unknown as { __thothSel?: unknown }).__thothSel = { blocks: spineBlocks().length, ranged: spineBlocks().filter((b) => !!blockRange(b)).length, hit: !!hit, frame: !!frame, idx: currentIndex.current };
+    if (!hit || !frame) { send({ target: null, clear }); return; }
+    const occurrence = countOccurrences(inkOfRange(hit.br).text, q, inkBefore(hit.br, range.startContainer, range.startOffset));
+    const r = range.getBoundingClientRect();
+    const fr = frame.getBoundingClientRect();
+    send({ target: { blockId: hit.b.id, side: 'source', quote, occurrence, rect: new DOMRect(fr.left + r.left, fr.top + r.top, r.width, r.height) }, clear });
+  };
+
+  // The book's iframe is sandboxed without scripts, and WebKit then runs no event listeners
+  // in it — not even ones attached from here. So the frame is observed from outside:
+  // its selection is polled, and keyboard focus is handed back to this view so page keys
+  // and shortcuts keep working after a click in the text.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let last = '';
+    const t = window.setInterval(() => {
+      const frame = host.current?.querySelector<HTMLIFrameElement>('iframe');
+      const win = frame?.contentWindow;
+      const doc = frame?.contentDocument;
+      if (!frame || !win || !doc) return;
+      if (document.activeElement === frame) rootRef.current?.focus({ preventScroll: true });
+      const sel = win.getSelection();
+      const sig = sel && !sel.isCollapsed && sel.rangeCount ? `${sel.toString().length}:${sel.anchorOffset}:${sel.focusOffset}:${sel.toString().slice(0, 24)}` : '';
+      if (sig === last) return;
+      last = sig;
+      reportSelection.current(doc, win);
+    }, 300);
+    return () => window.clearInterval(t);
+  }, []);
+  // ⌘C copies what is selected in the book (focus lives out here, see above).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'c' || e.shiftKey || e.altKey) return;
+      if (window.getSelection()?.toString()) return; // something out here is selected: normal copy
+      const text = host.current?.querySelector<HTMLIFrameElement>('iframe')?.contentWindow?.getSelection()?.toString();
+      if (!text) return;
+      e.preventDefault();
+      void navigator.clipboard.writeText(text).catch(() => {});
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // Paint highlights inside the book's iframe (its own highlight registry).
+  useEffect(() => {
+    const frame = host.current?.querySelector<HTMLIFrameElement>('iframe');
+    const win = frame?.contentWindow as (Window & { CSS?: { highlights?: { set(n: string, h: unknown): void; delete(n: string): void } }; Highlight?: new (...r: Range[]) => unknown }) | null | undefined;
+    const reg = win?.CSS?.highlights;
+    const H = win?.Highlight;
+    if (!reg || !H) return;
+    const byId = new Map(allBlocks.current.map((b) => [b.id, b] as const));
+    const byColor = new Map<string, Range[]>();
+    for (const a of annotations) {
+      if (a.side !== 'source' || !a.blockId) continue;
+      const b = byId.get(a.blockId);
+      if (!b || b.location.kind !== 'epub' || b.location.spineIndex !== currentIndex.current) continue;
+      const br = blockRange(b);
+      const found = br ? findQuoteInRange(br, a.quote, a.occurrence) : null;
+      if (found) (byColor.get(a.color) ?? byColor.set(a.color, []).get(a.color)!).push(found);
+    }
+    for (const c of HIGHLIGHT_COLORS) {
+      const rs = byColor.get(c);
+      try { if (rs?.length) reg.set(`thoth-${c}`, new H(...rs)); else reg.delete(`thoth-${c}`); } catch { /* frame replaced */ }
+    }
+  }, [annotations, renderTick, model.blocks]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const setFlow = useCallback((f: Flow) => { savePref(FLOW_KEY, f); setFlowState(f); }, []);
+  const setColumns = useCallback((n: 1 | 2) => { savePref(COLUMNS_KEY, String(n)); setColumnsState(n); }, []);
+  const turn = useCallback((dir: 1 | -1) => { if (flowRef.current === 'paged') void (dir > 0 ? rendition.current?.next() : rendition.current?.prev()); }, []);
+  useShortcut('arrowright', () => turn(1), { enabled: flow === 'paged' });
+  useShortcut('arrowleft', () => turn(-1), { enabled: flow === 'paged' });
+  useShortcut('pagedown', () => turn(1), { enabled: flow === 'paged' });
+  useShortcut('pageup', () => turn(-1), { enabled: flow === 'paged' });
 
   /** Viewport rect of a block inside the epub.js iframe (via its canonical CFI range). */
   const blockRect = (b: Block): { top: number; height: number } | null => {
@@ -141,7 +279,8 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
     getAnchor() {
       const c = container();
       const idx = currentIndex.current;
-      if (c && idx != null) {
+      // Pages have no reading line: the anchor is the paragraph the page starts in.
+      if (c && idx != null && flowRef.current !== 'paged') {
         // Blocks of the displayed spine item are in document order, so their tops are
         // monotonic: binary-search the block under the 25% reading line.
         const list = allBlocks.current.filter((b) => b.location.kind === 'epub' && b.location.spineIndex === idx).sort((x, y) => x.ordinal - y.ordinal);
@@ -175,6 +314,7 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
         if (!rendition.current) return;
         // display() puts the CFI at the top; move it to the 25% reading line.
         const align = () => {
+          if (flowRef.current === 'paged') return; // display() already turned to its page
           const c = container();
           const rect = blockRect(b);
           if (!c || !rect) return;
@@ -193,6 +333,15 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       const rect = b ? blockRect(b) : null;
       if (!c || !rect) return null;
       const cr = c.getBoundingClientRect();
+      if (flowRef.current === 'paged') {
+        // on the page shown = no error
+        const frame = host.current?.querySelector<HTMLIFrameElement>('iframe');
+        const range = b ? blockRange(b) : null;
+        if (!frame || !range) return null;
+        const fr = frame.getBoundingClientRect();
+        const x = fr.left + range.getBoundingClientRect().left;
+        return x >= cr.left - 1 && x <= cr.right + 1 ? 0 : Math.abs(x - cr.left);
+      }
       const err = Math.abs(rect.top + rect.height * ratio - (cr.top + cr.height * 0.25));
       const clamped = c.scrollTop <= 1 || c.scrollTop + c.clientHeight >= c.scrollHeight - 1;
       return clamped && rect.top + rect.height > cr.top && rect.top < cr.bottom ? 0 : err;
@@ -205,9 +354,29 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
   }), [model.sections]);
 
   return (
-    <div className="epub-original" data-asset-token={import.meta.env.DEV ? session.assetToken : undefined}>
+    <div ref={rootRef} tabIndex={-1} className="epub-original" data-asset-token={import.meta.env.DEV ? session.assetToken : undefined} onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const n = r.bottom - e.clientY < 110; setNear((v) => (v === n ? v : n)); }} onMouseLeave={() => setNear(false)}>
       {error && <p className="banner warn">원본 보기를 표시할 수 없습니다. 병렬 보기에서 읽을 수 있습니다.</p>}
-      <div ref={host} className="epub-host" />
+      <div ref={host} className={`epub-host ${flow}`} />
+      {flow === 'paged' && (
+        <>
+          <button className="epub-turn prev" onClick={() => turn(-1)} aria-label="이전 쪽" title="이전 쪽 (←)">‹</button>
+          <button className="epub-turn next" onClick={() => turn(1)} aria-label="다음 쪽" title="다음 쪽 (→)">›</button>
+        </>
+      )}
+      {/* The iframe swallows mouse moves: this strip is what notices the pointer at the bottom. */}
+      <div className="epub-hover-strip" onMouseEnter={() => setNear(true)} onMouseLeave={(e) => { if (!(e.relatedTarget instanceof Node) || !e.currentTarget.parentElement?.querySelector('.epub-controls')?.contains(e.relatedTarget)) setNear(false); }} aria-hidden="true" />
+      <div className={`pdf-controls epub-controls ${near ? 'near' : ''}`} role="toolbar" aria-label="EPUB 보기 도구" onMouseLeave={() => setNear(false)}>
+        <div className="seg" role="group" aria-label="넘김 방식">
+          <button aria-pressed={flow === 'scrolled'} onClick={() => setFlow('scrolled')}>스크롤</button>
+          <button aria-pressed={flow === 'paged'} onClick={() => setFlow('paged')}>쪽 넘김</button>
+        </div>
+        {flow === 'paged' && (
+          <div className="seg" role="group" aria-label="단 수">
+            <button aria-pressed={columns === 1} onClick={() => setColumns(1)}>1단</button>
+            <button aria-pressed={columns === 2} onClick={() => setColumns(2)}>2단</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 });

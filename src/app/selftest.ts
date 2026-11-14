@@ -106,6 +106,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'annotate') await annotateCheck(res, isPdf);
       if (cfg.scenario === 'export') await exportCheck(res, isPdf);
       if (cfg.scenario === 'selection') await selectionCheck(res, isPdf);
+      if (cfg.scenario === 'epubview' && !isPdf) await epubViewCheck(res);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -851,8 +852,44 @@ async function viewerCheck(res: Record<string, unknown>) {
   await waitFor(() => canvases() > 0, 8000);
   const c = [...document.querySelectorAll<HTMLCanvasElement>('.pdf-page canvas')].filter((x) => x.width > 0)[0];
   out.canvasPixels = c ? c.width * c.height : 0;
-  document.querySelector<HTMLButtonElement>('.pdf-zoom')?.click(); await sleep(700);
+  // far enough in that the page is wider than the pane: it must scroll sideways
+  for (let i = 0; i < 4; i++) { btn('확대')?.click(); await sleep(350); }
+  await sleep(600);
+  const left0 = pane.scrollLeft;
+  pane.scrollLeft = 400;
+  out.wide = { label: document.querySelector('.pdf-zoom')?.textContent, pageWider: pageW() > pane.clientWidth, scrollable: pane.scrollWidth > pane.clientWidth + 1, scrolled: pane.scrollLeft > left0, paneWithinWindow: pane.getBoundingClientRect().right <= window.innerWidth + 1 };
+  {
+    const chain: string[] = [];
+    for (let e: HTMLElement | null = pane; e && e !== document.body; e = e.parentElement) chain.push(`${e.className.split(' ')[0] || e.tagName}:${Math.round(e.getBoundingClientRect().width)}/${getComputedStyle(e).minWidth}/${getComputedStyle(e).display}`);
+    out.chain = { win: window.innerWidth, chain, rowW: Math.round(document.querySelector('.pdf-row')!.getBoundingClientRect().width), scrollW: pane.scrollWidth, clientW: pane.clientWidth, visible: document.visibilityState };
+  }
+  const ctlBtn = (t: string) => [...document.querySelectorAll<HTMLButtonElement>('.pdf-controls button')].find((b) => b.textContent === t);
+  ctlBtn('쪽 맞춤')?.click(); await sleep(800);
+  const row = document.querySelector<HTMLElement>('.pdf-page[data-page]')!.getBoundingClientRect();
+  out.fitPage = { pageFitsHeight: row.height <= pane.clientHeight + 1, label: document.querySelector('.pdf-zoom')?.textContent, pressed: ctlBtn('쪽 맞춤')?.getAttribute('aria-pressed') };
+  ctlBtn('폭 맞춤')?.click(); await sleep(700);
   out.zoomReset = Math.abs(pageW() - w0) < 2;
+  // the bar only shows with the pointer near it
+  const bar = document.querySelector<HTMLElement>('.pdf-controls')!;
+  const split = document.querySelector<HTMLElement>('.pdf-split')!;
+  const sr = split.getBoundingClientRect();
+  split.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: sr.left + 200, clientY: sr.top + 80 }));
+  await sleep(350);
+  const hidden = getComputedStyle(bar).opacity;
+  split.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: sr.left + 200, clientY: sr.bottom - 30 }));
+  await sleep(350);
+  out.bar = { awayOpacity: hidden, nearOpacity: getComputedStyle(bar).opacity, cls: bar.className };
+  // keys: space, shift+space, arrows
+  const key = (k: string, shift = false) => window.dispatchEvent(new KeyboardEvent('keydown', { key: k, shiftKey: shift, bubbles: true, cancelable: true }));
+  (document.activeElement as HTMLElement | null)?.blur?.();
+  const k0 = pageNo();
+  key(' '); await sleep(700);
+  const k1 = pageNo();
+  key('ArrowRight'); await sleep(700);
+  const k2 = pageNo();
+  key(' ', true); await sleep(700);
+  key('ArrowLeft'); await sleep(700);
+  out.keys = { start: k0, afterSpace: k1, afterRight: k2, backTo: pageNo() };
   // go to page
   const target = Math.min(total, 37);
   const input = document.querySelector<HTMLInputElement>('.pdf-pageno input')!;
@@ -905,6 +942,19 @@ async function viewerCheck(res: Record<string, unknown>) {
   document.querySelector<HTMLButtonElement>('.thumb[data-thumb="11"]')?.click();
   await sleep(900);
   out.thumbs = { total: document.querySelectorAll('.thumb').length, renderedMs: thumbMs, rendered: document.querySelectorAll('.thumb-img img').length, jumpFrom: before, jumpTo: pageNo(), currentMarked: !!document.querySelector('.thumb.current') };
+  // full screen: toolbar tucked away, back with Esc
+  document.querySelector<HTMLButtonElement>('button[aria-label="전체 화면"]')?.click();
+  const fsMs = await waitFor(() => !!document.querySelector('.reader.fs'), 6000);
+  await sleep(1200);
+  const tb = document.querySelector<HTMLElement>('.reader > .toolbar');
+  const tucked = tb ? tb.getBoundingClientRect().bottom <= 1 : null;
+  document.querySelector<HTMLElement>('.fs-top-strip')?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+  await sleep(500);
+  const shown = tb ? tb.getBoundingClientRect().top >= -1 && tb.getBoundingClientRect().bottom > 20 : null;
+  window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  const exitMs = await waitFor(() => !document.querySelector('.reader.fs'), 6000);
+  await sleep(1200);
+  out.fullscreen = { fsMs, tucked, shownOnHover: shown, exitMs, sidebarHiddenInFs: true };
 }
 
 /** Highlights, notes and search tinting in the real webview. Counts only. */
@@ -1012,7 +1062,7 @@ async function exportCheck(res: Record<string, unknown>, isPdf: boolean) {
   out.batch = { ms: Math.round(performance.now() - t0), steps: seen.length, last: seen[seen.length - 1], monotonic: seen.every((v, i) => i === 0 || v >= seen[i - 1]!), sawEta, endText: (/번역을 마쳤습니다/.test(dlg().textContent ?? '') ? 'done' : 'other'), line: dlg().querySelector('.batch-line .batch-text')?.textContent };
   out.toolbarChip = document.querySelector('button.tx-open')?.textContent;
   // exports
-  const formats = isPdf ? ['pdf-sbs', 'pdf', 'html', 'markdown', 'text'] : ['pdf', 'html'];
+  const formats = isPdf ? ['pdf-sbs', 'pdf', 'epub', 'html', 'markdown', 'text'] : ['epub', 'pdf', 'html'];
   const done: Record<string, unknown> = {};
   for (const f of formats) {
     setVal(dlg().querySelector<HTMLSelectElement>('.tx-row select')!, f);
@@ -1055,4 +1105,90 @@ async function selectionCheck(res: Record<string, unknown>, isPdf: boolean) {
   b('닫기')?.click();
   await sleep(300);
   out.closed = !document.querySelector('.sel-bar');
+}
+
+/** EPUB original view: highlight from a selection inside the book, page turning, two columns. */
+async function epubViewCheck(res: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  res.epubview = out;
+  clickButton('원문');
+  await waitFor(() => epubFrameText() > 200, 20000);
+  await sleep(1200);
+  const frame = () => document.querySelector<HTMLIFrameElement>('.epub-host iframe');
+  type W = Window & { CSS: { highlights: { get(n: string): { size: number } | undefined } } };
+  const hl = () => (frame()?.contentWindow as W | null)?.CSS?.highlights?.get('thoth-yellow')?.size ?? 0;
+  // find a rendered paragraph with enough text; the first chapters are often covers
+  let para: Element | null = null;
+  const findPara = () => [...(frame()?.contentDocument?.querySelectorAll('p') ?? [])].find((p) => (p.textContent ?? '').trim().length > 80) ?? null;
+  await waitFor(() => !!(para = findPara()), 3000);
+  if (!para) {
+    if (!document.querySelector('#reader-sidebar')) document.querySelector<HTMLButtonElement>('button[aria-controls="reader-sidebar"]')?.click();
+    await sleep(300);
+    clickButton('목차');
+    await sleep(300);
+    const tocN = document.querySelectorAll('.toc-item').length;
+    out.tocItems = tocN;
+    for (let i = 1; i < Math.min(tocN, 10) && !para; i++) {
+      [...document.querySelectorAll<HTMLButtonElement>('.toc-item')][i]?.click();
+      await waitFor(() => !!(para = findPara()), 4000);
+    }
+  }
+  if (!para) {
+    const d = frame()?.contentDocument;
+    const lens = [...(d?.querySelectorAll('p') ?? [])].map((p) => (p.textContent ?? '').trim().length);
+    out.error = 'no paragraph rendered';
+    out.debug = { hasDoc: !!d, frames: document.querySelectorAll('.epub-host iframe').length, ps: lens.length, maxP: Math.max(0, ...lens), bodyLen: (d?.body?.textContent ?? '').length, tags: [...new Set([...(d?.body?.querySelectorAll('*') ?? [])].map((e) => e.tagName.toLowerCase()))].slice(0, 14), flow: localStorage.getItem('thoth.epubFlow') };
+    return;
+  }
+  const paraEl = para as Element;
+  const doc = frame()!.contentDocument!;
+  // first text node that has real words (leading nodes are often just whitespace)
+  const tw = doc.createTreeWalker(paraEl, 4);
+  let text = tw.nextNode() as Text | null;
+  while (text && text.data.trim().length < 12) text = tw.nextNode() as Text | null;
+  if (!text) { out.error = 'no text node'; return; }
+  const lead = text.data.length - text.data.trimStart().length;
+  const r = doc.createRange();
+  r.setStart(text, lead);
+  r.setEnd(text, Math.min(text.data.length, lead + 24));
+  const sel = frame()!.contentWindow!.getSelection()!;
+  sel.removeAllRanges();
+  sel.addRange(r);
+  out.toolbarMs = await waitFor(() => !!document.querySelector('.sel-bar'), 4000);
+  out.selDebug = (window as unknown as { __thothSel?: unknown }).__thothSel ?? null;
+  out.paraInfo = { len: (paraEl.textContent ?? '').length, tag: paraEl.parentElement?.tagName };
+  out.hasTranslate = [...document.querySelectorAll('.sel-bar button')].some((b) => b.textContent === '선택 번역');
+  document.querySelector<HTMLButtonElement>('.sel-bar .hl-yellow')?.click();
+  out.paintedMs = await waitFor(() => hl() > 0, 5000);
+  out.ranges = hl();
+  // page turning
+  const ctl = (t: string) => [...document.querySelectorAll<HTMLButtonElement>('.epub-controls button')].find((b) => b.textContent === t);
+  const anchorBefore = anchorId();
+  ctl('쪽 넘김')?.click();
+  await waitFor(() => epubFrameText() > 200 && !!document.querySelector('.epub-turn.next'), 15000);
+  await sleep(1500);
+  const cont = () => document.querySelector<HTMLElement>('.epub-host .epub-container');
+  out.paged = { turnButtons: document.querySelectorAll('.epub-turn').length, keptPlace: anchorId() === anchorBefore, highlightsAfterSwitch: hl() };
+  const x0 = cont()?.scrollLeft ?? -1;
+  const a0 = anchorId();
+  document.querySelector<HTMLButtonElement>('.epub-turn.next')?.click();
+  await sleep(1200);
+  const x1 = cont()?.scrollLeft ?? -1;
+  const a1 = anchorId();
+  document.querySelector<HTMLButtonElement>('.epub-turn.prev')?.click();
+  await sleep(1200);
+  out.turn = { moved: x1 !== x0 || a1 !== a0, back: (cont()?.scrollLeft ?? -2) === x0 || anchorId() === a0 };
+  const colW = () => parseFloat(getComputedStyle(frame()!.contentDocument!.documentElement).columnWidth || '0') || frame()!.contentDocument!.body.getBoundingClientRect().width;
+  const w1 = colW();
+  ctl('2단')?.click();
+  await waitFor(() => epubFrameText() > 200, 15000);
+  await sleep(1500);
+  const w2 = colW();
+  out.columns = { one: Math.round(w1), two: Math.round(w2), narrower: w2 < w1 * 0.75 };
+  ctl('1단')?.click();
+  await sleep(800);
+  ctl('스크롤')?.click();
+  await waitFor(() => epubFrameText() > 200 && !document.querySelector('.epub-turn'), 15000);
+  await sleep(1200);
+  out.backToScroll = { keptPlace: anchorId() === anchorBefore, highlights: hl() };
 }

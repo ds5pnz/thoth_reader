@@ -106,6 +106,30 @@ pub async fn bookmark_list(core: Core<'_>, meta: CommandMeta, args: DocumentArgs
     Ok(respond(&meta, r))
 }
 
+// ------------------------------------------------------------------ window
+
+#[derive(Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct FullscreenArgs {
+    /// `Some` sets the state; `None` only reads it.
+    pub on: Option<bool>,
+}
+
+/// Full-screen reading. The webview has no window permissions of its own; this is the one
+/// window operation it may ask for.
+#[tauri::command]
+pub async fn window_fullscreen(window: WebviewWindow, meta: CommandMeta, args: FullscreenArgs) -> Result<Wire, ()> {
+    let r = (|| {
+        if let Some(on) = args.on {
+            window.set_fullscreen(on).map_err(|_| AppError::internal("전체 화면을 바꿀 수 없습니다."))?;
+            return Ok(serde_json::json!({"fullscreen": on}));
+        }
+        Ok(serde_json::json!({"fullscreen": window.is_fullscreen().unwrap_or(false)}))
+    })();
+    Ok(respond(&meta, r))
+}
+
 // ------------------------------------------------------------------ highlights & notes
 
 #[derive(Debug, Deserialize, Serialize, TS)]

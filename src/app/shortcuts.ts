@@ -32,6 +32,8 @@ export function useShortcut(combo: string, handler: (e: KeyboardEvent) => void, 
     if (opts.enabled === false) return;
     const onKey = (e: KeyboardEvent) => {
       if (!matches(e, combo)) return;
+      // Space on a focused button / link activates it; it is not a page key there.
+      if (combo.endsWith(' ') && document.activeElement?.closest('button, a[href], summary, [role="button"], [role="tab"]')) return;
       // A modal dialog owns the keyboard: nothing behind it reacts.
       if (!opts.allowInModal && document.querySelector('[aria-modal="true"]')) return;
       if (!opts.allowInInputs && isEditing(document.activeElement) && !combo.startsWith('mod+')) return;
