@@ -61,6 +61,7 @@
     "allow-cache-invalidate",
     "allow-storage-usage",
     "allow-debug-selftest-files",
-    "allow-debug-log"
+    "allow-debug-log",
+    "allow-debug-snapshot"
   ]
 }

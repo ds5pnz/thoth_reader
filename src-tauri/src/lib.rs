@@ -97,7 +97,7 @@ macro_rules! app_handlers {
 
 #[cfg(debug_assertions)]
 fn handlers() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
-    app_handlers!(commands::debug::debug_selftest_files, commands::debug::debug_log)
+    app_handlers!(commands::debug::debug_selftest_files, commands::debug::debug_log, commands::debug::debug_snapshot)
 }
 
 #[cfg(not(debug_assertions))]

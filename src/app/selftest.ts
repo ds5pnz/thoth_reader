@@ -107,6 +107,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'export') await exportCheck(res, isPdf);
       if (cfg.scenario === 'selection') await selectionCheck(res, isPdf);
       if (cfg.scenario === 'epubview' && !isPdf) await epubViewCheck(res);
+      if (cfg.scenario === 'screens') await screensCheck(res, i, cands.length);
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -1126,6 +1127,50 @@ async function selectionCheck(res: Record<string, unknown>, isPdf: boolean) {
   b('닫기')?.click();
   await sleep(300);
   out.closed = !document.querySelector('.sel-bar');
+}
+
+/** Documentation screenshots (README): the reader on the first book, then the library. */
+async function screensCheck(res: Record<string, unknown>, index: number, count: number) {
+  const out: Record<string, unknown> = {};
+  res.screens = out;
+  const snap = async (name: string) => { const r = await invoke<unknown>('debug_snapshot', { meta: { apiVersion: 1, requestId: crypto.randomUUID() }, name }).catch((e) => String((e as Error)?.message ?? e)); const t = JSON.stringify(r); return /"saved":true/.test(t) || t.slice(0, 200); };
+  if (index === 0) {
+    // leave the front matter: go to the first real chapter
+    if (!document.querySelector('#reader-sidebar')) document.querySelector<HTMLButtonElement>('button[aria-controls="reader-sidebar"]')?.click();
+    await sleep(400);
+    clickButton('목차');
+    await sleep(400);
+    const items = [...document.querySelectorAll<HTMLButtonElement>('.toc-item')];
+    const chapter = items.find((b) => /chapter i\b|chapter 1\b|rabbit/i.test(b.textContent ?? '')) ?? items[Math.min(2, items.length - 1)];
+    clickButton('병렬');
+    await waitFor(() => !!document.querySelector('.reflow'), 5000);
+    await sleep(1500);
+    const atChapter = () => [...document.querySelectorAll<HTMLElement>('.brow.kind-heading')].some((r) => { const b = r.getBoundingClientRect(); return b.top > 40 && b.top < 260 && /rabbit|chapter/i.test(r.textContent ?? ''); });
+    for (let k = 0; k < 4 && !atChapter(); k++) { chapter?.click(); await waitFor(atChapter, 4000); }
+    out.atChapter = atChapter();
+    await sleep(1000);
+    const filled = () => {
+      const vis = [...document.querySelectorAll<HTMLElement>('.brow')].filter((r) => { const b = r.getBoundingClientRect(); return b.bottom > 60 && b.top < window.innerHeight; });
+      return vis.length > 2 && vis.every((r) => !r.querySelector('.tcell') || r.querySelector('.tcell-text') || r.querySelector('.tcell.excluded'));
+    };
+    out.translatedMs = await waitFor(filled, 240000);
+    await sleep(1200);
+    out.parallel = await snap('reader-parallel');
+    clickButton('원문');
+    await waitFor(() => epubFrameText() > 0, 15000);
+    await sleep(1500);
+    chapter?.click();
+    await sleep(3500);
+    out.original = await snap('reader-original');
+    clickButton('병렬');
+    await sleep(800);
+  }
+  if (index === count - 1) {
+    window.__thoth?.close?.();
+    await waitFor(() => document.querySelectorAll('.book-card, .lib-card, [data-doc-id]').length > 0, 8000);
+    await sleep(4000); // covers
+    out.library = await snap('library');
+  }
 }
 
 /** EPUB original view: highlight from a selection inside the book, page turning, two columns. */

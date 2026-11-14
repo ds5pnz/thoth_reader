@@ -1,4 +1,8 @@
-# Thoth Reader
+<p align="center">
+  <img src="docs/images/icon.png" width="128" height="128" alt="Thoth Reader icon">
+</p>
+
+<h1 align="center">Thoth Reader</h1>
 
 A local-first macOS reader for PDF and EPUB books that shows a translation next to the original, paragraph by paragraph.
 
@@ -7,6 +11,14 @@ The name reads as **Th · o · th**: the same content on both sides of the *o*, 
 Books, translations, notes and settings stay on your Mac. Text leaves the machine only when you point the app at a translation server yourself, and a local model (Ollama, LM Studio) keeps even that on the device.
 
 > The interface is currently in Korean.
+
+![Original and translation side by side](docs/images/reader-parallel.png)
+
+| Library | Original view |
+| --- | --- |
+| ![Library](docs/images/library.png) | ![EPUB original view](docs/images/reader-original.png) |
+
+<sub>Screenshots use public-domain books from [Project Gutenberg](https://www.gutenberg.org/); the Korean text was produced by a local model through LM Studio.</sub>
 
 ## Features
 

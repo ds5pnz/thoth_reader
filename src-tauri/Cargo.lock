@@ -4893,6 +4893,7 @@ version = "1.0.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "block2",
  "bytes",
  "cssparser 0.38.0",
  "futures-util",
@@ -4901,6 +4902,7 @@ dependencies = [
  "libsqlite3-sys",
  "markup5ever_rcdom",
  "mime_guess",
+ "objc2",
  "percent-encoding",
  "quick-xml",
  "rand 0.9.5",
