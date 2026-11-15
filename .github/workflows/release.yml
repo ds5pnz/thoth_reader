@@ -16,7 +16,7 @@ on:
       platforms:
         description: Which builds to run (a tag always runs all of them)
         type: choice
-        options: [all, macos, windows]
+        options: [all, macos, windows, windows-smoke]
         default: all
 
 concurrency:
@@ -165,6 +165,75 @@ jobs:
             ${{ steps.pkg.outputs.file }}
             ${{ steps.pkg.outputs.file }}.sha256
           if-no-files-found: error
+
+  # Manual only: starts the debug build on a Windows runner and lets the built-in self-test
+  # import and open the test books and translate through a stand-in server. This is the
+  # only place the app is actually run on Windows.
+  windows-smoke:
+    name: Windows (run the app)
+    if: github.event_name == 'workflow_dispatch' && inputs.platforms == 'windows-smoke'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' src-tauri/rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            src-tauri/target
+          key: cargo-smoke-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src-tauri/rust-toolchain.toml', 'src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-smoke-${{ runner.os }}-${{ runner.arch }}-
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - run: npm ci
+
+      - name: Run the app with the self-test
+        env:
+          THOTH_SELFTEST_PROVIDER: http://127.0.0.1:18765/v1
+          THOTH_SELFTEST_MODEL: mock
+          THOTH_SELFTEST_SCENARIO: ${{ vars.SMOKE_SCENARIO }}
+        run: |
+          python scripts/mock_openai_server.py 18765 5 filler > mock.log 2>&1 &
+          export THOTH_DATA_DIR="$(cygpath -w "$RUNNER_TEMP/thoth-data")"
+          export THOTH_SELFTEST="$(cygpath -w "$PWD/tests/fixtures/epub/good/normal_epub3.epub");$(cygpath -w "$PWD/tests/fixtures/pdf/single-column.pdf")"
+          npx tauri dev > app.log 2>&1 &
+          for i in $(seq 1 700); do
+            grep -qE 'selftest done|panicked|error\[|error: could not compile' app.log && break
+            sleep 3
+          done
+          echo "---- self-test output"
+          grep -E '^\[webview' app.log | cut -c1-4000 || true
+          if ! grep -q 'selftest done' app.log; then
+            echo "---- last lines of the app log"
+            tail -n 60 app.log
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: windows-smoke-logs
+          path: |
+            app.log
+            mock.log
+          if-no-files-found: warn
 
   publish:
     name: Publish the release

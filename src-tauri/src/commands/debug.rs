@@ -1,5 +1,5 @@
 //! Debug-only self-test hooks (spec §10.1: test tooling is never compiled into release).
-//! THOTH_SELFTEST=<path>[:<path>...] registers those files as import candidates so the
+//! THOTH_SELFTEST=<path>[:<path>...] (a PATH-style list) registers those files as import candidates so the
 //! in-webview self-test can drive the real WKWebView without a file dialog.
 
 use super::core::*;
@@ -8,12 +8,9 @@ use tauri::State;
 
 #[tauri::command]
 pub async fn debug_selftest_files(core: State<'_, Arc<AppCore>>, meta: CommandMeta) -> Result<Wire, ()> {
-    let files = std::env::var("THOTH_SELFTEST").unwrap_or_default();
-    let cands: Vec<_> = files
-        .split(':')
-        .filter(|s| !s.is_empty())
-        .filter_map(|p| core.imports.register(std::path::PathBuf::from(p)))
-        .collect();
+    // A path list in the platform's own form (':' on macOS, ';' on Windows, where paths hold colons).
+    let files = std::env::var_os("THOTH_SELFTEST").unwrap_or_default();
+    let cands: Vec<_> = std::env::split_paths(&files).filter(|p| !p.as_os_str().is_empty()).filter_map(|p| core.imports.register(p)).collect();
     let provider = std::env::var("THOTH_SELFTEST_PROVIDER").ok();
     let model = std::env::var("THOTH_SELFTEST_MODEL").ok();
     let slow_ms = std::env::var("THOTH_SELFTEST_WAIT_MS").ok().and_then(|v| v.parse::<u64>().ok());
