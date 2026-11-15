@@ -104,6 +104,8 @@ npm run app:build
 
 The release build writes the app and disk image under `src-tauri/target/aarch64-apple-darwin/release/bundle/`.
 
+Releases are built on GitHub Actions: pushing a version tag (`v1.2.0`) builds the app and attaches the disk image to that tag's release. See [docs/releases](docs/releases).
+
 ### Tests
 
 ```bash
