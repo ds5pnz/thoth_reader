@@ -217,6 +217,15 @@ jobs:
           python scripts/mock_openai_server.py 18765 5 filler > mock.log 2>&1 &
           export THOTH_DATA_DIR="$(cygpath -w "$RUNNER_TEMP/thoth-data")"
           export THOTH_SELFTEST="$(cygpath -w "$PWD/tests/fixtures/epub/good/normal_epub3.epub");$(cygpath -w "$PWD/tests/fixtures/pdf/single-column.pdf")"
+          # A real public-domain book (Project Gutenberg) exercises pictures, long chapters
+          # and links, which the tiny fixtures cannot. The run goes on without it if the
+          # download fails.
+          book="$RUNNER_TEMP/alice.epub"
+          if curl -fsSL --max-time 60 -A "Mozilla/5.0" -o "$book" "https://www.gutenberg.org/ebooks/11.epub3.images" && [ "$(wc -c < "$book")" -gt 50000 ]; then
+            export THOTH_SELFTEST="$(cygpath -w "$book");$THOTH_SELFTEST"
+          else
+            echo "::warning::could not download the sample book; running with the fixtures only"
+          fi
           npx tauri dev > app.log 2>&1 &
           for i in $(seq 1 700); do
             grep -qE 'selftest done|panicked|error\[|error: could not compile' app.log && break
