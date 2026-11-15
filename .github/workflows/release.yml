@@ -1,0 +1,105 @@
+# Builds the macOS app and attaches it to the GitHub release of a version tag.
+#
+#   git tag -a v1.2.0 -m "Thoth Reader 1.2.0" && git push origin v1.2.0
+#
+# The release text comes from docs/releases/<tag>.md when that file exists, otherwise from
+# the commits since the previous tag. Run the workflow by hand ("Run workflow") to build
+# without publishing: the disk image is then only kept as a run artifact.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: macOS (Apple Silicon)
+    runs-on: macos-15
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --target aarch64-apple-darwin
+          rustc --version
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - run: npm ci
+
+      - name: The tag must match the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the app version $version"
+            exit 1
+          fi
+
+      - name: Frontend tests
+        run: npm test
+
+      - name: Build the app and disk image
+        run: npm run app:build
+
+      - name: Name and checksum the disk image
+        id: dmg
+        run: |
+          version=$(node -p "require('./package.json').version")
+          built=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -n 1)
+          file="Thoth.Reader_${version}_aarch64.dmg"
+          cp "$built" "$file"
+          hdiutil verify "$file"
+          shasum -a 256 "$file" | tee "$file.sha256"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: thoth-reader-macos-aarch64
+          path: |
+            ${{ steps.dmg.outputs.file }}
+            ${{ steps.dmg.outputs.file }}.sha256
+          if-no-files-found: error
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FILE: ${{ steps.dmg.outputs.file }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          notes="docs/releases/$tag.md"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            # the release was written by hand: only attach the build
+            gh release upload "$tag" "$FILE" "$FILE.sha256" --clobber
+          elif [ -f "$notes" ]; then
+            gh release create "$tag" "$FILE" "$FILE.sha256" --verify-tag --title "Thoth Reader ${tag#v}" --notes-file "$notes"
+          else
+            gh release create "$tag" "$FILE" "$FILE.sha256" --verify-tag --title "Thoth Reader ${tag#v}" --generate-notes
+          fi
