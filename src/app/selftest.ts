@@ -111,6 +111,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'views') await viewsCheck(res);
       if (cfg.scenario === 'pdftx' && isPdf) await pdfTranslationOnly(res);
       if (cfg.scenario === 'pdffig' && isPdf) await pdfFigures(res);
+      if (cfg.scenario === 'carried') await carriedCheck(res, isPdf);
       if (cfg.scenario === 'providers') await providersCheck(res, cfg.provider ?? '');
       await log('result', res);
       window.__thoth?.close?.();
@@ -1134,6 +1135,39 @@ async function selectionCheck(res: Record<string, unknown>, isPdf: boolean) {
   b('닫기')?.click();
   await sleep(300);
   out.closed = !document.querySelector('.sel-bar');
+}
+
+/** Side by side: code and other untranslated blocks appear on the translated side too. */
+async function carriedCheck(res: Record<string, unknown>, isPdf: boolean) {
+  const out: Record<string, unknown> = {};
+  res.carried = out;
+  const snap = async (name: string) => { const r = await invoke<unknown>('debug_snapshot', { meta: { apiVersion: 1, requestId: crypto.randomUUID() }, name }).catch((e) => String(e)); return /"saved":true/.test(JSON.stringify(r)); };
+  if (isPdf) { await sleep(5000); clickButton('리플로우'); await waitFor(() => rows() > 0, 20000); }
+  clickButton('병렬');
+  await waitFor(() => !!document.querySelector('.reflow'), 5000);
+  await sleep(1500);
+  const sc = () => document.querySelector<HTMLElement>('.reflow');
+  const code = () => [...document.querySelectorAll<HTMLElement>('.brow.kind-code')];
+  for (let k = 0; k < 120 && code().length === 0; k++) { const el = sc(); if (!el) break; el.scrollTop += 1500; userScroll(el); await sleep(300); }
+  const row = code()[0];
+  out.found = code().length;
+  if (!row) return;
+  row.scrollIntoView({ block: 'center' });
+  const el = sc(); if (el) userScroll(el);
+  await sleep(2500);
+  const all = code();
+  out.code = {
+    rows: all.length,
+    carried: all.filter((r) => r.querySelector('.trn > .src.carried')).length,
+    sameText: all.every((r) => (r.querySelector(':scope > .src')?.textContent ?? '') === (r.querySelector('.trn > .src.carried')?.textContent ?? '')),
+    sameHeight: all.every((r) => Math.abs((r.querySelector<HTMLElement>(':scope > .src')?.getBoundingClientRect().height ?? 0) - (r.querySelector<HTMLElement>('.trn > .src.carried')?.getBoundingClientRect().height ?? -9)) <= 2),
+  };
+  // translated paragraphs are not doubled
+  out.paragraphsCarried = document.querySelectorAll('.brow.kind-paragraph .trn > .src.carried').length;
+  out.shot = await snap('carried-code');
+  clickButton('교차');
+  await sleep(1200);
+  out.interleavedCarried = document.querySelectorAll('.trn > .src.carried').length;
 }
 
 /** PDF reflow: pictures of the page appear between the paragraphs. */

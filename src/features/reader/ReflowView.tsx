@@ -311,6 +311,16 @@ export function pictureNodes(nodes: readonly SafeNode[], out: SafeNode[] = []): 
   return out;
 }
 
+/** A block's content without its pictures (they are shown separately on the translated side). */
+export function withoutPictures(nodes: readonly SafeNode[]): SafeNode[] {
+  const out: SafeNode[] = [];
+  for (const n of nodes) {
+    if (n.t === 'image_ref') continue;
+    out.push('c' in n && Array.isArray(n.c) ? ({ ...n, c: withoutPictures(n.c) } as SafeNode) : n);
+  }
+  return out;
+}
+
 /** Whether the block has nothing to translate, so its source stands in every view. */
 export function isPreserved(block: Pick<Block, 'kind' | 'translationPolicy' | 'sourceText'>, status: string | undefined): boolean {
   if (status) return status === 'excluded';
@@ -350,7 +360,9 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
   const pictures = imageOnly ? [] : pictureNodes(block.content);
   // Translation-only view: the source is hidden until the paragraph is clicked. Rows with
   // nothing to translate (pictures, code, excluded paragraphs) always show their source.
-  const srcOnly = mode === 'translation' && (imageOnly || isPreserved(block, model.display.get(block.id)?.status));
+  const preserved = isPreserved(block, model.display.get(block.id)?.status);
+  const srcOnly = mode === 'translation' && (imageOnly || preserved);
+  const carried = preserved && !imageOnly && block.sourceText.trim().length > 0;
   const viewClass = mode !== 'translation' ? '' : srcOnly ? 'src-only' : revealed ? 'reveal' : 'src-hidden';
   const onRowClick = mode === 'translation' && !srcOnly ? (e: MouseEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
@@ -389,6 +401,13 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
             actions={actions}
             sourceWhilePending={mode !== 'interleaved'}
           />
+          {/* Side by side, what is not translated (code, formulas, tables, excluded
+              paragraphs) is carried over as it is, so the translated side reads complete. */}
+          {mode === 'parallel' && carried && (
+            <Tag className="src carried" lang={sourceLanguage} aria-hidden="true">
+              <SafeContentView nodes={pictures.length ? withoutPictures(block.content) : block.content.length ? block.content : [{ t: 'text', v: block.sourceText }]} resolvers={resolvers} />
+            </Tag>
+          )}
         </div>
       )}
     </div>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isPreserved, pictureNodes } from './ReflowView';
+import { isPreserved, pictureNodes, withoutPictures } from './ReflowView';
 
 describe('reflow rows', () => {
   it('finds the pictures of a block, nested ones too, and leaves formulas alone', () => {
@@ -19,5 +19,13 @@ describe('reflow rows', () => {
     // once the backend has spoken, its status decides
     expect(isPreserved({ kind: 'paragraph', translationPolicy: 'auto', sourceText: 'Text' }, 'excluded')).toBe(true);
     expect(isPreserved({ kind: 'figure', translationPolicy: 'preserve', sourceText: 'Caption' }, 'none')).toBe(false);
+  });
+  it('drops pictures from carried content and keeps the rest', () => {
+    const nodes = [
+      { t: 'image_ref' as const, resourceId: 'a', alt: '' },
+      { t: 'text' as const, v: 'Caption' },
+      { t: 'strong' as const, c: [{ t: 'image_ref' as const, resourceId: 'b', alt: '' }, { t: 'text' as const, v: 'bold' }] },
+    ];
+    expect(withoutPictures(nodes)).toEqual([{ t: 'text', v: 'Caption' }, { t: 'strong', c: [{ t: 'text', v: 'bold' }] }]);
   });
 });
