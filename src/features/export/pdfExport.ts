@@ -14,6 +14,7 @@ import type { SectionRow } from '../../ipc/generated/SectionRow';
 import { blockBox, expandBox, harmonizeFontSizes, pickBackground, resolveVerticalOverlaps, textColorFor, type BlockBox, type ItemSize, type Rgb } from '../../document/pdf/translatedPage';
 import { openSessionPdf, releaseSessionPdf } from '../../document/pdf/sessionPdf';
 import { draw, fit, runsOf, wrap, EXPORT_FONT, type Run } from './canvasText';
+import { docUrl } from '../../ipc/docUrl';
 
 export interface ExportProgress { done: number; total: number }
 export interface ExportOptions { onProgress: (p: ExportProgress) => void; cancelled: () => boolean; bilingual?: boolean }
@@ -279,7 +280,7 @@ export async function exportTypeset(session: ReaderSessionDto, sections: readonl
     for (const rid of imageRefs(b.content)) {
       const res = resources[rid];
       if (!res) continue;
-      const pic = await loadPicture(`thoth-doc://localhost/${session.assetToken}/epub/${res}`, width, maxPicH);
+      const pic = await loadPicture(docUrl(`${session.assetToken}/epub/${res}`), width, maxPicH);
       if (!pic) continue;
       // small inline pictures (icons, formulas) sit with the text; a figure gets air around it
       const gap = pic.h > 40 ? 8 : 3;

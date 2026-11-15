@@ -11,6 +11,7 @@ import { useIsDark } from '../../app/settings';
 import { EXTERNAL_SELECTION, HIGHLIGHT_COLORS, type ExternalSelection } from '../../features/annotations/annotations';
 import { countOccurrences, findQuoteInRange, ink, inkBefore, inkOfRange } from '../../features/annotations/quote';
 import { useShortcut } from '../../app/shortcuts';
+import { docUrl } from '../../ipc/docUrl';
 
 type Flow = 'scrolled' | 'paged';
 const FLOW_KEY = 'thoth.epubFlow';
@@ -90,7 +91,7 @@ export function parseSpineLink(href: string): { index: number; fragment: string 
 }
 
 export function packageUrl(session: ReaderSessionDto) {
-  return `thoth-doc://localhost/${session.assetToken}/epub/package.opf`;
+  return docUrl(`${session.assetToken}/epub/package.opf`);
 }
 
 export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
@@ -152,7 +153,7 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
     rendition.current = r;
     // The document CSP keeps base-uri 'none', so epub.js' injected <base> is ignored.
     // Make resource references absolute (attributes only; text nodes/CFIs untouched).
-    const assetBase = `thoth-doc://localhost/${session.assetToken}/epub/`;
+    const assetBase = docUrl(`${session.assetToken}/epub/`);
     (b.spine as unknown as { hooks: { serialize: { register: (fn: (out: string, section: { output: string }) => void) => void } } }).hooks.serialize.register((_out, section) => {
       section.output = absolutizeResourceRefs(section.output, assetBase);
     });

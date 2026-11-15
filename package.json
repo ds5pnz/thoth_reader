@@ -10,7 +10,8 @@
     "test": "vitest run",
     "tauri": "tauri",
     "gen:dto": "cd src-tauri && cargo test --lib export_bindings_ -- --quiet",
-    "app:build": "tauri build --target aarch64-apple-darwin"
+    "app:build": "tauri build --target aarch64-apple-darwin",
+    "app:build:windows": "tauri build --bundles nsis"
   },
   "dependencies": {
     "@tanstack/react-virtual": "3.14.26",

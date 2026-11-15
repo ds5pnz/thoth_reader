@@ -41,7 +41,12 @@ pub const RULES_VERSION: &str = "epub-rules/1";
 pub const EPUBJS_VERSION: &str = "0.3.93";
 
 /// Content-Security-Policy injected into every canonical content document head.
+#[cfg(not(windows))]
 pub const CONTENT_CSP: &str = "default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; img-src 'self' blob: thoth-doc:; font-src 'self' thoth-doc:; style-src 'self' 'unsafe-inline' thoth-doc:";
+/// WebView2 addresses the document protocol as `http://thoth-doc.localhost`, so the book's
+/// own resources come from that origin there. Nothing else is opened up.
+#[cfg(windows)]
+pub const CONTENT_CSP: &str = "default-src 'none'; script-src 'none'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; img-src 'self' blob: thoth-doc: http://thoth-doc.localhost; font-src 'self' thoth-doc: http://thoth-doc.localhost; style-src 'self' 'unsafe-inline' thoth-doc: http://thoth-doc.localhost";
 
 /// Hard input limits (spec §5.1). There is intentionally no "unlimited" option.
 #[derive(Debug, Clone, PartialEq, Eq)]

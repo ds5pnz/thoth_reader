@@ -3,13 +3,14 @@
 import { call } from '../../ipc/client';
 import type { DocumentRow } from '../../ipc/generated/DocumentRow';
 import type { PDFPageProxy } from 'pdfjs-dist';
+import { docUrl } from '../../ipc/docUrl';
 
 export const LIBRARY_META_VERSION = 1;
 const THUMB_WIDTH = 420;
 
 export function coverUrl(d: DocumentRow): string | null {
   if (d.metadata?.hasCover !== true) return null;
-  return `thoth-doc://localhost/cover/${d.id}?v=${Number(d.metadata?.coverVersion ?? 0)}`;
+  return docUrl(`cover/${d.id}?v=${Number(d.metadata?.coverVersion ?? 0)}`);
 }
 
 export function needsPdfCover(d: DocumentRow): boolean {
@@ -45,7 +46,7 @@ async function makePdfCover(documentId: string): Promise<Record<string, unknown>
   try {
     const { loadPdfDocument } = await import('../../document/pdf/pdfjs');
     // Encrypted PDFs get a generic cover: the library never asks for a password.
-    const { doc, task } = await loadPdfDocument({ url: `thoth-doc://localhost/${token}/pdf`, onPassword: async () => null, fontExtraProperties: false });
+    const { doc, task } = await loadPdfDocument({ url: docUrl(`${token}/pdf`), onPassword: async () => null, fontExtraProperties: false });
     destroy = () => task.destroy();
     const info = (await doc.getMetadata().catch(() => null))?.info as { Title?: unknown; Author?: unknown } | undefined;
     if (typeof info?.Title === 'string' && info.Title.trim()) title = info.Title.trim();

@@ -16,8 +16,8 @@
   --ok: #18794e;
   --highlight: rgba(255, 213, 79, 0.45);
   --focus: #2b7a88;
-  --reader-font: "Iowan Old Style", "Apple SD Gothic Neo", Georgia, serif;
-  --ui-font: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+  --reader-font: "Iowan Old Style", "Apple SD Gothic Neo", Georgia, "Malgun Gothic", serif;
+  --ui-font: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", "Malgun Gothic", sans-serif;
   --reader-size: 17px;
   --reader-line: 1.65;
   color-scheme: light;

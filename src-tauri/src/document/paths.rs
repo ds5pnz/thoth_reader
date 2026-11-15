@@ -91,7 +91,13 @@ mod tests {
         assert!(safe_join(&d.path().join("a"), "../secret").is_none());
         assert!(safe_join(&d.path().join("a"), "/etc/passwd").is_none());
         assert!(safe_join(&d.path().join("a"), "x\\..\\secret").is_none());
-        std::os::unix::fs::symlink(d.path().join("secret"), d.path().join("a/link")).unwrap();
-        assert!(safe_join(&d.path().join("a"), "link").is_none());
+        // drive-relative and rooted forms never resolve under the base (Windows path rules)
+        assert!(safe_join(&d.path().join("a"), "C:secret").is_none() || !cfg!(windows));
+        assert!(safe_join(&d.path().join("a"), "").is_none());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(d.path().join("secret"), d.path().join("a/link")).unwrap();
+            assert!(safe_join(&d.path().join("a"), "link").is_none());
+        }
     }
 }

@@ -2,6 +2,7 @@
 import type { PDFDocumentProxy } from 'pdfjs-dist';
 import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
 import { loadPdfDocument, type PasswordReason } from './pdfjs';
+import { docUrl } from '../../ipc/docUrl';
 
 type PasswordAsker = (reason: PasswordReason) => Promise<string | null>;
 let asker: PasswordAsker = async () => null;
@@ -15,7 +16,7 @@ type Entry = { p: Promise<{ doc: PDFDocumentProxy; task: { destroy(): Promise<vo
 const cache = new Map<string, Entry>();
 
 export function sessionPdfUrl(session: ReaderSessionDto) {
-  return `thoth-doc://localhost/${session.assetToken}/pdf`;
+  return docUrl(`${session.assetToken}/pdf`);
 }
 
 /** One PDFDocumentProxy per session token shared by the renderer and the extractor. */

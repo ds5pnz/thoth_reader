@@ -29,6 +29,7 @@ import { PdfOriginalView, type PdfOriginalHandle } from '../../document/pdf/PdfO
 import { usePdfExtraction } from '../../document/pdf/usePdfExtraction';
 import { setPasswordAsker } from '../../document/pdf/sessionPdf';
 import './reader.css';
+import { docUrl } from '../../ipc/docUrl';
 
 type PendingSwitch = { run: () => void } | null;
 
@@ -437,7 +438,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
     resourceUrl: (rid) => {
       const s = sessionRef.current;
       const res = (s?.metadata?.resources as Record<string, string> | undefined)?.[rid];
-      return s && res ? `thoth-doc://localhost/${s.assetToken}/epub/${res}` : null;
+      return s && res ? docUrl(`${s.assetToken}/epub/${res}`) : null;
     },
     openExternal: (url) => { void call('open_external', { url }).catch((e) => toast({ kind: 'error', text: errorMessage(e) })); },
     openInternal: (href) => {

@@ -1,16 +1,23 @@
-# Builds the macOS app and attaches it to the GitHub release of a version tag.
+# Builds the app for macOS and Windows and attaches the installers to the GitHub release
+# of a version tag.
 #
 #   git tag -a v1.2.0 -m "Thoth Reader 1.2.0" && git push origin v1.2.0
 #
 # The release text comes from docs/releases/<tag>.md when that file exists, otherwise from
 # the commits since the previous tag. Run the workflow by hand ("Run workflow") to build
-# without publishing: the disk image is then only kept as a run artifact.
+# without publishing: the installers are then only kept as run artifacts.
 name: Release
 
 on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      platforms:
+        description: Which builds to run (a tag always runs all of them)
+        type: choice
+        options: [all, macos, windows]
+        default: all
 
 concurrency:
   group: release-${{ github.ref }}
@@ -22,10 +29,9 @@ permissions:
 jobs:
   macos:
     name: macOS (Apple Silicon)
+    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'macos'
     runs-on: macos-15
     timeout-minutes: 60
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v7
 
@@ -69,7 +75,7 @@ jobs:
         run: npm run app:build
 
       - name: Name and checksum the disk image
-        id: dmg
+        id: pkg
         run: |
           version=$(node -p "require('./package.json').version")
           built=$(ls src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg | head -n 1)
@@ -83,23 +89,110 @@ jobs:
         with:
           name: thoth-reader-macos-aarch64
           path: |
-            ${{ steps.dmg.outputs.file }}
-            ${{ steps.dmg.outputs.file }}.sha256
+            ${{ steps.pkg.outputs.file }}
+            ${{ steps.pkg.outputs.file }}.sha256
           if-no-files-found: error
 
-      - name: Publish the release
+  windows:
+    name: Windows (x64)
+    if: github.event_name == 'push' || inputs.platforms == 'all' || inputs.platforms == 'windows'
+    runs-on: windows-latest
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Install the pinned Rust toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' src-tauri/rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal
+          (cd src-tauri && rustc --version)
+
+      - uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            src-tauri/target
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('src-tauri/rust-toolchain.toml', 'src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ runner.arch }}-
+
+      - run: npm ci
+
+      - name: The tag must match the app version
         if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match the app version $version"
+            exit 1
+          fi
+
+      - name: Frontend tests
+        run: npm test
+
+      # The Windows-specific code (secret store, path rules) is only exercised here.
+      - name: Rust tests
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      - name: Build the app and installer
+        run: npm run app:build:windows
+
+      - name: Name and checksum the installer
+        id: pkg
+        run: |
+          version=$(node -p "require('./package.json').version")
+          built=$(ls src-tauri/target/release/bundle/nsis/*-setup.exe | head -n 1)
+          file="Thoth.Reader_${version}_x64-setup.exe"
+          cp "$built" "$file"
+          sha256sum "$file" | tee "$file.sha256"
+          echo "file=$file" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: thoth-reader-windows-x64
+          path: |
+            ${{ steps.pkg.outputs.file }}
+            ${{ steps.pkg.outputs.file }}.sha256
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist-release
+          merge-multiple: true
+
+      - name: Create the release or attach to the one written by hand
         env:
           GH_TOKEN: ${{ github.token }}
-          FILE: ${{ steps.dmg.outputs.file }}
         run: |
           tag="$GITHUB_REF_NAME"
           notes="docs/releases/$tag.md"
+          ls -l dist-release
           if gh release view "$tag" >/dev/null 2>&1; then
-            # the release was written by hand: only attach the build
-            gh release upload "$tag" "$FILE" "$FILE.sha256" --clobber
+            gh release upload "$tag" dist-release/* --clobber
           elif [ -f "$notes" ]; then
-            gh release create "$tag" "$FILE" "$FILE.sha256" --verify-tag --title "Thoth Reader ${tag#v}" --notes-file "$notes"
+            gh release create "$tag" dist-release/* --verify-tag --title "Thoth Reader ${tag#v}" --notes-file "$notes"
           else
-            gh release create "$tag" "$FILE" "$FILE.sha256" --verify-tag --title "Thoth Reader ${tag#v}" --generate-notes
+            gh release create "$tag" dist-release/* --verify-tag --title "Thoth Reader ${tag#v}" --generate-notes
           fi

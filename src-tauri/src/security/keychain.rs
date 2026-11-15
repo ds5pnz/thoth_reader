@@ -1,4 +1,5 @@
-//! macOS Keychain storage for provider API keys (spec §6.2, T19).
+//! Secret storage for provider API keys and sign-in tokens (spec §6.2, T19): the macOS
+//! Keychain, or DPAPI-encrypted files on Windows.
 //!
 //! service = `app.thoth.reader.provider`, account = the provider's `keychain_ref` (UUID).
 //! There is deliberately no IPC that returns a stored key: the UI only learns
@@ -95,7 +96,7 @@ pub fn map_os_status(code: i32) -> AppError {
     .with("osStatus", code)
 }
 
-/// The real macOS Keychain.
+/// The operating system's secret store (macOS Keychain, Windows DPAPI).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct KeychainStore;
 
@@ -141,7 +142,120 @@ impl SecretStore for KeychainStore {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+/// Windows: secrets are encrypted with DPAPI (bound to the signed-in Windows user) and kept
+/// as one file per provider under `%LOCALAPPDATA%\app.thoth.reader\secrets`. The Credential
+/// Manager is not used because its entries are too small for sign-in tokens.
+#[cfg(windows)]
+mod dpapi {
+    use std::path::PathBuf;
+
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Cryptography::{CryptProtectData, CryptUnprotectData, CRYPTPROTECT_UI_FORBIDDEN, CRYPT_INTEGER_BLOB};
+
+    fn blob(b: &[u8]) -> CRYPT_INTEGER_BLOB {
+        CRYPT_INTEGER_BLOB { cbData: b.len() as u32, pbData: b.as_ptr() as *mut u8 }
+    }
+
+    /// Copies the output blob and frees the system allocation.
+    unsafe fn take(out: CRYPT_INTEGER_BLOB) -> Option<Vec<u8>> {
+        if out.pbData.is_null() {
+            return None;
+        }
+        let v = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
+        LocalFree(out.pbData as _);
+        Some(v)
+    }
+
+    pub fn protect(plain: &[u8]) -> Option<Vec<u8>> {
+        let input = blob(plain);
+        let entropy = blob(super::KEYCHAIN_SERVICE.as_bytes());
+        let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        // SAFETY: the input blobs point at live slices for the duration of the call; the
+        // output blob is owned by the system until `take` copies and frees it.
+        unsafe {
+            if CryptProtectData(&input, std::ptr::null(), &entropy, std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out) == 0 {
+                return None;
+            }
+            take(out)
+        }
+    }
+
+    pub fn unprotect(cipher: &[u8]) -> Option<Vec<u8>> {
+        let input = blob(cipher);
+        let entropy = blob(super::KEYCHAIN_SERVICE.as_bytes());
+        let mut out = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        // SAFETY: as in `protect`.
+        unsafe {
+            if CryptUnprotectData(&input, std::ptr::null_mut(), &entropy, std::ptr::null(), std::ptr::null(), CRYPTPROTECT_UI_FORBIDDEN, &mut out) == 0 {
+                return None;
+            }
+            take(out)
+        }
+    }
+
+    pub fn dir() -> Option<PathBuf> {
+        std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("app.thoth.reader").join("secrets"))
+    }
+}
+
+#[cfg(windows)]
+fn secret_path(account: &str) -> AppResult<std::path::PathBuf> {
+    validate_ref(account)?;
+    let dir = dpapi::dir().ok_or_else(|| map_os_status(ERR_SEC_NOT_AVAILABLE))?;
+    Ok(dir.join(format!("{account}.bin")))
+}
+
+#[cfg(windows)]
+impl SecretStore for KeychainStore {
+    fn store(&self, account: &str, secret: &str) -> AppResult<()> {
+        validate_secret(secret)?;
+        let path = secret_path(account)?;
+        let failed = || AppError::new(ErrorCode::KeychainUnavailable, "보안 저장소에 키를 저장하지 못했습니다.");
+        let cipher = dpapi::protect(secret.as_bytes()).ok_or_else(failed)?;
+        let dir = path.parent().ok_or_else(failed)?;
+        std::fs::create_dir_all(dir).map_err(|_| failed())?;
+        // write beside the target, then replace it, so a crash never leaves half a secret
+        let tmp = dir.join(format!("{account}.tmp"));
+        std::fs::write(&tmp, &cipher).map_err(|_| failed())?;
+        std::fs::rename(&tmp, &path).map_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+            failed()
+        })?;
+        // Verify the write actually landed before reporting success (spec §6.2).
+        if !self.has(account)? {
+            return Err(failed());
+        }
+        Ok(())
+    }
+
+    fn has(&self, account: &str) -> AppResult<bool> {
+        Ok(self.read(account)?.is_some())
+    }
+
+    fn delete(&self, account: &str) -> AppResult<()> {
+        match std::fs::remove_file(secret_path(account)?) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err(AppError::new(ErrorCode::KeychainUnavailable, "보안 저장소에서 키를 지우지 못했습니다.")),
+        }
+    }
+
+    fn read(&self, account: &str) -> AppResult<Option<SecretValue>> {
+        let cipher = match std::fs::read(secret_path(account)?) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err(map_os_status(ERR_SEC_NOT_AVAILABLE)),
+        };
+        // A file this Windows user cannot decrypt (copied from another account or machine)
+        // is unusable: report it like an unreadable key so the user enters it again.
+        let unreadable = || AppError::new(ErrorCode::KeychainUnavailable, "저장된 API 키를 읽을 수 없습니다. 키를 다시 입력해 주세요.");
+        let plain = dpapi::unprotect(&cipher).ok_or_else(unreadable)?;
+        Ok(Some(SecretValue::new(String::from_utf8(plain).map_err(|_| unreadable())?)))
+    }
+}
+
+/// Other platforms have no secret store yet.
+#[cfg(not(any(target_os = "macos", windows)))]
 impl SecretStore for KeychainStore {
     fn store(&self, _: &str, _: &str) -> AppResult<()> {
         Err(map_os_status(ERR_SEC_NOT_AVAILABLE))
@@ -295,5 +409,36 @@ mod tests {
         assert_eq!(read_secret(&r).unwrap().unwrap().expose(), "sk-thoth-test");
         delete_secret(&r).unwrap();
         assert!(!has_secret(&r).unwrap());
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn dpapi_store_round_trip() {
+        let store = KeychainStore;
+        let account = uuid::Uuid::new_v4().to_string();
+        assert!(!store.has(&account).unwrap());
+        assert!(store.read(&account).unwrap().is_none());
+        store.store(&account, "sk-test-secret-값").unwrap();
+        assert!(store.has(&account).unwrap());
+        assert_eq!(store.read(&account).unwrap().unwrap().expose(), "sk-test-secret-값");
+        // the file on disk is not the secret itself
+        let on_disk = std::fs::read(secret_path(&account).unwrap()).unwrap();
+        assert!(!String::from_utf8_lossy(&on_disk).contains("sk-test-secret"));
+        // replacing and deleting
+        store.store(&account, "second").unwrap();
+        assert_eq!(store.read(&account).unwrap().unwrap().expose(), "second");
+        store.delete(&account).unwrap();
+        store.delete(&account).unwrap();
+        assert!(!store.has(&account).unwrap());
+        // a corrupted file is reported, not treated as "no key"
+        std::fs::create_dir_all(secret_path(&account).unwrap().parent().unwrap()).unwrap();
+        std::fs::write(secret_path(&account).unwrap(), b"not a dpapi blob").unwrap();
+        assert!(store.read(&account).is_err());
+        store.delete(&account).unwrap();
+        assert!(store.store("not-a-uuid", "x").is_err());
     }
 }

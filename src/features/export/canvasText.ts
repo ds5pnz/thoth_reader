@@ -7,7 +7,7 @@ export interface Seg { text: string; x: number; run: Run }
 export interface Line { segs: Seg[]; width: number }
 export interface Measurer { font: string; measureText(s: string): { width: number } }
 
-export const EXPORT_FONT = '"Apple SD Gothic Neo", "Helvetica Neue", Helvetica, Arial, sans-serif';
+export const EXPORT_FONT = '"Apple SD Gothic Neo", "Malgun Gothic", "Helvetica Neue", Helvetica, Arial, sans-serif';
 
 export function fontOf(run: Pick<Run, 'bold' | 'italic'>, px: number, family = EXPORT_FONT): string {
   return `${run.italic ? 'italic ' : ''}${run.bold ? '700' : '400'} ${px}px ${family}`;

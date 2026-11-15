@@ -54,7 +54,17 @@ pub fn find_codex() -> Option<PathBuf> {
             dirs.push(home.join(rel));
         }
     }
-    dirs.into_iter().map(|d| d.join("codex")).find(|p| p.is_file())
+    if cfg!(windows) {
+        // npm's global shims and the standalone installer
+        for var in ["APPDATA", "LOCALAPPDATA"] {
+            if let Some(base) = std::env::var_os(var).map(PathBuf::from) {
+                dirs.push(base.join("npm"));
+                dirs.push(base.join("Programs").join("codex"));
+            }
+        }
+    }
+    let names: &[&str] = if cfg!(windows) { &["codex.exe", "codex.cmd"] } else { &["codex"] };
+    dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
 }
 
 /// The instructions of the thread: the request's system message (or a plain default) plus
