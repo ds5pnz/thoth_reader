@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-provider-use"
+description = "Enables the provider_use command without any pre-configured scope."
+commands.allow = ["provider_use"]
+
+[[permission]]
+identifier = "deny-provider-use"
+description = "Denies the provider_use command without any pre-configured scope."
+commands.deny = ["provider_use"]

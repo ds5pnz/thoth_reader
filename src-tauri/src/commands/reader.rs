@@ -283,7 +283,7 @@ pub fn validate_setting(key: &str, v: &serde_json::Value) -> AppResult<()> {
         "glossary" => v.as_array().map(|a| a.len() <= 500 && a.iter().all(|e| e.get("source").and_then(|x| x.as_str()).map(|s| !s.is_empty() && s.len() < 200).unwrap_or(false) && e.get("target").and_then(|x| x.as_str()).map(|s| s.len() < 200).unwrap_or(false))).unwrap_or(false),
         "promptTemplate" => v.as_str().map(|s| s.len() <= 4000).unwrap_or(false) || v.is_null(),
         "diskWarningBytes" => v.as_u64().is_some(),
-        "readingMode" => matches!(v.as_str(), Some("parallel" | "interleaved" | "original")),
+        "readingMode" => matches!(v.as_str(), Some("parallel" | "interleaved" | "original" | "translation")),
         "pdfView" => matches!(v.as_str(), Some("original" | "reflow")),
         "translationStyle" => matches!(v.as_str(), Some("polite" | "plain")),
         _ => false,
@@ -446,7 +446,7 @@ pub async fn block_set_preference(core: Core<'_>, window: WebviewWindow, meta: C
         check_id(&args.block_id, "blockId")?;
         let b = extraction::get_block_in_extraction(&core2.db.reader, &args.block_id, &s.extraction()?).await?;
         let v = translations::preference_set(&core2.db.writer, &b.id, args.translation_override.map(|p| p.as_str()), args.expected_version).await?;
-        let effective = TranslationPolicy::effective(b.translation_policy, b.quality.level, args.translation_override);
+        let effective = TranslationPolicy::effective(b.base_policy(), b.quality.level, args.translation_override);
         if effective != TranslationPolicy::Auto {
             core2.translation.cancel_block_auto(&s, &b.id).await;
         }

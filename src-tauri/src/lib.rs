@@ -86,6 +86,8 @@ macro_rules! app_handlers {
             commands::translation::provider_save,
             commands::translation::provider_list,
             commands::translation::provider_probe,
+            commands::translation::provider_remove,
+            commands::translation::provider_use,
             commands::accounts::chatgpt_sign_in,
             commands::accounts::chatgpt_sign_in_cancel,
             commands::accounts::chatgpt_sign_out,

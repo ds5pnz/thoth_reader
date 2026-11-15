@@ -231,7 +231,7 @@ impl TranslationService {
         for b in blocks {
             let (ov, pv) = translations::preference_get(&self.db.reader, &b.id).await?;
             let user = ov.as_deref().and_then(TranslationPolicy::parse);
-            let effective = TranslationPolicy::effective(b.translation_policy, b.quality.level, user);
+            let effective = TranslationPolicy::effective(b.base_policy(), b.quality.level, user);
             let current_key = match &profile {
                 Some(p) if effective != TranslationPolicy::Preserve => prepare::prepare(&self.db, s, p, b, Some(&ctx_index)).await.ok().map(|pj| pj.cache_key.clone()),
                 _ => None,
@@ -393,7 +393,7 @@ impl TranslationService {
         let lang = profile.profile.target_language.clone();
         if prio != Priority::P0 {
             let (ov, _) = translations::preference_get(&self.db.reader, &b.id).await?;
-            let eff = TranslationPolicy::effective(b.translation_policy, b.quality.level, ov.as_deref().and_then(TranslationPolicy::parse));
+            let eff = TranslationPolicy::effective(b.base_policy(), b.quality.level, ov.as_deref().and_then(TranslationPolicy::parse));
             // Text without any letters (ornaments, numbers, punctuation) is never auto-sent.
             if eff != TranslationPolicy::Auto || !b.source_text.chars().any(|c| c.is_alphabetic()) {
                 return Ok(Demand::Skipped("auto translation not allowed"));
@@ -405,7 +405,7 @@ impl TranslationService {
             if translations::head_get(&self.db.reader, &b.id, &lang).await?.manual_revision_id.is_some() {
                 return Ok(Demand::Skipped("manual pinned"));
             }
-        } else if b.translation_policy == TranslationPolicy::Preserve && b.kind.default_policy() == TranslationPolicy::Preserve {
+        } else if b.base_policy() == TranslationPolicy::Preserve && b.kind.default_policy() == TranslationPolicy::Preserve {
             return Ok(Demand::Skipped("이 블록은 원문 보존 대상입니다."));
         }
         let pj = Arc::new(prepare::prepare(&self.db, s, profile, b, None).await?);

@@ -60,7 +60,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   session: ReaderSessionDto;
   model: ReaderModel;
   loadSection: (id: string) => void;
-  mode: 'parallel' | 'original';
+  mode: 'parallel' | 'original' | 'translation';
   onVisible: (ids: string[], direction: 'forward' | 'backward') => void;
   onScrolled: () => void;
   actions: CellActions;
@@ -89,7 +89,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   const fitScale = useMemo(() => {
     const bw = bases[0]?.bw ?? 0;
     if (!bw || !paneWidth) return 1;
-    const cols = mode === 'original' && !spread ? 1 : 2;
+    const cols = mode === 'translation' || (mode === 'original' && !spread) ? 1 : 2;
     const avail = (paneWidth - GUTTER * (cols + 1)) / cols;
     return Math.max(0.3, Math.min(MAX_SCALE, Math.round((avail / bw) * 100) / 100));
   }, [bases, paneWidth, mode, spread]);
@@ -447,7 +447,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
   void syncScroll; // both pages share one scroller: nothing to synchronise
   return (
     <div className="pdf-split only" onMouseMove={(e) => { const r = e.currentTarget.getBoundingClientRect(); const n = r.bottom - e.clientY < 110; setNear((v) => (v === n ? v : n)); }} onMouseLeave={() => setNear(false)}>
-      <div ref={pagesRef} className={`pdf-pages ${mode === 'original' ? 'single' : 'dual'} ${night ? 'night' : ''}`} onScroll={onScroll} tabIndex={0} aria-label="PDF 페이지">
+      <div ref={pagesRef} className={`pdf-pages ${mode === 'parallel' ? 'dual' : 'single'} ${mode === 'translation' ? 'tx-only' : ''} ${night ? 'night' : ''}`} onScroll={onScroll} tabIndex={0} aria-label="PDF 페이지">
         {pageRows.map((row) => (
           <div key={row[0]!.index} className="pdf-row" style={{ gap: spread ? 2 : GUTTER, height: Math.max(...row.map((x) => x.height)), marginBottom: GUTTER, padding: `0 ${GUTTER}px` }}>
             {row.map((pm) => {
@@ -514,6 +514,7 @@ export const PdfOriginalView = forwardRef<PdfOriginalHandle, {
             <span className="spacer" />
             <button className="btn small ghost" onClick={() => setSelectedId(null)} aria-label="닫기">닫기</button>
           </header>
+          {mode === 'translation' && <p className="pdf-pop-src" lang="">{selected.sourceText}</p>}
           <TranslationCell detailed block={selected} display={model.display.get(selected.id)} job={model.jobs.get(selected.id)} preview={model.previews.get(selected.id)} autoActive={autoActive} targetLanguage={targetLanguage} actions={actions} />
         </aside>
       )}

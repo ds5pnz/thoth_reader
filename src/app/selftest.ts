@@ -108,6 +108,9 @@ export async function runSelftest() {
       if (cfg.scenario === 'selection') await selectionCheck(res, isPdf);
       if (cfg.scenario === 'epubview' && !isPdf) await epubViewCheck(res);
       if (cfg.scenario === 'screens') await screensCheck(res, i, cands.length);
+      if (cfg.scenario === 'views') await viewsCheck(res);
+      if (cfg.scenario === 'pdftx' && isPdf) await pdfTranslationOnly(res);
+      if (cfg.scenario === 'providers') await providersCheck(res, cfg.provider ?? '');
       await log('result', res);
       window.__thoth?.close?.();
       await sleep(800);
@@ -1130,6 +1133,167 @@ async function selectionCheck(res: Record<string, unknown>, isPdf: boolean) {
   b('닫기')?.click();
   await sleep(300);
   out.closed = !document.querySelector('.sel-bar');
+}
+
+/** PDF page view, translation only: one translated page per row, source on click. */
+async function pdfTranslationOnly(res: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  res.pdftx = out;
+  const snap = async (name: string) => { const r = await invoke<unknown>('debug_snapshot', { meta: { apiVersion: 1, requestId: crypto.randomUUID() }, name }).catch((e) => String(e)); return /"saved":true/.test(JSON.stringify(r)); };
+  await sleep(4000);
+  clickButton('병렬');
+  await sleep(2500);
+  const pages = () => document.querySelector<HTMLElement>('.pdf-pages');
+  const w = (sel: string) => document.querySelector<HTMLElement>(sel)?.getBoundingClientRect().width ?? 0;
+  const over = () => (pages()?.scrollWidth ?? 0) - (pages()?.clientWidth ?? 0);
+  out.parallel = { cls: pages()?.className, translatedW: Math.round(w('.pdf-page.translated')), over: over() };
+  clickButton('번역');
+  await sleep(3500);
+  const orig = document.querySelector<HTMLElement>('.pdf-page:not(.translated)');
+  out.translation = {
+    cls: pages()?.className,
+    translatedW: Math.round(w('.pdf-page.translated')),
+    originalHidden: orig ? getComputedStyle(orig).visibility === 'hidden' && getComputedStyle(orig).position === 'absolute' : null,
+    originalCanvas: !!orig?.querySelector('canvas'),
+    over: over(),
+    texts: document.querySelectorAll('.pdf-page.translated .tp-text').length,
+    slots: document.querySelectorAll('.pdf-page.translated .tp-slot').length,
+  };
+  await waitFor(() => document.querySelectorAll('.pdf-page.translated .tp-text').length > 2, 30000);
+  out.translatedTexts = document.querySelectorAll('.pdf-page.translated .tp-text').length;
+  out.shot = await snap('pdf-translation-only');
+  document.querySelector<HTMLElement>('.pdf-page.translated .tp-text')?.click();
+  await sleep(600);
+  out.popover = { open: !!document.querySelector('.pdf-pop'), sourceShown: (document.querySelector('.pdf-pop-src')?.textContent ?? '').length > 0 };
+  out.popShot = await snap('pdf-translation-only-pop');
+  clickButton('원문');
+  await sleep(1500);
+  out.backToOriginal = { over: over(), cls: pages()?.className, originalVisible: orig ? getComputedStyle(document.querySelector<HTMLElement>('.pdf-page:not(.translated)')!).visibility !== 'hidden' : null };
+}
+
+/** Settings: switching the provider in one step, picking a model on another one, removing one. */
+async function providersCheck(res: Record<string, unknown>, endpoint: string) {
+  const out: Record<string, unknown> = {};
+  res.providers = out;
+  const snap = async (name: string) => { const r = await invoke<unknown>('debug_snapshot', { meta: { apiVersion: 1, requestId: crypto.randomUUID() }, name }).catch((e) => String(e)); return /"saved":true/.test(JSON.stringify(r)); };
+  // a second provider on the same server, never used
+  await call('provider_save', { providerId: null, kind: 'openai_compatible', label: '둘째 서버', endpoint, accountNamespace: 'second', allowPrivateHttp: false, enabled: true });
+  document.querySelector<HTMLButtonElement>('button[aria-label="번역 설정"]')?.click();
+  await waitFor(() => document.querySelectorAll('.modal.settings .prov-list li').length === 2, 6000);
+  await sleep(800);
+  const dlg = () => document.querySelector<HTMLElement>('.modal.settings')!;
+  const rows = () => [...dlg().querySelectorAll<HTMLElement>('.prov-list li')];
+  const btn = (root: ParentNode, text: string) => [...root.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === text);
+  const inUse = () => rows().map((r) => r.querySelector('.in-use')?.textContent ?? null);
+  out.start = { rows: rows().length, selectedIsActive: rows()[0]?.classList.contains('sel'), inUse: inUse(), useButtons: rows().map((r) => !!btn(r, '사용')) };
+  // "use" on a provider without a model: nothing switches, the reader is told what to do
+  btn(rows()[1]!, '사용')?.click();
+  await sleep(900);
+  out.useWithoutModel = { note: dlg().querySelector('[role="status"].muted')?.textContent?.slice(0, 40), inUse: inUse(), secondSelected: rows()[1]?.classList.contains('sel') };
+  // its models were listed without pressing anything
+  out.autoModelsMs = await waitFor(() => (dlg().querySelector<HTMLSelectElement>('.card select.input')?.options.length ?? 0) > 1, 8000);
+  const sel = dlg().querySelector<HTMLSelectElement>('.card select.input');
+  if (sel) {
+    const v = [...sel.options].map((o) => o.value).find((x) => x) ?? '';
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(sel, v);
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    await sleep(300);
+    btn(dlg(), '이 모델로 번역하기')?.click();
+    await waitFor(() => !!rows()[1]?.querySelector('.in-use'), 8000);
+  }
+  out.afterPick = { inUse: inUse(), chip: document.querySelector('.model-chip')?.getAttribute('title') };
+  // one click back to the first provider
+  btn(rows()[0]!, '사용')?.click();
+  await waitFor(() => !!rows()[0]?.querySelector('.in-use'), 6000);
+  await sleep(400);
+  out.switchedBack = { inUse: inUse(), note: dlg().querySelector('[role="status"].muted')?.textContent?.slice(0, 30), chip: document.querySelector('.model-chip')?.getAttribute('title') };
+  out.shot = await snap('providers');
+  // remove the second one
+  rows()[1]?.querySelector<HTMLButtonElement>('.prov-pick')?.click();
+  await sleep(500);
+  btn(dlg(), '삭제')?.click();
+  await sleep(300);
+  out.confirmShown = !!dlg().querySelector('#remove-title');
+  out.confirmShot = await snap('providers-remove');
+  [...dlg().querySelectorAll<HTMLButtonElement>('.consent button')].find((b) => b.textContent === '삭제')?.click();
+  await waitFor(() => rows().length === 1, 6000);
+  await sleep(400);
+  out.afterRemove = { rows: rows().length, inUse: inUse(), listed: (await call<{ id: string }[]>('provider_list')).length };
+  // removing the one in use stops translation until another is chosen
+  btn(dlg(), '삭제')?.click();
+  await sleep(300);
+  [...dlg().querySelectorAll<HTMLButtonElement>('.consent button')].find((b) => b.textContent === '삭제')?.click();
+  await waitFor(() => rows().length === 0, 6000);
+  await sleep(600);
+  out.afterRemoveActive = { rows: rows().length, active: await call<unknown>('profile_active'), chip: document.querySelector('.model-chip')?.textContent ?? null };
+  [...dlg().querySelectorAll<HTMLButtonElement>('header button')].find((b) => b.textContent === '닫기')?.click();
+}
+
+/** Pictures in the translation column, the translation-only view, and the dark original view. */
+async function viewsCheck(res: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  res.views = out;
+  const snap = async (name: string) => { const r = await invoke<unknown>('debug_snapshot', { meta: { apiVersion: 1, requestId: crypto.randomUUID() }, name }).catch((e) => String(e)); return /"saved":true/.test(JSON.stringify(r)); };
+  clickButton('병렬');
+  await waitFor(() => !!document.querySelector('.reflow'), 5000);
+  await sleep(1500);
+  const scroller = () => document.querySelector<HTMLElement>('.reflow');
+  const fig = () => document.querySelector<HTMLElement>('.brow .trn-figure');
+  // walk the chapters until a figure with a caption shows up
+  if (!document.querySelector('#reader-sidebar')) document.querySelector<HTMLButtonElement>('button[aria-controls="reader-sidebar"]')?.click();
+  await sleep(300);
+  clickButton('목차');
+  await sleep(300);
+  const items = [...document.querySelectorAll<HTMLButtonElement>('.toc-item')];
+  for (let i = 0; i < Math.min(items.length, 14) && !fig(); i++) {
+    items[i]?.click();
+    await sleep(1200);
+    for (let k = 0; k < 30 && !fig(); k++) { const sc = scroller(); if (!sc) break; const before = sc.scrollTop; sc.scrollTop += 1800; userScroll(sc); await sleep(250); if (sc.scrollTop === before) break; }
+  }
+  const f = fig();
+  out.figureFound = !!f;
+  if (f) {
+    f.scrollIntoView({ block: 'center' });
+    const sc = scroller(); if (sc) userScroll(sc);
+    await sleep(2500);
+    const row = fig()?.closest('.brow');
+    const img = fig()?.querySelector('img');
+    await waitFor(() => !!row?.querySelector('.tcell-text'), 20000);
+    out.figure = { kind: row?.className.match(/kind-\w+/)?.[0], translatedSideImage: !!img && img.complete && img.naturalWidth > 0, captionTranslated: !!row?.querySelector('.tcell-text'), sameHeight: Math.abs((row?.querySelector('.src img')?.getBoundingClientRect().height ?? 0) - (img?.getBoundingClientRect().height ?? -9)) <= 1 };
+    out.figureShot = await snap('view-figure');
+  }
+  // translation only
+  clickButton('번역');
+  await waitFor(() => !!document.querySelector('.reflow.mode-translation'), 5000);
+  await sleep(1500);
+  const vis = (sel: string) => [...document.querySelectorAll<HTMLElement>(sel)].filter((e) => { const b = e.getBoundingClientRect(); return b.bottom > 60 && b.top < window.innerHeight && b.height > 0; });
+  out.translationOnly = { hidden: document.querySelectorAll('.brow.src-hidden').length, srcOnly: document.querySelectorAll('.brow.src-only').length, visibleSources: vis('.brow.src-hidden > .src').length, visibleTranslations: vis('.brow.src-hidden .tcell-text').length };
+  out.translationShot = await snap('view-translation');
+  const target = vis('.brow.src-hidden.kind-paragraph .tcell-text')[0];
+  target?.click();
+  await sleep(500);
+  out.reveal = { opened: document.querySelectorAll('.brow.reveal').length, sourceVisible: vis('.brow.reveal > .src').length };
+  out.revealShot = await snap('view-translation-reveal');
+  vis('.brow.reveal .tcell-text')[0]?.click();
+  await sleep(400);
+  out.closedAgain = document.querySelectorAll('.brow.reveal').length === 0;
+  // dark original
+  await call('settings_patch', { key: 'theme', value: 'dark', expectedVersion: null }).catch(() => {});
+  await window.__thoth?.reloadSettings?.();
+  clickButton('원문');
+  const frameDoc = () => document.querySelector<HTMLIFrameElement>('.epub-host iframe')?.contentDocument ?? null;
+  out.originalTextMs = await waitFor(() => (frameDoc()?.body?.textContent ?? '').trim().length > 200, 40000);
+  await sleep(1500);
+  const doc = frameDoc();
+  const win = document.querySelector<HTMLIFrameElement>('.epub-host iframe')?.contentWindow;
+  out.frameDebug = { frames: document.querySelectorAll('.epub-host iframe').length, epub: (window as unknown as { __thothEpub?: unknown }).__thothEpub ?? null, err: document.querySelector('.reader-error')?.textContent ?? null };
+  const p = doc?.querySelector('p');
+  out.dark = { htmlClass: doc?.documentElement.classList.contains('thoth-dark'), bodyBg: doc?.body && win ? win.getComputedStyle(doc.body).backgroundColor : null, textColor: p && win ? win.getComputedStyle(p).color : null };
+  out.darkShot = await snap('view-original-dark');
+  await call('settings_patch', { key: 'theme', value: 'light', expectedVersion: null }).catch(() => {});
+  await window.__thoth?.reloadSettings?.();
+  await sleep(600);
+  out.lightAgain = { htmlClass: doc?.documentElement.classList.contains('thoth-dark'), bodyBg: doc?.body && win ? win.getComputedStyle(doc.body).backgroundColor : null };
 }
 
 /** Documentation screenshots (README): the reader on the first book, then the library. */

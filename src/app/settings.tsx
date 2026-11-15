@@ -13,7 +13,7 @@ export type SettingsMap = {
   syncScroll?: boolean;
   glossary?: { source: string; target: string }[];
   promptTemplate?: string | null;
-  readingMode?: 'parallel' | 'interleaved' | 'original';
+  readingMode?: 'parallel' | 'interleaved' | 'original' | 'translation';
   pdfView?: 'original' | 'reflow';
   privacyAcknowledged?: boolean;
   translationStyle?: 'polite' | 'plain';
@@ -90,4 +90,19 @@ export function useSettings(): Ctx {
   const c = useContext(SettingsContext);
   if (!c) throw new Error('SettingsProvider missing');
   return c;
+}
+
+/** Whether the app is showing its dark theme (the setting, or the system when it follows it). */
+export function useIsDark(): boolean {
+  const { settings } = useSettings();
+  const [system, setSystem] = useState(() => typeof matchMedia === 'function' && matchMedia('(prefers-color-scheme: dark)').matches);
+  useEffect(() => {
+    if (typeof matchMedia !== 'function') return;
+    const m = matchMedia('(prefers-color-scheme: dark)');
+    const on = () => setSystem(m.matches);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, []);
+  const t = settings.theme ?? 'system';
+  return t === 'dark' || (t === 'system' && system);
 }

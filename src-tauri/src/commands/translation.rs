@@ -383,7 +383,78 @@ async fn save_provider(core: &AppCore, args: ProviderSaveArgs) -> AppResult<tran
 
 #[tauri::command]
 pub async fn provider_list(core: Core<'_>, meta: CommandMeta) -> Result<Wire, ()> {
-    let r = translations::provider_list(&core.db.reader).await;
+    let r = translations::provider_list(&core.db.reader).await.map(|all| all.into_iter().filter(|p| !is_removed(p)).collect::<Vec<_>>());
+    Ok(respond(&meta, r))
+}
+
+/// Switch translation to a provider in one step, with the model it was last set up with.
+/// Returns `{switched:false}` when the provider has never had a model chosen.
+#[tauri::command]
+pub async fn provider_use(core: Core<'_>, meta: CommandMeta, args: ProviderIdArgs) -> Result<Wire, ()> {
+    let r = async {
+        check_id(&args.provider_id, "providerId")?;
+        let row = translations::provider_get(&core.db.reader, &args.provider_id).await?.ok_or_else(|| AppError::not_found("Provider"))?;
+        if is_removed(&row) {
+            return Err(AppError::not_found("Provider"));
+        }
+        if !row.enabled {
+            return Err(AppError::new(ErrorCode::ProviderUnavailable, "먼저 이 Provider를 활성화해 주세요."));
+        }
+        let Some(profile) = translations::profile_latest_for_provider(&core.db.reader, &row.id).await? else {
+            return Ok(serde_json::json!({"switched": false}));
+        };
+        misc::setting_put(&core.db.writer, "activeProfileId", &serde_json::json!(profile.id), None).await?;
+        core.translation.on_settings_changed("activeProfileId").await;
+        Ok(serde_json::json!({"switched": true, "profileId": profile.id, "modelId": profile.model_id}))
+    }
+    .await;
+    Ok(respond(&meta, r))
+}
+
+/// A provider the user removed. The row stays because translation history refers to it.
+pub fn is_removed(p: &translations::ProviderRow) -> bool {
+    p.capabilities.get("removed").and_then(|v| v.as_bool()).unwrap_or(false)
+}
+
+/// Remove a provider from the app: it is disabled, hidden from the list, its secret (API
+/// key or sign-in tokens) is deleted, and it stops being the active one. Translations made
+/// with it stay in the books and their history.
+#[tauri::command]
+pub async fn provider_remove(core: Core<'_>, meta: CommandMeta, args: ProviderIdArgs) -> Result<Wire, ()> {
+    let r = async {
+        check_id(&args.provider_id, "providerId")?;
+        let row = translations::provider_get(&core.db.reader, &args.provider_id).await?.ok_or_else(|| AppError::not_found("Provider"))?;
+        // stop requests before anything is taken away
+        core.translation.invalidate_provider(&row.id);
+        let mut revoked = true;
+        if let Some(kref) = row.keychain_ref.as_deref() {
+            if ProviderKind::of_row(&row.kind, &row.capabilities) == Some(ProviderKind::Chatgpt) {
+                if let Ok(Some(cred)) = crate::security::chatgpt_auth::load(core.translation.secrets.as_ref(), kref) {
+                    revoked = crate::security::chatgpt_auth::revoke(&crate::security::chatgpt_auth::Endpoints::default(), &cred).await;
+                }
+            }
+            let _ = core.translation.secrets.delete(kref);
+        }
+        let mut caps = if row.capabilities.is_object() { row.capabilities.clone() } else { serde_json::json!({}) };
+        caps["removed"] = serde_json::json!(true);
+        if let Some(acc) = caps.get_mut("account").and_then(|a| a.as_object_mut()) {
+            acc.insert("signedIn".into(), serde_json::json!(false));
+            acc.insert("planEnabled".into(), serde_json::json!(false));
+        }
+        translations::provider_update_mutable(&core.db.writer, &row.id, None, Some(false), Some(None), Some(&caps)).await?;
+        core.translation.invalidate_provider(&row.id);
+        // it can no longer be the provider translations use
+        let mut was_active = false;
+        if let Some(active) = active_profile(&core).await? {
+            if active.provider_id == row.id {
+                was_active = true;
+                misc::setting_put(&core.db.writer, "activeProfileId", &serde_json::Value::Null, None).await?;
+                core.translation.on_settings_changed("activeProfileId").await;
+            }
+        }
+        Ok(serde_json::json!({"removed": true, "wasActive": was_active, "revoked": revoked}))
+    }
+    .await;
     Ok(respond(&meta, r))
 }
 

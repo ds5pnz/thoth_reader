@@ -270,3 +270,18 @@ span.hl-dot { cursor: default; width: 10px; height: 10px; margin-top: 4px; }
 /* which model is translating: readable at a glance, opens the translation settings */
 .model-chip { max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--fg-muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 10px; }
 .model-chip:hover { color: var(--fg); }
+
+/* the picture of a figure, shown with its translated caption */
+.trn-figure { margin-bottom: 4px; }
+/* translation-only view: one column; a click on a paragraph opens its source under it */
+.mode-translation .brow { grid-template-columns: 1fr; gap: 4px; max-width: 760px; }
+.mode-translation .brow.src-hidden > .src { display: none; }
+.mode-translation .brow.src-hidden, .mode-translation .brow.reveal { cursor: pointer; }
+.mode-translation .brow.src-hidden:hover { background: var(--bg-sunken); }
+.mode-translation .brow.reveal > .trn { order: 1; }
+.mode-translation .brow.reveal > .src { order: 2; color: var(--fg-muted); font-size: calc(var(--reader-size) * .92); border-left: 2px solid var(--accent-soft); padding-left: 14px; margin: 2px 0 8px; font-weight: 400; }
+.mode-translation .brow.reveal.kind-heading > .src { font-size: var(--reader-size); }
+/* PDF pages, translation only: the original page still renders (the translated page is drawn from it) but takes no room */
+.pdf-row { position: relative; }
+.pdf-pages.tx-only .pdf-page:not(.translated) { position: absolute; visibility: hidden; pointer-events: none; }
+.pdf-pop-src { margin: 0 0 8px; padding-bottom: 8px; border-bottom: 1px solid var(--border); color: var(--fg-muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }

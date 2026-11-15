@@ -31,3 +31,7 @@
 .current-model { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; margin-bottom: 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); }
 .current-model.none { border-color: var(--warn); background: var(--warn-soft); }
 .current-model strong { font-size: 15px; overflow-wrap: anywhere; }
+
+.row .spacer { flex: 1; }
+.btn.danger-text { color: var(--danger, #b42318); }
+.settings .btn.danger { background: #b42318; border-color: transparent; color: #fff; }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ModalBackdrop } from '../../app/Modal';
 import { call, errorMessage, mutate } from '../../ipc/client';
 import { useSettings } from '../../app/settings';
@@ -52,7 +52,7 @@ export function SettingsDialog({ onClose }: { onClose: () => void }) {
 }
 
 function TranslationSettings() {
-  const { settings, set } = useSettings();
+  const { settings, set, reload } = useSettings();
   const [providers, setProviders] = useState<ProviderRow[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [probe, setProbe] = useState<Record<string, ProbeResult | 'running'>>({});
@@ -90,10 +90,45 @@ function TranslationSettings() {
     try {
       const p = await call<ProviderRow[]>('provider_list');
       setProviders(p);
-      if (!selected && p[0]) setSelected(p[0].id);
+      setSelected((cur) => (cur && p.some((x) => x.id === cur) ? cur : p[0]?.id ?? null));
     } catch (e) { setErr(errorMessage(e)); }
   };
   useEffect(() => { void load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Open on the provider that is translating, not on whichever was added first.
+  const openedOnActive = useRef(false);
+  useEffect(() => {
+    if (openedOnActive.current || !active || !providers.some((p) => p.id === active.providerId)) return;
+    openedOnActive.current = true;
+    setSelected(active.providerId);
+  }, [active, providers]);
+  const [note, setNote] = useState<string | null>(null);
+
+  // Switch translation to a provider in one step, with the model it was last set up with.
+  const useProvider = async (p: ProviderRow) => {
+    setErr(null);
+    setNote(null);
+    try {
+      const r = await call<{ switched: boolean; profileId?: string; modelId?: string }>('provider_use', { providerId: p.id });
+      setSelected(p.id);
+      if (r.switched && r.profileId) {
+        await set('activeProfileId', r.profileId);
+        notifyActiveProfileChanged();
+        setNote(`이제 ${providerName(p.label, variantOf(p))}의 ${r.modelId}로 번역합니다.`);
+      } else {
+        setNote('이 Provider로는 아직 모델을 고른 적이 없습니다. 오른쪽에서 모델을 고르고 "이 모델로 번역하기"를 누르세요.');
+      }
+    } catch (e) { setErr(errorMessage(e)); }
+  };
+  const removeProvider = async (p: ProviderRow) => {
+    setErr(null);
+    try {
+      const r = await call<{ wasActive: boolean }>('provider_remove', { providerId: p.id });
+      await reload();
+      notifyActiveProfileChanged();
+      await load();
+      setNote(r.wasActive ? '삭제했습니다. 번역에 쓰던 Provider였으므로, 다른 Provider를 골라 주세요.' : '삭제했습니다.');
+    } catch (e) { setErr(errorMessage(e)); }
+  };
 
   const runProbe = async (p: ProviderRow) => {
     setProbe((x) => ({ ...x, [p.id]: 'running' }));
@@ -123,6 +158,7 @@ function TranslationSettings() {
       <section>
         <h3>Provider</h3>
         {err && <p className="badge danger" role="alert">{err}</p>}
+        {note && <p className="muted" role="status">{note}</p>}
         <ul className="prov-list">
           {providers.map((p) => (
             <li key={p.id} className={p.id === selected ? 'sel' : ''}>
@@ -131,6 +167,9 @@ function TranslationSettings() {
                 {active?.providerId === p.id && <span className="badge ok in-use" title={describeActiveProfile(active)}>사용 중 · {active.modelId}</span>}
                 <span className="faint">{VARIANT_LABEL[variantOf(p)]} · {variantOf(p) === 'chatgpt' || variantOf(p) === 'codex' ? (accountOf(p).email ?? p.endpoint) : p.endpoint}</span>
               </button>
+              {p.enabled && active?.providerId !== p.id && (
+                <button className="btn small" onClick={() => void useProvider(p)} title="번역을 이 Provider로 바꿉니다">사용</button>
+              )}
               <label className="switch">
                 <input type="checkbox" checked={p.enabled} onChange={(e) => void enable(p, e.target.checked)} /> 활성
               </label>
@@ -177,7 +216,7 @@ function TranslationSettings() {
       </section>
       {sel && (
         <section>
-          <ProviderDetail key={sel.id} provider={sel} probe={probe[sel.id]} onProbe={() => void runProbe(sel)} onChanged={load} onSignIn={() => void signIn(sel.id)} signingIn={signingIn} />
+          <ProviderDetail key={sel.id} provider={sel} probe={probe[sel.id]} onProbe={() => void runProbe(sel)} onChanged={load} onSignIn={() => void signIn(sel.id)} signingIn={signingIn} inUse={active?.providerId === sel.id} onRemove={() => void removeProvider(sel)} />
           <ProfileEditor key={`profile-${sel.id}`} provider={sel} probe={probe[sel.id]} active={active} onActivate={(id) => { void Promise.resolve(set('activeProfileId', id)).then(notifyActiveProfileChanged); }} />
         </section>
       )}
@@ -212,7 +251,16 @@ function AddProvider({ kind, onDone }: { kind: 'ollama' | 'openai_compatible'; o
   );
 }
 
-function ProviderDetail({ provider, probe, onProbe, onChanged, onSignIn, signingIn }: { provider: ProviderRow; probe: ProbeResult | 'running' | undefined; onProbe: () => void; onChanged: () => Promise<void>; onSignIn: () => void; signingIn: boolean }) {
+function ProviderDetail({ provider, probe, onProbe, onChanged, onSignIn, signingIn, inUse, onRemove }: { provider: ProviderRow; probe: ProbeResult | 'running' | undefined; onProbe: () => void; onChanged: () => Promise<void>; onSignIn: () => void; signingIn: boolean; inUse: boolean; onRemove: () => void }) {
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  // Local servers and account-backed providers list their models without sending text:
+  // fill the model picker as soon as the provider is opened.
+  const isLocal = /^http:\/\/(127\.0\.0\.1|localhost|\[::1\])/.test(provider.endpoint);
+  const kind = variantOf(provider);
+  useEffect(() => {
+    if (probe === undefined && provider.enabled && (isLocal || kind === 'codex' || (kind === 'chatgpt' && accountOf(provider).signedIn))) onProbe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider.id, provider.enabled]);
   const [secret, setSecret] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
   const variant = variantOf(provider);
@@ -296,7 +344,19 @@ function ProviderDetail({ provider, probe, onProbe, onChanged, onSignIn, signing
       <div className="row">
         <button className="btn small" onClick={onProbe} disabled={probe === 'running'}>{probe === 'running' ? '검사 중…' : '연결 검사'}</button>
         <button className="btn small ghost" onClick={() => void newEpoch()}>캐시 새로 시작</button>
+        <span className="spacer" />
+        {!confirmRemove && <button className="btn small ghost danger-text" onClick={() => setConfirmRemove(true)}>삭제</button>}
       </div>
+      {confirmRemove && (
+        <div className="consent" role="alertdialog" aria-labelledby="remove-title">
+          <h4 id="remove-title">“{providerName(provider.label, variant)}” Provider를 삭제할까요?</h4>
+          <p>목록에서 사라지고, 저장된 {variant === 'chatgpt' ? '로그인 정보' : 'API 키'}가 지워집니다. 이 Provider로 번역해 둔 내용과 이력은 책에 그대로 남습니다.{inUse ? ' 지금 번역에 쓰고 있는 Provider입니다. 삭제하면 다른 Provider를 고를 때까지 번역이 멈춥니다.' : ''}</p>
+          <div className="row">
+            <button className="btn" onClick={() => setConfirmRemove(false)}>취소</button>
+            <button className="btn danger" onClick={() => { setConfirmRemove(false); onRemove(); }}>삭제</button>
+          </div>
+        </div>
+      )}
       <p className="faint small-note">{variant === 'chatgpt' || variant === 'codex' ? '연결 검사는 모델 목록만 확인하며 문서 본문이나 시험 문구를 보내지 않습니다.' : '연결 검사는 문서 본문을 보내지 않으며, 응답 형식 확인을 위해 짧은 고정 문구를 보낼 수 있습니다.'}</p>
       {probe && probe !== 'running' && (
         probe.ok ? <p className="badge ok">연결됨 · 모델 {probe.models.length}개{probe.sentTestPrompt ? ' · 고정 문구 검사 수행' : ''}</p>
@@ -363,7 +423,7 @@ function ProfileEditor({ provider, probe, active, onActivate }: { provider: Prov
           ? <strong>{active.modelId}</strong>
           : <strong>설정되지 않음</strong>}
         {active && <span className="muted">{providerName(active.providerLabel, active.providerKind)} · 요청 방식 {promptModeLabel(active.promptMode)} · {active.sourceLanguage} → {active.targetLanguage}{active.providerEnabled ? '' : ' · Provider 비활성'}</span>}
-        {active && !mine && <span className="faint">다른 Provider의 모델입니다. 이 Provider로 바꾸려면 아래에서 모델을 고르고 프로필 적용을 누르세요.</span>}
+        {active && !mine && <span className="faint">지금은 다른 Provider로 번역하고 있습니다. 이 Provider로 바꾸려면 아래에서 모델을 고르고 "이 모델로 번역하기"를 누르세요.</span>}
       </div>
       <label>모델
         {models.length > 0 ? (
@@ -388,7 +448,7 @@ function ProfileEditor({ provider, probe, active, onActivate }: { provider: Prov
           <button type="button" aria-pressed={promptMode === 'simple'} onClick={() => setMode('simple')}>단순</button>
           <button type="button" aria-pressed={promptMode === 'rosetta'} onClick={() => setMode('rosetta')}>Rosetta</button>
         </div>
-        <span className="faint">표준은 일반 대화형 모델용입니다. TranslateGemma, Hunyuan-MT 같은 번역 전용 모델은 단순을, YanoljaNEXT Rosetta는 Rosetta를 쓰세요(둘 다 앞 문단 문맥은 보내지 않습니다). 모델 이름으로 자동 선택되며, 바꾼 뒤 프로필 적용을 눌러야 반영됩니다.</span>
+        <span className="faint">표준은 일반 대화형 모델용입니다. TranslateGemma, Hunyuan-MT 같은 번역 전용 모델은 단순을, YanoljaNEXT Rosetta는 Rosetta를 쓰세요(둘 다 앞 문단 문맥은 보내지 않습니다). 모델 이름으로 자동 선택되며, 바꾼 뒤 아래 버튼을 눌러야 반영됩니다.</span>
       </label>
       <label>번역 문체 (한국어)
         <div className="seg">
@@ -397,7 +457,7 @@ function ProfileEditor({ provider, probe, active, onActivate }: { provider: Prov
         </div>
         <span className="faint">문단마다 따로 번역하므로 문체를 고정합니다. 바꾸면 보이는 문단부터 새 문체로 다시 번역되고 이전 번역은 이력에 남습니다.</span>
       </label>
-      <button className="btn primary" disabled={!model.trim()} onClick={() => void create()}>프로필 적용</button>
+      <button className="btn primary" disabled={!model.trim()} onClick={() => void create()}>{mine && mine.modelId === model.trim() ? '설정 다시 적용' : '이 모델로 번역하기'}</button>
       {msg && <p className="muted">{msg}</p>}
     </div>
   );

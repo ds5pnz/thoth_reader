@@ -1,15 +1,16 @@
 // Parallel / interleaved / source-only reflow list for EPUB and PDF reflow (spec §1.1, §3.4).
 // Virtualized (~150 rows kept), visibility via IntersectionObserver with 150ms debounce.
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Block } from '../../ipc/generated/Block';
+import type { SafeNode } from '../../ipc/generated/SafeNode';
 import type { SectionRow } from '../../ipc/generated/SectionRow';
 import type { ReaderModel } from './useReaderSession';
 import { SafeContentView, type ContentResolvers } from './SafeContentView';
 import { TranslationCell, type CellActions } from '../translation/TranslationCell';
 import { Debouncer, isVisible, pickAnchor, scrollTopForAnchor, ScrollOrigin, attachUserIntent, VISIBLE_DEBOUNCE_MS } from '../../domain/visibility';
 
-export type ReflowMode = 'parallel' | 'interleaved' | 'original';
+export type ReflowMode = 'parallel' | 'interleaved' | 'original' | 'translation';
 
 type Row =
   | { kind: 'block'; key: string; block: Block; sectionId: string }
@@ -44,6 +45,10 @@ export const ReflowView = forwardRef<ReflowHandle, {
 }>(function ReflowView(props, ref) {
   const { model, mode, loadSection, onVisible, onScrolled, resolvers, actions, autoActive, targetLanguage, sourceLanguage, highlightBlockId } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Translation-only view: paragraphs whose source the reader opened. Kept here because
+  // rows are virtualized and forget their own state when scrolled away.
+  const [revealed, setRevealed] = useState<ReadonlySet<string>>(new Set());
+  const toggleReveal = useCallback((id: string) => setRevealed((prev) => { const next = new Set(prev); if (!next.delete(id)) next.add(id); return next; }), []);
   const origin = useRef(new ScrollOrigin());
   const lastTop = useRef(0);
   const direction = useRef<'forward' | 'backward'>('forward');
@@ -272,6 +277,8 @@ export const ReflowView = forwardRef<ReflowHandle, {
               ) : (
                 <BlockRow
                   block={r.block}
+                  revealed={revealed.has(r.block.id)}
+                  onToggleReveal={toggleReveal}
                   mode={mode}
                   model={model}
                   resolvers={resolvers}
@@ -290,8 +297,26 @@ export const ReflowView = forwardRef<ReflowHandle, {
   );
 });
 
-function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLanguage, sourceLanguage, highlighted }: {
+/** The pictures of a block (not formulas), in reading order. */
+export function pictureNodes(nodes: readonly SafeNode[], out: SafeNode[] = []): SafeNode[] {
+  for (const n of nodes) {
+    if (n.t === 'image_ref') out.push(n);
+    else if ('c' in n && Array.isArray(n.c)) pictureNodes(n.c, out);
+  }
+  return out;
+}
+
+/** Whether the block has nothing to translate, so its source stands in every view. */
+export function isPreserved(block: Pick<Block, 'kind' | 'translationPolicy' | 'sourceText'>, status: string | undefined): boolean {
+  if (status) return status === 'excluded';
+  if (block.translationPolicy === 'auto' || block.translationPolicy === 'manual_only') return false;
+  // a figure with words in it is translated like text (its caption is part of the block)
+  return !(block.kind === 'figure' && /\p{L}/u.test(block.sourceText));
+}
+
+function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLanguage, sourceLanguage, highlighted, revealed, onToggleReveal }: {
   block: Block; mode: ReflowMode; model: ReaderModel; resolvers: ContentResolvers; actions: CellActions; autoActive: boolean; targetLanguage: string; sourceLanguage: string; highlighted: boolean;
+  revealed: boolean; onToggleReveal: (blockId: string) => void;
 }) {
   const Tag = block.kind === 'heading' ? 'h3' : block.kind === 'code' ? 'pre' : block.kind === 'quote' ? 'blockquote' : 'div';
   const restricted = block.quality.level === 'low' || block.translationPolicy !== 'auto';
@@ -299,8 +324,19 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
   const imageOnly = isImageOnly(block);
   // EPUB headings carry their level as a role ("h1".."h6") so both columns keep the hierarchy.
   const headingLevel = block.kind === 'heading' ? Number(block.roles.find((r) => /^h[1-6]$/.test(r))?.slice(1) ?? 0) : 0;
+  const pictures = imageOnly ? [] : pictureNodes(block.content);
+  // Translation-only view: the source is hidden until the paragraph is clicked. Rows with
+  // nothing to translate (pictures, code, excluded paragraphs) always show their source.
+  const srcOnly = mode === 'translation' && (imageOnly || isPreserved(block, model.display.get(block.id)?.status));
+  const viewClass = mode !== 'translation' ? '' : srcOnly ? 'src-only' : revealed ? 'reveal' : 'src-hidden';
+  const onRowClick = mode === 'translation' && !srcOnly ? (e: MouseEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('button, a, textarea, input, select, .menu, .tcell.editing')) return;
+    if (window.getSelection()?.toString()) return; // selecting text is not a click
+    onToggleReveal(block.id);
+  } : undefined;
   return (
-    <div className={`brow kind-${block.kind} ${headingLevel ? `lvl-${headingLevel}` : ''} ${highlighted ? 'hl' : ''}`} data-block-id={block.id}>
+    <div className={`brow kind-${block.kind} ${headingLevel ? `lvl-${headingLevel}` : ''} ${highlighted ? 'hl' : ''} ${viewClass}`} data-block-id={block.id} onClick={onRowClick} title={viewClass === 'src-hidden' ? '클릭하면 원문을 봅니다' : undefined}>
       <Tag className="src" id={srcId} lang={sourceLanguage}>
         <SafeContentView nodes={block.content.length ? block.content : [{ t: 'text', v: block.sourceText }]} resolvers={resolvers} />
         {restricted && block.quality.reasons.length > 0 && <span className="badge warn qual" title={block.quality.reasons.join(', ')}>제한</span>}
@@ -312,8 +348,14 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
           <SafeContentView nodes={block.content} resolvers={resolvers} />
         </div>
       )}
-      {mode !== 'original' && !imageOnly && (
+      {mode !== 'original' && !imageOnly && !srcOnly && (
         <div className="trn" aria-describedby={srcId}>
+          {/* The picture belongs to the translated side too; only its caption is translated. */}
+          {pictures.length > 0 && mode !== 'interleaved' && (
+            <div className="trn-figure" aria-hidden={mode === 'parallel' ? true : undefined}>
+              <SafeContentView nodes={pictures} resolvers={resolvers} />
+            </div>
+          )}
           <TranslationCell
             block={block}
             display={model.display.get(block.id)}
@@ -322,7 +364,7 @@ function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLa
             autoActive={autoActive}
             targetLanguage={targetLanguage}
             actions={actions}
-            sourceWhilePending={mode === 'parallel'}
+            sourceWhilePending={mode !== 'interleaved'}
           />
         </div>
       )}

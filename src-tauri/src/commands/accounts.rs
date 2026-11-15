@@ -220,7 +220,7 @@ pub async fn codex_connect(core: Core<'_>, meta: CommandMeta) -> Result<Wire, ()
         }
         let account = serde_json::json!({"email": st.email, "signedIn": true, "plan": st.plan, "type": st.account_type});
         let all = translations::provider_list(&core.db.reader).await?;
-        if let Some(row) = all.into_iter().find(|p| ProviderKind::of_row(&p.kind, &p.capabilities) == Some(ProviderKind::Codex)) {
+        if let Some(row) = all.into_iter().find(|p| !crate::commands::translation::is_removed(p) && ProviderKind::of_row(&p.kind, &p.capabilities) == Some(ProviderKind::Codex)) {
             let caps = account_caps(&row.capabilities, "codex", account);
             translations::provider_update_mutable(&core.db.writer, &row.id, None, None, None, Some(&caps)).await?;
             core.translation.invalidate_provider(&row.id);

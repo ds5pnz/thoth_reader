@@ -511,6 +511,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           <button aria-pressed={mode === 'parallel'} onClick={() => setMode('parallel')}>병렬</button>
           <button aria-pressed={mode === 'interleaved'} onClick={() => setMode('interleaved')}>교차</button>
           <button aria-pressed={mode === 'original'} onClick={() => setMode('original')}>원문</button>
+          <button aria-pressed={mode === 'translation'} onClick={() => setMode('translation')} title="번역문만 봅니다. 문단을 누르면 원문이 보입니다.">번역</button>
         </div>
         <span className="lang-pair" role="img" aria-label={`원문 ${sourceLanguage}에서 대상 언어 ${targetLanguage}로 번역`} title={`${sourceLanguage} → ${targetLanguage}`}>
           <span className="flag">{flagOf(sourceLanguage) ?? sourceLanguage}</span>
@@ -592,7 +593,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
               session={session}
               model={model}
               loadSection={loadSection}
-              mode={mode === 'original' ? 'original' : 'parallel'}
+              mode={mode === 'original' ? 'original' : mode === 'translation' ? 'translation' : 'parallel'}
               onVisible={onVisible}
               onScrolled={onScrolled}
               actions={actions}

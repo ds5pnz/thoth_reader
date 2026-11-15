@@ -31,7 +31,7 @@ Books, translations, notes and settings stay on your Mac. Text leaves the machin
 
 **Translation**
 
-- Side-by-side, interleaved, or translation-only views that keep you at the same paragraph when you switch
+- Side-by-side, interleaved, or translation-only views that keep you at the same paragraph when you switch; in the translation-only view a click on a paragraph shows its source
 - Translates what you are reading first, then the surrounding pages in the background
 - Sentences split by a page break are translated as one sentence
 - Bold, italic and coloured emphasis are carried into the translation

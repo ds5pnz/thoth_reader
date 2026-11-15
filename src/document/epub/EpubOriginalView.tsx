@@ -7,6 +7,7 @@ import type { ReaderModel } from '../../features/reader/useReaderSession';
 import type { Block } from '../../ipc/generated/Block';
 import { blockForCfi, cfiStart } from './cfi';
 import type { AnnotationRow } from '../../ipc/generated/AnnotationRow';
+import { useIsDark } from '../../app/settings';
 import { EXTERNAL_SELECTION, HIGHLIGHT_COLORS, type ExternalSelection } from '../../features/annotations/annotations';
 import { countOccurrences, findQuoteInRange, ink, inkBefore, inkOfRange } from '../../features/annotations/quote';
 import { useShortcut } from '../../app/shortcuts';
@@ -29,6 +30,31 @@ export interface EpubOriginalHandle {
  *  to absolute asset URLs. Only attribute values are touched. */
 export function absolutizeResourceRefs(xhtml: string, assetBase: string): string {
   return xhtml.replace(/(\s(?:src|href|xlink:href)=")\.\.\/(r|x)\/([^"#?]+)/g, (_m, attr: string, dir: string, rest: string) => `${attr}${assetBase}${dir}/${rest}`);
+}
+
+/** Dark reading colours for the book's own document. The book's stylesheet stays; only
+ *  text, background and border colours are overridden, scoped to a class on <html> so the
+ *  light theme is simply the class being absent. Pictures keep a light backing because
+ *  line art with a transparent background is drawn for a light page. */
+export const DARK_CSS = `
+html.thoth-dark, html.thoth-dark body { background: #1e2125 !important; color: #e6e3dc !important; }
+html.thoth-dark body * { color: inherit !important; background-color: transparent !important; border-color: #3a3f46 !important; }
+html.thoth-dark body a[href], html.thoth-dark body a[href] * { color: #8cc7d3 !important; }
+html.thoth-dark body pre, html.thoth-dark body code, html.thoth-dark body kbd, html.thoth-dark body samp { background-color: #15171a !important; }
+html.thoth-dark body img { background-color: #f4f2ec !important; }
+`;
+
+/** Put the book's document in the app's theme. Safe to call repeatedly. */
+export function applyTheme(doc: Document, dark: boolean): void {
+  const root = doc.documentElement;
+  if (!root) return;
+  if (dark && !doc.getElementById('thoth-dark-style')) {
+    const style = doc.createElement('style');
+    style.id = 'thoth-dark-style';
+    style.textContent = DARK_CSS;
+    (doc.head ?? root).appendChild(style);
+  }
+  if (root.classList.contains('thoth-dark') !== dark) root.classList.toggle('thoth-dark', dark);
 }
 
 const LINK_PREFIX = '#thoth-l-';
@@ -75,6 +101,9 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
   openExternal: (url: string) => void;
   annotations?: readonly AnnotationRow[];
 }>(function EpubOriginalView({ session, model, loadSection, onScrolled, openExternal, annotations = [] }, ref) {
+  const dark = useIsDark();
+  const darkRef = useRef(dark);
+  darkRef.current = dark;
   const host = useRef<HTMLDivElement>(null);
   const rendition = useRef<Rendition | null>(null);
   const book = useRef<Book | null>(null);
@@ -141,7 +170,7 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       if (performance.now() > programmaticUntil.current) onScrolledRef.current();
     });
     // Links: see the link poll below (listeners inside the frame never run).
-    r.hooks.content.register((contents: { document: Document }) => { armLinks(contents.document); });
+    r.hooks.content.register((contents: { document: Document }) => { armLinks(contents.document); applyTheme(contents.document, darkRef.current); });
     // Changing the layout re-creates the rendition: come back to where the reader was.
     const resume = currentCfi.current;
     const start = session.position?.blockId ? allBlocks.current.find((x) => x.id === session.position?.blockId) : undefined;
@@ -215,6 +244,11 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
   // and shortcuts keep working after a click in the text.
   const rootRef = useRef<HTMLDivElement>(null);
   const lastHash = useRef('');
+  // theme changes reach the book at once, not at the next poll
+  useEffect(() => {
+    const doc = host.current?.querySelector<HTMLIFrameElement>('iframe')?.contentDocument;
+    if (doc) applyTheme(doc, dark);
+  }, [dark]);
   const followLink = useRef<(l: { href: string; external: boolean }) => void>(() => {});
   followLink.current = (l) => {
     if (l.external) { if (/^https?:\/\//i.test(l.href)) openExternal(l.href); return; }
@@ -233,6 +267,7 @@ export const EpubOriginalView = forwardRef<EpubOriginalHandle, {
       if (!frame || !win || !doc) return;
       if (document.activeElement === frame) rootRef.current?.focus({ preventScroll: true });
       armLinks(doc);
+      applyTheme(doc, darkRef.current);
       const hash = win.location.hash;
       if (hash !== lastHash.current) {
         lastHash.current = hash;

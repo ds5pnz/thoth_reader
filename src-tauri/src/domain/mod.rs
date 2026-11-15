@@ -290,6 +290,20 @@ pub struct Block {
     pub roles: Vec<String>,
 }
 
+impl Block {
+    /// The policy extraction gave the block, with one correction made at read time: a
+    /// figure that carries words (its caption sits in the same block) is translated like
+    /// text. Pure pictures, code, formulas and tables stay preserved. Read-time so books
+    /// extracted earlier need no re-extraction.
+    pub fn base_policy(&self) -> TranslationPolicy {
+        if self.kind == BlockKind::Figure && self.translation_policy == TranslationPolicy::Preserve && self.source_text.chars().any(|c| c.is_alphabetic()) {
+            TranslationPolicy::Auto
+        } else {
+            self.translation_policy
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
@@ -423,5 +437,43 @@ mod tests {
         assert_eq!(normalize_source_text("  a \n b", BlockKind::Code), "  a \n b");
         // NFC: e + combining acute -> é
         assert_eq!(normalize_source_text("e\u{301}", BlockKind::Paragraph), "\u{e9}");
+    }
+}
+
+#[cfg(test)]
+mod base_policy_tests {
+    use super::*;
+
+    fn block(kind: BlockKind, policy: TranslationPolicy, text: &str) -> Block {
+        Block {
+            id: "b".into(),
+            extraction_id: "e".into(),
+            section_id: "s".into(),
+            parent_id: None,
+            ordinal: 0,
+            kind,
+            source_hash: "h".into(),
+            raw_text: text.into(),
+            source_text: text.into(),
+            content: vec![],
+            location: SourceLocation::Pdf { page_index: 0, view_box: vec![0.0, 0.0, 612.0, 792.0], rotation: 0, rects: vec![], item_ranges: vec![] },
+            quality: Quality { level: QualityLevel::High, reasons: vec![] },
+            translation_policy: policy,
+            mapping: BlockMapping::default(),
+            roles: vec![],
+        }
+    }
+
+    #[test]
+    fn figure_with_caption_is_translatable() {
+        use TranslationPolicy::*;
+        assert_eq!(block(BlockKind::Figure, Preserve, "Figure 1-1. How it works").base_policy(), Auto);
+        assert_eq!(block(BlockKind::Figure, Preserve, "").base_policy(), Preserve, "a bare picture has nothing to translate");
+        assert_eq!(block(BlockKind::Figure, Preserve, "1-1 →").base_policy(), Preserve, "no letters");
+        assert_eq!(block(BlockKind::Code, Preserve, "let x = 1;").base_policy(), Preserve);
+        assert_eq!(block(BlockKind::Paragraph, Auto, "Text").base_policy(), Auto);
+        // a user override can still exclude the figure again
+        let f = block(BlockKind::Figure, Preserve, "Figure 1-1. How it works");
+        assert_eq!(TranslationPolicy::effective(f.base_policy(), f.quality.level, Some(Preserve)), Preserve);
     }
 }

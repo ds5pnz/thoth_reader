@@ -20,6 +20,8 @@ pub enum ReadingMode {
     Parallel,
     Interleaved,
     Original,
+    /// Translation only; the source of a paragraph is shown on demand.
+    Translation,
 }
 
 #[derive(Debug, Clone)]

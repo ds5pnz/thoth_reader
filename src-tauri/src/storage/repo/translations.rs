@@ -156,6 +156,11 @@ pub async fn profile_get_or_create(pool: &SqlitePool, p: &ProfileRow) -> AppResu
     Ok(profile_from_row(&r))
 }
 
+/// The profile most recently created for a provider (its last chosen model and options).
+pub async fn profile_latest_for_provider(pool: &SqlitePool, provider_id: &str) -> AppResult<Option<ProfileRow>> {
+    Ok(sqlx::query("select * from translation_profiles where provider_id = ? order by created_at desc, rowid desc limit 1").bind(provider_id).fetch_optional(pool).await?.map(|r| profile_from_row(&r)))
+}
+
 pub async fn profile_get(pool: &SqlitePool, id: &str) -> AppResult<Option<ProfileRow>> {
     Ok(sqlx::query("select * from translation_profiles where id = ?").bind(id).fetch_optional(pool).await?.map(|r| profile_from_row(&r)))
 }
