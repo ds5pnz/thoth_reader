@@ -9,6 +9,8 @@ export default defineConfig({
   worker: { format: 'es' },
   test: {
     environment: 'jsdom',
+    // The first PDF test loads pdf.js; on a cold CI machine that alone can pass 5 s.
+    testTimeout: 30000,
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
   },
 });
