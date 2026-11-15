@@ -10,3 +10,6 @@ the install note:
 ```bash
 xattr -dr com.apple.quarantine "/Applications/Thoth Reader.app"
 ```
+
+The Windows installer is not code-signed either: Windows SmartScreen shows a warning
+("Windows protected your PC") that is passed with *More info → Run anyway*.

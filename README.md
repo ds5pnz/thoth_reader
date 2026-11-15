@@ -104,7 +104,9 @@ npm run app:build
 
 The release build writes the app and disk image under `src-tauri/target/aarch64-apple-darwin/release/bundle/`.
 
-Releases are built on GitHub Actions: pushing a version tag (`v1.2.0`) builds the app and attaches the disk image to that tag's release. See [docs/releases](docs/releases).
+Releases are built on GitHub Actions: pushing a version tag (`v1.2.0`) builds the macOS disk image and the Windows installer and attaches them to that tag's release. See [docs/releases](docs/releases).
+
+On Windows (x64, with the MSVC build tools and WebView2), `npm run app:build:windows` writes the installer under `src-tauri/target/release/bundle/nsis/`.
 
 ### Tests
 
@@ -133,7 +135,8 @@ Design decisions are recorded in [docs/adr](docs/adr), and the current implement
 - Text in exported PDFs is rasterized, so it cannot be searched or copied.
 - Scanned PDFs without a text layer are not supported (no OCR).
 - The app is not code-signed or notarized.
-- Apple Silicon only.
+- macOS builds are for Apple Silicon only.
+- The Windows build is new: it is built and exercised by an automated run on GitHub's Windows machines (books open, translate, and render in every view), but it has not been used by a person on a Windows PC yet. It is not code-signed, so Windows shows a SmartScreen warning when the installer is started.
 
 ## License
 

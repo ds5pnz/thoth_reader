@@ -230,3 +230,17 @@ THOTH_SELFTEST_PROVIDER=http://localhost:1235/v1 THOTH_SELFTEST_MODEL=<model> sc
 - `.github/workflows/release.yml`: `v*` 태그를 올리면 macOS(Apple Silicon) 러너에서 고정된 Rust 툴체인으로 앱을 빌드하고, 프런트 테스트를 돌린 뒤 DMG와 SHA-256 파일을 그 태그의 릴리스에 붙인다. 릴리스가 이미 있으면 파일만 붙이고, 없으면 `docs/releases/<tag>.md`(없으면 커밋 목록)로 릴리스를 만든다. 태그와 앱 버전이 다르면 실패한다.
 - 수동 실행은 릴리스 없이 빌드만 하고 DMG를 실행 결과물로 남긴다. 2026-11-15 수동 실행 성공(약 7분, DMG 검증 통과). **태그로 시작해 릴리스를 만드는 경로는 아직 실제로 돌려 보지 않았다.**
 - 서명·공증은 하지 않는다.
+
+## Windows 빌드 (2026-11-15)
+
+- 같은 소스로 Windows(x64) 설치 파일을 만든다. `.github/workflows/release.yml`에 Windows 작업이 추가됐고, 태그를 올리면 macOS DMG와 Windows NSIS 설치 파일(`Thoth.Reader_<버전>_x64-setup.exe`, 사용자 단위 설치)이 한 릴리스에 붙는다. 빌드 작업 둘이 끝난 뒤 발행 작업 하나가 릴리스를 만든다.
+- 운영체제별로 나눈 부분:
+  - 비밀 저장소: Windows는 DPAPI로 암호화한 파일을 `%LOCALAPPDATA%\app.thoth.reader\secrets`에 둔다(자격 증명 관리자는 항목 크기가 로그인 토큰에 부족). macOS 키체인 코드는 그대로다.
+  - 문서 주소: WebView2는 사용자 프로토콜을 `http://thoth-doc.localhost`로 다루므로 주소를 `src/ipc/docUrl.ts` 한곳에서 만든다. 새니타이즈된 EPUB 문서의 CSP는 Windows에서만 그 출처를 허용한다(macOS 출력은 바이트 단위로 그대로).
+  - Codex 실행 파일 이름과 위치(`codex.exe`, `codex.cmd`), 한글 글꼴 대체(맑은 고딕), 디버그 화면 저장은 macOS 전용.
+- 검증(모두 GitHub의 Windows 러너):
+  - Rust 테스트 304개 통과(DPAPI 저장소 왕복 포함), 프런트 테스트 통과, 릴리스 빌드와 설치 파일 생성.
+  - 앱 실행 시험(수동 작업 `windows-smoke`, 디버그 빌드 + 흉내 번역 서버): EPUB·PDF 가져오기와 열기, 리플로우, 병렬·교차 전환, 번역 표시, 다시 열었을 때 번역·위치 복원. 공개 도서(프로젝트 구텐베르크)로 EPUB 원문 보기의 선택 툴바, 형광펜, 쪽 넘김, 2단, 책 안 링크 이동까지 통과.
+  - Windows의 웹뷰는 스크립트 없는 프레임 안에서도 바깥에서 붙인 리스너를 실행한다(WebKit과 다름). 지금의 폴링 방식은 양쪽에서 동작한다.
+- **확인하지 못한 것**: 사람이 Windows PC에서 설치 파일로 설치해 써 본 적이 없다. 글꼴·배치의 모양, 파일 선택 대화상자, 전체 화면, 내보내기, ChatGPT 로그인, Codex 연동, 실제 번역 서버 연결은 Windows에서 돌려 보지 않았다. 설치 파일은 서명되지 않았다.
+- 닫힌 로컬 포트에 연결하면 Windows는 즉시 거절 대신 연결 시간 초과로 끝난다(전송되지 않음으로 같은 취급). 그래서 로컬 번역 서버가 꺼져 있을 때의 안내가 "연결할 수 없음" 대신 "응답 시간 초과"로 나온다.
