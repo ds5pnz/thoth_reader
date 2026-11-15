@@ -1,6 +1,6 @@
 [package]
 name = "thoth-reader"
-version = "1.2.0"
+version = "1.2.1"
 description = "Thoth Reader - local-first bilingual PDF/EPUB reader"
 edition = "2021"
 rust-version = "1.99"
