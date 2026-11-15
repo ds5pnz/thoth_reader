@@ -70,6 +70,7 @@ fn validate_secret(s: &str) -> AppResult<()> {
 }
 
 // OSStatus codes (Security.framework SecBase.h).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 const ERR_SEC_INTERACTION_NOT_ALLOWED: i32 = -25308;
 const ERR_SEC_AUTH_FAILED: i32 = -25293;

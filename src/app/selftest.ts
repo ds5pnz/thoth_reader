@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { call } from '../ipc/client';
 import type { ImportCandidate } from '../ipc/generated/ImportCandidate';
 import type { ImportResult } from '../ipc/generated/ImportResult';
+import { docUrl } from '../ipc/docUrl';
 
 type Hooks = { session: () => { sessionId: string; assetToken: string; metadata?: Record<string, unknown> } | null;
   reloadLibrary: () => Promise<void>; open: (id: string) => void; close: () => void; anchor: () => unknown; anchorError: () => number | null; reloadSettings: () => Promise<void> };
@@ -168,7 +169,7 @@ export async function runSelftest() {
       };
       const tok = (document.querySelector('[data-asset-token]') as HTMLElement | null)?.dataset.assetToken;
       if (tok) {
-        res.fetchOpf = await fetch(`thoth-doc://localhost/${tok}/epub/package.opf`).then((x) => `${x.status} ${x.headers.get('content-type')}`).catch((e: unknown) => `ERR ${String((e as Error)?.message ?? e)}`);
+        res.fetchOpf = await fetch(docUrl(`${tok}/epub/package.opf`)).then((x) => `${x.status} ${x.headers.get('content-type')}`).catch((e: unknown) => `ERR ${String((e as Error)?.message ?? e)}`);
       }
       clickButton('병렬');
       await waitFor(() => rows() > 0, 10000);
@@ -772,7 +773,7 @@ async function colourTruth(firstPage: number, pages: number) {
   if (!token) return { error: 'no session' };
   const { loadPdfDocument } = await import('../document/pdf/pdfjs');
   const { buildPageInput } = await import('../document/pdf/pageInput');
-  const { doc, task } = await loadPdfDocument({ url: `thoth-doc://localhost/${token}/pdf`, onPassword: async () => null });
+  const { doc, task } = await loadPdfDocument({ url: docUrl(`${token}/pdf`), onPassword: async () => null });
   const chroma = (r: number, g: number, b: number) => Math.max(r, g, b) - Math.min(r, g, b);
   const out = { pages: 0, pagesWithColours: 0, mixedItems: 0, items: 0, chromaticAssigned: 0, chromaticInk: 0, agree: 0, assignedButNeutralInk: 0, inkButNeutralAssigned: 0, hueMismatch: 0, unknown: 0 };
   try {
@@ -1440,6 +1441,22 @@ async function epubViewCheck(res: Record<string, unknown>) {
   await waitFor(() => epubFrameText() > 200, 20000);
   await sleep(1200);
   const frame = () => document.querySelector<HTMLIFrameElement>('.epub-host iframe');
+  // the chapter itself: laid out, with its pictures and stylesheets loaded through the document protocol
+  await waitFor(() => { const im = [...(frame()?.contentDocument?.images ?? [])]; return im.length === 0 || im.every((x) => x.complete); }, 6000);
+  out.rendered = (() => {
+    const f = frame();
+    const d = f?.contentDocument;
+    const im = [...(d?.images ?? [])];
+    return {
+      frame: f ? [Math.round(f.getBoundingClientRect().width), Math.round(f.getBoundingClientRect().height)] : null,
+      src: f?.getAttribute('src')?.slice(0, 24) ?? null,
+      textLen: (d?.body?.textContent ?? '').trim().length,
+      images: { total: im.length, loaded: im.filter((x) => x.complete && x.naturalWidth > 0).length, firstSrc: im[0]?.getAttribute('src')?.replace(/\/[0-9a-f-]{16,}\//i, '/<token>/').slice(0, 60) ?? null },
+      styleSheets: d?.styleSheets.length ?? -1,
+      dark: d?.documentElement.classList.contains('thoth-dark') ?? null,
+      listenersRun: (() => { try { let ran = false; const h = () => { ran = true; }; d?.addEventListener('thoth-probe', h); d?.dispatchEvent(new Event('thoth-probe')); d?.removeEventListener('thoth-probe', h); return ran; } catch { return null; } })(),
+    };
+  })();
   type W = Window & { CSS: { highlights: { get(n: string): { size: number } | undefined } } };
   const hl = () => (frame()?.contentWindow as W | null)?.CSS?.highlights?.get('thoth-yellow')?.size ?? 0;
   // find a rendered paragraph with enough text; the first chapters are often covers

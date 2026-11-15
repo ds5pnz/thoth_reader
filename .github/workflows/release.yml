@@ -18,6 +18,10 @@ on:
         type: choice
         options: [all, macos, windows, windows-smoke]
         default: all
+      scenario:
+        description: Self-test scenario for windows-smoke (empty runs the default checks)
+        type: string
+        default: ''
 
 concurrency:
   group: release-${{ github.ref }}
@@ -208,7 +212,7 @@ jobs:
         env:
           THOTH_SELFTEST_PROVIDER: http://127.0.0.1:18765/v1
           THOTH_SELFTEST_MODEL: mock
-          THOTH_SELFTEST_SCENARIO: ${{ vars.SMOKE_SCENARIO }}
+          THOTH_SELFTEST_SCENARIO: ${{ inputs.scenario }}
         run: |
           python scripts/mock_openai_server.py 18765 5 filler > mock.log 2>&1 &
           export THOTH_DATA_DIR="$(cygpath -w "$RUNNER_TEMP/thoth-data")"
