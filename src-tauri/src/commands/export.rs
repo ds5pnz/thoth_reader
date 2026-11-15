@@ -341,6 +341,10 @@ pub async fn export_translation(core: State<'_, Arc<AppCore>>, window: WebviewWi
                     if !extraction::is_leaf(&core.db.reader, &b.id).await? {
                         continue;
                     }
+                    // A picture region of a PDF page has no text and no exportable content.
+                    if b.source_text.is_empty() && b.content.is_empty() {
+                        continue;
+                    }
                     let translation = by.remove(&b.id);
                     items.push(Item { block: b, translation });
                 }

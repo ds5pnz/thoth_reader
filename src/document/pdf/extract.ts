@@ -130,6 +130,7 @@ export function analyzePage(input: PdfPageInput): PageAnalysis {
       }
     }
     markContinuation(drafts, layout);
+    if (!ocrLayer) insertFigures(drafts, figureRegions(input, drafts, layout.dominant.frame.angle === 0), layout.dominant.frame.angle === 0);
   }
   for (const d of drafts) for (const r of d.reasons) pageReasons.add(r);
 
@@ -149,6 +150,117 @@ export function analyzePage(input: PdfPageInput): PageAnalysis {
     tagged: !!input.structTree,
   };
   return { layout, drafts, diagnostics };
+}
+
+// ---------------------------------------------------------------------------
+// Pictures
+// ---------------------------------------------------------------------------
+
+const FIGURE_MIN_SIDE = 40; // user space units (pt): smaller images are icons, bullets, rules
+const FIGURE_MAX_PER_PAGE = 12;
+
+/**
+ * The picture regions of a page worth showing in the reflowed text, in user space.
+ * Image tiles that touch are joined into one picture. Left out: tiny images, full-page
+ * backgrounds, small images in the top / bottom band (logos repeated on every page), and
+ * images that lie behind text (a panel or photo the page sets text on).
+ * `frameIsUserSpace`: block boxes can be compared with image rects directly.
+ */
+export function figureRegions(input: PdfPageInput, drafts: readonly DraftBlock[] = [], frameIsUserSpace = true): Rect[] {
+  if (!input.imageRects?.length) return [];
+  const [vx0, vy0, vx1, vy1] = normBox(input.viewBox);
+  const pageW = vx1 - vx0;
+  const pageH = vy1 - vy0;
+  const pageArea = Math.max(1, pageW * pageH);
+  type Box = { x0: number; y0: number; x1: number; y1: number };
+  let boxes: Box[] = [];
+  for (const r of input.imageRects) {
+    const b = { x0: Math.max(r.x, vx0), y0: Math.max(r.y, vy0), x1: Math.min(r.x + r.width, vx1), y1: Math.min(r.y + r.height, vy1) };
+    if (!(b.x1 - b.x0 > 1 && b.y1 - b.y0 > 1)) continue;
+    if ((b.x1 - b.x0) * (b.y1 - b.y0) >= 0.8 * pageArea) continue; // page background
+    boxes.push(b);
+  }
+  // join tiles: images are often stored as strips of one picture
+  const near = (a: Box, b: Box) => a.x0 <= b.x1 + 3 && b.x0 <= a.x1 + 3 && a.y0 <= b.y1 + 3 && b.y0 <= a.y1 + 3;
+  for (let changed = true; changed; ) {
+    changed = false;
+    outer: for (let i = 0; i < boxes.length; i++) {
+      for (let j = i + 1; j < boxes.length; j++) {
+        const a = boxes[i] as Box;
+        const b = boxes[j] as Box;
+        if (!near(a, b)) continue;
+        boxes[i] = { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) };
+        boxes = boxes.filter((_, k) => k !== j);
+        changed = true;
+        break outer;
+      }
+    }
+  }
+  const out: Rect[] = [];
+  for (const b of boxes) {
+    const w = b.x1 - b.x0;
+    const h = b.y1 - b.y0;
+    if (w < FIGURE_MIN_SIDE || h < FIGURE_MIN_SIDE) continue;
+    if (w * h >= 0.8 * pageArea) continue;
+    const cy = (b.y0 + b.y1) / 2;
+    if (h < 0.1 * pageH && (cy > vy1 - 0.09 * pageH || cy < vy0 + 0.09 * pageH)) continue; // header / footer logo
+    if (frameIsUserSpace) {
+      // text set on top of the image: the image is a backdrop, and its text is extracted anyway
+      let covered = 0;
+      for (const d of drafts) {
+        const ix = Math.min(d.frameBox.x1, b.x1) - Math.max(d.frameBox.x0, b.x0);
+        const iy = Math.min(d.frameBox.top, b.y1) - Math.max(d.frameBox.bottom, b.y0);
+        if (ix > 0 && iy > 0) covered += ix * iy;
+      }
+      if (covered > 0.3 * w * h) continue;
+    }
+    out.push({ x: b.x0, y: b.y0, width: w, height: h });
+  }
+  // reading order: top of the page first, then left to right
+  out.sort((a, b) => b.y + b.height - (a.y + a.height) || a.x - b.x);
+  return out.slice(0, FIGURE_MAX_PER_PAGE);
+}
+
+function figureDraft(r: Rect): DraftBlock {
+  return {
+    kind: 'figure',
+    roles: [],
+    rawText: '',
+    sourceText: '',
+    offsets: [],
+    textNodes: [],
+    rects: [r],
+    itemRanges: [],
+    content: [],
+    reasons: new Set<QualityReason>(),
+    level: 'high',
+    policy: 'preserve',
+    frameBox: { x0: r.x, x1: r.x + r.width, bottom: r.y, top: r.y + r.height },
+  };
+}
+
+/**
+ * Put each picture where it is read: before the first block that lies below it in the same
+ * column, else after the last block above it, else at the end of the page.
+ */
+export function insertFigures(drafts: DraftBlock[], figures: readonly Rect[], frameIsUserSpace = true): void {
+  for (const r of figures) {
+    const f = figureDraft(r);
+    if (!frameIsUserSpace) {
+      drafts.push(f);
+      continue;
+    }
+    const cy = (f.frameBox.bottom + f.frameBox.top) / 2;
+    const overlaps = (d: DraftBlock) => Math.min(d.frameBox.x1, f.frameBox.x1) - Math.max(d.frameBox.x0, f.frameBox.x0) > 0;
+    const isBody = (d: DraftBlock) => !d.roles.some((x) => x === ROLE_RUNNING_HEADER || x === ROLE_RUNNING_FOOTER || x === ROLE_PAGE_NUMBER || x === ROLE_FOOTNOTE);
+    let at = drafts.findIndex((d) => isBody(d) && overlaps(d) && d.frameBox.top <= cy);
+    if (at < 0) {
+      let last = -1;
+      drafts.forEach((d, i) => { if (overlaps(d) && d.frameBox.bottom >= cy) last = i; });
+      at = last >= 0 ? last + 1 : drafts.length;
+    }
+    drafts.splice(at, 0, f);
+  }
 }
 
 function computeImageCoverage(input: PdfPageInput, pageArea: number): number {

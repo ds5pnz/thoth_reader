@@ -110,6 +110,7 @@ export async function runSelftest() {
       if (cfg.scenario === 'screens') await screensCheck(res, i, cands.length);
       if (cfg.scenario === 'views') await viewsCheck(res);
       if (cfg.scenario === 'pdftx' && isPdf) await pdfTranslationOnly(res);
+      if (cfg.scenario === 'pdffig' && isPdf) await pdfFigures(res);
       if (cfg.scenario === 'providers') await providersCheck(res, cfg.provider ?? '');
       await log('result', res);
       window.__thoth?.close?.();
@@ -1133,6 +1134,41 @@ async function selectionCheck(res: Record<string, unknown>, isPdf: boolean) {
   b('닫기')?.click();
   await sleep(300);
   out.closed = !document.querySelector('.sel-bar');
+}
+
+/** PDF reflow: pictures of the page appear between the paragraphs. */
+async function pdfFigures(res: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  res.pdffig = out;
+  const snap = async (name: string) => { const r = await invoke<unknown>('debug_snapshot', { meta: { apiVersion: 1, requestId: crypto.randomUUID() }, name }).catch((e) => String(e)); return /"saved":true/.test(JSON.stringify(r)); };
+  await sleep(5000);
+  clickButton('리플로우');
+  await waitFor(() => rows() > 0, 20000);
+  clickButton('병렬');
+  await sleep(1500);
+  const sc = () => document.querySelector<HTMLElement>('.reflow');
+  const figs = () => [...document.querySelectorAll<HTMLElement>('.brow.pdf-figure')];
+  const loaded = () => figs().filter((f) => { const i = f.querySelector<HTMLImageElement>('.src img.pdf-region'); return !!i && i.complete && i.naturalWidth > 0; });
+  for (let k = 0; k < 80 && loaded().length === 0; k++) { const el = sc(); if (!el) break; el.scrollTop += 1500; userScroll(el); await sleep(350); }
+  await sleep(1500);
+  const f = loaded()[0];
+  out.found = { rows: figs().length, loaded: loaded().length, failed: document.querySelectorAll('.pdf-region.failed').length };
+  if (f) {
+    f.scrollIntoView({ block: 'center' });
+    const el = sc(); if (el) userScroll(el);
+    await sleep(1800);
+    const g = loaded().find((x) => { const b = x.getBoundingClientRect(); return b.top > 40 && b.bottom < window.innerHeight; }) ?? loaded()[0]!;
+    const a = g.querySelector<HTMLImageElement>('.src img.pdf-region')!;
+    const b = g.querySelector<HTMLImageElement>('.trn-mirror img.pdf-region');
+    const prev = g.parentElement?.previousElementSibling?.querySelector('.brow');
+    const next = g.parentElement?.nextElementSibling?.querySelector('.brow');
+    out.figure = { natural: [a.naturalWidth, a.naturalHeight], shown: [Math.round(a.getBoundingClientRect().width), Math.round(a.getBoundingClientRect().height)], mirrored: !!b && b.complete && b.naturalWidth > 0, noTranslationCell: !g.querySelector('.tcell'), prevKind: prev?.className.match(/kind-\w+/)?.[0] ?? null, nextKind: next?.className.match(/kind-\w+/)?.[0] ?? null };
+    out.shot = await snap('pdf-reflow-figure');
+    clickButton('번역');
+    await sleep(1500);
+    out.translationOnly = { srcOnly: document.querySelectorAll('.brow.pdf-figure.src-only').length, visibleImgs: [...document.querySelectorAll<HTMLImageElement>('.brow.pdf-figure .src img.pdf-region')].filter((i) => i.getBoundingClientRect().height > 0).length };
+    out.shot2 = await snap('pdf-reflow-figure-translation');
+  }
 }
 
 /** PDF page view, translation only: one translated page per row, source on click. */

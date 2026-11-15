@@ -25,7 +25,7 @@ Books, translations, notes and settings stay on your Mac. Text leaves the machin
 **Reading**
 
 - PDF and EPUB library with covers, metadata, and sorting by recently read or title
-- PDF: original layout, reflowed text, the book's own outline, thumbnails, zoom, fit width / fit page, in-book search
+- PDF: original layout, reflowed text with the page's pictures in place, the book's own outline, thumbnails, zoom, fit width / fit page, in-book search
 - EPUB: original rendering (scrolling or page turning, one or two columns) and a reflowed view
 - Reading position restored per book; full-screen mode that shows only the page
 

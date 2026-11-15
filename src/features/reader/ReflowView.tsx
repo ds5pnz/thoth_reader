@@ -4,6 +4,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Block } from '../../ipc/generated/Block';
 import type { SafeNode } from '../../ipc/generated/SafeNode';
+import type { ReaderSessionDto } from '../../ipc/generated/ReaderSessionDto';
+import { PdfRegionImage } from '../../document/pdf/PdfRegion';
 import type { SectionRow } from '../../ipc/generated/SectionRow';
 import type { ReaderModel } from './useReaderSession';
 import { SafeContentView, type ContentResolvers } from './SafeContentView';
@@ -42,8 +44,10 @@ export const ReflowView = forwardRef<ReflowHandle, {
   targetLanguage: string;
   sourceLanguage: string;
   highlightBlockId: string | null;
+  /** The open PDF, so picture regions of its pages can be shown between paragraphs. */
+  pdfSession?: ReaderSessionDto | null;
 }>(function ReflowView(props, ref) {
-  const { model, mode, loadSection, onVisible, onScrolled, resolvers, actions, autoActive, targetLanguage, sourceLanguage, highlightBlockId } = props;
+  const { model, mode, loadSection, onVisible, onScrolled, resolvers, actions, autoActive, targetLanguage, sourceLanguage, highlightBlockId, pdfSession = null } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   // Translation-only view: paragraphs whose source the reader opened. Kept here because
   // rows are virtualized and forget their own state when scrolled away.
@@ -277,6 +281,7 @@ export const ReflowView = forwardRef<ReflowHandle, {
               ) : (
                 <BlockRow
                   block={r.block}
+                  pdfSession={pdfSession}
                   revealed={revealed.has(r.block.id)}
                   onToggleReveal={toggleReveal}
                   mode={mode}
@@ -314,10 +319,28 @@ export function isPreserved(block: Pick<Block, 'kind' | 'translationPolicy' | 's
   return !(block.kind === 'figure' && /\p{L}/u.test(block.sourceText));
 }
 
-function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLanguage, sourceLanguage, highlighted, revealed, onToggleReveal }: {
+/** The page rectangle of a PDF picture block (a figure without text), or null. */
+export function pdfPictureOf(block: Pick<Block, 'kind' | 'sourceText' | 'location'>): { pageIndex: number; rect: Block['location'] extends infer L ? L extends { rects: (infer R)[] } ? R : never : never } | null {
+  if (block.kind !== 'figure' || block.sourceText !== '' || block.location.kind !== 'pdf') return null;
+  const rect = block.location.rects[0];
+  return rect && rect.width > 0 && rect.height > 0 ? { pageIndex: block.location.pageIndex, rect } : null;
+}
+
+function BlockRow({ block, mode, model, resolvers, actions, autoActive, targetLanguage, sourceLanguage, highlighted, revealed, onToggleReveal, pdfSession }: {
   block: Block; mode: ReflowMode; model: ReaderModel; resolvers: ContentResolvers; actions: CellActions; autoActive: boolean; targetLanguage: string; sourceLanguage: string; highlighted: boolean;
-  revealed: boolean; onToggleReveal: (blockId: string) => void;
+  revealed: boolean; onToggleReveal: (blockId: string) => void; pdfSession: ReaderSessionDto | null;
 }) {
+  const picture = pdfSession ? pdfPictureOf(block) : null;
+  if (picture && pdfSession) {
+    // A picture cut from the PDF page: shown as it is, on both sides when side by side.
+    const img = <PdfRegionImage session={pdfSession} pageIndex={picture.pageIndex} rect={picture.rect} />;
+    return (
+      <div className={`brow kind-figure pdf-figure ${highlighted ? 'hl' : ''} ${mode === 'translation' ? 'src-only' : ''}`} data-block-id={block.id}>
+        <div className="src" id={`src-${block.id}`}>{img}</div>
+        {mode === 'parallel' && <div className="trn trn-mirror" aria-hidden="true">{img}</div>}
+      </div>
+    );
+  }
   const Tag = block.kind === 'heading' ? 'h3' : block.kind === 'code' ? 'pre' : block.kind === 'quote' ? 'blockquote' : 'div';
   const restricted = block.quality.level === 'low' || block.translationPolicy !== 'auto';
   const srcId = `src-${block.id}`;

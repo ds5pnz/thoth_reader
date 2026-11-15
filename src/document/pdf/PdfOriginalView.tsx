@@ -634,7 +634,7 @@ function PdfPage({ doc, meta, scale, live, blocks, sectionState, highlightBlockI
     const r = (e.currentTarget as HTMLDivElement).getBoundingClientRect();
     if (!meta.viewport) return;
     const p = cssPointToPdf(e.clientX - r.left, e.clientY - r.top, meta.viewport);
-    const b = hitTest(blocks, p, 2);
+    const b = hitTest(blocks.filter((x) => x.sourceText.length > 0), p, 2);
     if (b) onPick(b);
   };
   return (

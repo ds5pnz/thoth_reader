@@ -620,6 +620,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
               targetLanguage={targetLanguage}
               sourceLanguage={sourceLanguage}
               highlightBlockId={highlight}
+              pdfSession={isPdf ? session : null}
             />
           )}
         </main>

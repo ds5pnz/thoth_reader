@@ -77,6 +77,9 @@ function score(name: string, blocks: Block[], expected: ExpectedBlock[]): { pair
   return { pairs };
 }
 
+/** A picture region of the page: a figure block without text. */
+const isPicture = (b: Block) => b.kind === 'figure' && b.sourceText === '';
+
 function bbox(b: Block): [number, number, number, number] {
   if (b.location.kind !== 'pdf') throw new Error('not pdf');
   const r = b.location.rects;
@@ -92,8 +95,10 @@ describe.each(FIXTURES)('fixture %s', (name) => {
   it('matches the golden paragraph order, kinds, roles, policies and rects', async () => {
     const { pages, expected } = await extractFixture(name);
     for (const ep of expected.pages) {
-      const page = pages[ep.pageIndex]!;
-      expect(page.blocks.every((b) => b.location.kind === 'pdf' && b.location.pageIndex === ep.pageIndex)).toBe(true);
+      const all = pages[ep.pageIndex]!;
+      expect(all.blocks.every((b) => b.location.kind === 'pdf' && b.location.pageIndex === ep.pageIndex)).toBe(true);
+      // The golden files list text blocks; picture regions are checked on their own below.
+      const page = { ...all, blocks: all.blocks.filter((b) => !isPicture(b)) };
       const { pairs } = score(name, page.blocks, ep.blocks);
       // T01/T02: every expected block is found, in the same order
       expect(pairs.map((p) => p[2]), `${name} p${ep.pageIndex} order`).toEqual(ep.blocks.map((_, i) => i));
@@ -138,11 +143,32 @@ describe('T01 single column with title and footnote', () => {
   });
 });
 
+describe('pictures', () => {
+  it('turns the image of the two-column fixture into a preserved figure block in reading order', async () => {
+    const { pages } = await extractFixture('two-column');
+    const pics = pages.flatMap((p) => p.blocks.filter(isPicture));
+    expect(pics.length).toBeGreaterThan(0);
+    for (const b of pics) {
+      expect(b.translationPolicy).toBe('preserve');
+      expect(b.content).toEqual([]);
+      expect(b.location.kind === 'pdf' && b.location.rects.length).toBe(1);
+      const [x0, y0, x1, y1] = bbox(b);
+      expect(x1 - x0).toBeGreaterThanOrEqual(40);
+      expect(y1 - y0).toBeGreaterThanOrEqual(40);
+      // it sits between text: not the first block of its page
+      const page = pages.find((p) => p.blocks.includes(b))!;
+      expect(page.blocks.indexOf(b)).toBeGreaterThan(0);
+      // ids stay unique
+      expect(new Set(page.blocks.map((x) => x.id)).size).toBe(page.blocks.length);
+    }
+  });
+});
+
 describe('T02 two columns, table and formula', () => {
   it('never mixes columns and keeps all body blocks high quality', async () => {
     const { pages, expected } = await extractFixture('two-column');
     for (const [pi, p] of pages.entries()) {
-      for (const b of p.blocks) {
+      for (const b of p.blocks.filter((x) => !isPicture(x))) {
         // a block is either fully in the left column, fully in the right, or a spanning element
         const [x0, , x1] = bbox(b);
         const spans = x0 < 297 && x1 > 315;
