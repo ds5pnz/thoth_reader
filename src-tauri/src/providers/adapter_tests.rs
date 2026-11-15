@@ -18,6 +18,13 @@ use crate::security::keychain::MemorySecretStore;
 
 const KEY_REF: &str = "0192f6c4-8b7e-7cc3-9d2a-3f1e5b6a7c8d";
 
+/// A closed local port is refused at once on macOS and Linux. Windows keeps retrying the
+/// connection for a couple of seconds, so there the same situation ends as a connect
+/// timeout; either way nothing was sent.
+fn never_connected(e: &ProviderError) -> bool {
+    matches!(e, ProviderError::ConnectFailed) || (cfg!(windows) && matches!(e, ProviderError::Timeout { phase: TimeoutPhase::Connect, maybe_sent: false }))
+}
+
 fn timeouts() -> Timeouts {
     Timeouts {
         connect: Duration::from_secs(2),
@@ -453,7 +460,7 @@ async fn connect_refused_is_connect_failed() {
     drop(l);
     let (res, _) = run(&openai(&format!("http://127.0.0.1:{port}/v1")), req(true, ResponseFormat::Text)).await;
     let e = res.unwrap_err();
-    assert_eq!(e, ProviderError::ConnectFailed);
+    assert!(never_connected(&e), "{e:?}");
     assert!(!e.maybe_sent());
     assert_eq!(retry_decision(&e, 1, 0.0), RetryDecision::RetryAfter(Duration::from_secs(1)));
 }
@@ -705,8 +712,8 @@ async fn ollama_stopped_and_model_missing() {
     drop(l);
     let p = ollama(&format!("http://127.0.0.1:{port}"), None);
     let (res, _) = run(&p, req(true, ResponseFormat::Text)).await;
-    assert_eq!(res, Err(ProviderError::ConnectFailed));
-    assert_eq!(p.list_models().await, Err(ProviderError::ConnectFailed));
+    assert!(never_connected(&res.unwrap_err()));
+    assert!(never_connected(&p.list_models().await.unwrap_err()));
     assert_eq!(ProviderError::ConnectFailed.to_app_error().code, crate::error::ErrorCode::ProviderUnavailable);
 
     let server = status_server(ResponseTemplate::new(404).set_body_string("{\"error\":\"model 'm1' not found\"}")).await;

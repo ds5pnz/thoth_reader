@@ -104,6 +104,11 @@ fn assert_output_safe(out: &Path) {
             let tag_start = text[..i].rfind('<').unwrap_or(0);
             let tag_end = text[i..].find('>').map(|e| i + e).unwrap_or(text.len());
             let tag = &text[tag_start..tag_end];
+            // The policy itself names the app's own document origin on Windows (WebView2
+            // addresses the document protocol over http). Nothing else may appear there.
+            if rest.starts_with("http://thoth-doc.localhost") && tag.starts_with("<meta http-equiv=\"Content-Security-Policy\"") && tag.contains(CONTENT_CSP) {
+                continue;
+            }
             assert!(
                 tag.starts_with("<a ") && tag.contains("data-thoth-external=\"1\"") && text[..i].ends_with("href=\""),
                 "{name}: unexpected external URL in {tag}"
