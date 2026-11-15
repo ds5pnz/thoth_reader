@@ -36,11 +36,20 @@ pub async fn debug_snapshot(window: tauri::WebviewWindow, meta: CommandMeta, nam
     let path = std::path::PathBuf::from(dir).join(format!("{safe}.png"));
     let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
     let tx = std::sync::Mutex::new(Some(tx));
-    let started = window.with_webview(move |wv| snapshot::take(wv.inner(), path, move |ok| {
+    let done = move |ok: bool| {
         if let Some(tx) = tx.lock().unwrap().take() {
             let _ = tx.send(ok);
         }
-    }));
+    };
+    // Only WKWebView can render a snapshot of itself; elsewhere the command reports "no image".
+    #[cfg(target_os = "macos")]
+    let started = window.with_webview(move |wv| snapshot::take(wv.inner(), path, done));
+    #[cfg(not(target_os = "macos"))]
+    let started: Result<(), tauri::Error> = {
+        let _ = (&window, &path);
+        done(false);
+        Ok(())
+    };
     let why = match (&started, tokio::time::timeout(std::time::Duration::from_secs(20), rx).await) {
         (Err(_), _) => "no_webview",
         (_, Err(_)) => "timeout",
@@ -88,12 +97,5 @@ mod snapshot {
         let ns_path: *mut AnyObject = msg_send![class!(NSString), stringWithUTF8String: cpath.as_ptr()];
         let ok: Bool = msg_send![png, writeToFile: ns_path, atomically: true];
         ok.as_bool()
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-mod snapshot {
-    pub fn take(_webview: *mut std::ffi::c_void, _path: std::path::PathBuf, done: impl Fn(bool) + 'static) {
-        done(false);
     }
 }
