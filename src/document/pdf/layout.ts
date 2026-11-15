@@ -103,6 +103,8 @@ export interface Flow {
 export interface Paragraph {
   flow: Flow;
   units: Unit[];
+  /** Rule that started this paragraph (diagnostics only). */
+  startReason?: string;
 }
 
 export interface Frame {
@@ -729,20 +731,22 @@ export function groupParagraphs(flow: Flow): Paragraph[] {
   const paras: Paragraph[] = [];
   let cur: Unit[] = [];
   let curLines: Line[] = [];
+  let curWhy = 'start';
   const push = () => {
-    if (cur.length) paras.push({ flow, units: cur });
+    if (cur.length) paras.push({ flow, units: cur, startReason: curWhy });
     cur = [];
     curLines = [];
   };
   for (const u of flow.units) {
     if (u.kind === 'table') {
       push();
-      paras.push({ flow, units: [u] });
+      paras.push({ flow, units: [u], startReason: 'table' });
       continue;
     }
     const l = u.lines[0] as Line;
     const prev = curLines.at(-1);
-    if (prev && !shouldBreak(curLines, prev, l, { leading, rightEdge, colWidth, leftEdge })) {
+    const why = prev ? breakReason(curLines, prev, l, { leading, rightEdge, colWidth, leftEdge }) : 'start';
+    if (why === null) {
       cur.push(u);
       curLines.push(l);
       continue;
@@ -750,6 +754,7 @@ export function groupParagraphs(flow: Flow): Paragraph[] {
     push();
     cur = [u];
     curLines = [l];
+    curWhy = why;
   }
   push();
   return paras;
@@ -763,33 +768,40 @@ interface FlowCtx {
 }
 
 export function shouldBreak(para: Line[], prev: Line, cur: Line, ctx: FlowCtx): boolean {
+  return breakReason(para, prev, cur, ctx) !== null;
+}
+
+/** Why a new paragraph starts at `cur` (null: it continues the paragraph). The name of the
+ *  rule is kept on the paragraph for diagnostics. */
+export function breakReason(para: Line[], prev: Line, cur: Line, ctx: FlowCtx): string | null {
   const size = Math.max(prev.size, cur.size);
-  if (Math.abs(cur.size - prev.size) > 0.12 * size) return true;
-  if (cur.bold !== prev.bold || cur.mono !== prev.mono) return true;
-  if (cur.angle !== prev.angle) return true;
+  if (Math.abs(cur.size - prev.size) > 0.12 * size) return 'size';
+  if (cur.bold !== prev.bold) return 'bold';
+  if (cur.mono !== prev.mono) return 'mono';
+  if (cur.angle !== prev.angle) return 'angle';
   const delta = prev.base - cur.base;
-  if (delta <= 0.3 * size) return true; // same row, separate segment
+  if (delta <= 0.3 * size) return 'same_row'; // same row, separate segment
   const expected = Math.max(ctx.leading, 0.9 * size);
-  if (delta > expected * 1.35 + 0.5) return true;
+  if (delta > expected * 1.35 + 0.5) return 'gap';
   // Mono (code) blocks keep their own indentation and punctuation.
-  if (cur.mono && prev.mono) return false;
-  if (LIST_MARKER_START.test(cur.text.trimStart())) return true;
+  if (cur.mono && prev.mono) return null;
+  if (LIST_MARKER_START.test(cur.text.trimStart())) return 'list_marker';
   const first = para[0] as Line;
   const isList = LIST_MARKER_START.test(first.text.trimStart());
-  if (SENTENCE_END.test(prev.text.trimEnd()) && prev.x1 < ctx.rightEdge - Math.max(2 * size, 0.08 * ctx.colWidth)) return true;
+  if (SENTENCE_END.test(prev.text.trimEnd()) && prev.x1 < ctx.rightEdge - Math.max(2 * size, 0.08 * ctx.colWidth)) return 'short_last_line';
   const tol = 0.8 * size;
   if (para.length === 1) {
     const dx = cur.x0 - first.x0;
-    if (Math.abs(dx) <= tol) return false;
-    if (dx < 0 && -dx <= 4 * size) return false; // first-line indent
-    if (dx > 0 && isList && dx <= 4 * size) return false; // hanging indent
-    if (centred(prev, cur, tol)) return false;
-    return true;
+    if (Math.abs(dx) <= tol) return null;
+    if (dx < 0 && -dx <= 4 * size) return null; // first-line indent
+    if (dx > 0 && isList && dx <= 4 * size) return null; // hanging indent
+    if (centred(prev, cur, tol)) return null;
+    return 'indent_first';
   }
   const bodyX = (para[1] as Line).x0;
-  if (Math.abs(cur.x0 - bodyX) <= tol) return false;
-  if (centred(prev, cur, tol)) return false;
-  return true;
+  if (Math.abs(cur.x0 - bodyX) <= tol) return null;
+  if (centred(prev, cur, tol)) return null;
+  return 'indent';
 }
 
 function centred(a: Line, b: Line, tol: number): boolean {

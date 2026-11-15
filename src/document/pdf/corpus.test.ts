@@ -10,11 +10,12 @@ import { describe, it } from 'vitest';
 import { loadPdfjsLegacy } from './testing/fixtures';
 import { buildPageInput } from './pageInput';
 import { extractPage } from './extract';
+import { analyzeLayout } from './layout';
 import { detectRunningElements, applyRunningUpdates } from './running';
 import { sha256Hex } from '../../domain/canonicalJson';
 import type { PdfPageResult } from './types';
 
-type Env = { THOTH_CORPUS_ONLY?: string; THOTH_CORPUS?: string; THOTH_CORPUS_PAGES?: string; THOTH_CORPUS_REPORT?: string };
+type Env = { THOTH_CORPUS_ONLY?: string; THOTH_CORPUS?: string; THOTH_CORPUS_PAGES?: string; THOTH_CORPUS_REPORT?: string; THOTH_CORPUS_DEBUG?: string };
 const env = ((globalThis as { process?: { env: Env } }).process?.env ?? {}) as Env;
 const ROOT = env.THOTH_CORPUS;
 const MAX_PAGES = Number(env.THOTH_CORPUS_PAGES ?? 40);
@@ -48,6 +49,7 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
     const files = fs.readdirSync(ROOT!).filter((f) => f.toLowerCase().endsWith('.pdf')).sort();
     const only = env.THOTH_CORPUS_ONLY ? Number(env.THOTH_CORPUS_ONLY) : null;
     const report: Record<string, unknown>[] = [];
+    const debug: string[] = [];
     let idx = 0;
     for (const f of files) {
       idx += 1;
@@ -62,6 +64,7 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
         const doc = await task.promise;
         const pages = samplePages(doc.numPages, MAX_PAGES);
         const results: PdfPageResult[] = [];
+        const splitReasons: Record<string, number> = {};
         let failedPages = 0;
         const pageErrors: string[] = [];
         for (const p of pages) {
@@ -69,6 +72,25 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
             const page = await doc.getPage(p + 1);
             const input = await buildPageInput(page);
             results.push(await extractPage(input, 'corpus', { sha256Hex }));
+            // Which rule cut a paragraph that reads on (no sentence end before, lower case after).
+            for (const g of analyzeLayout(input).groups) {
+              for (let i = 1; i < g.paragraphs.length; i++) {
+                const a = g.paragraphs[i - 1]!;
+                const b = g.paragraphs[i]!;
+                const la = a.units.at(-1)!.lines.at(-1)!;
+                const lb = b.units[0]!.lines[0]!;
+                if (a.units[0]!.kind === 'table' || b.units[0]!.kind === 'table') continue;
+                if (!/^\p{Ll}/u.test(lb.text.trim()) || /[.!?:;…。]["'”’»)\]]*$/.test(la.text.trim())) continue;
+                const why = a.flow === b.flow ? (b.startReason ?? '?') : 'new_flow';
+                if (env.THOTH_CORPUS_DEBUG === why) {
+                  const fl = b.flow.units.filter((u) => u.kind === 'line').map((u) => u.lines[0]!);
+                  const ds: number[] = [];
+                  for (let k = 1; k < fl.length; k++) ds.push(Number(((fl[k - 1]!.base - fl[k]!.base) / fl[k - 1]!.size).toFixed(2)));
+                  debug.push(JSON.stringify({ page: p + 1, d: Number(((la.base - lb.base) / la.size).toFixed(2)), sizes: [la.size, lb.size].map((v) => Number(v.toFixed(1))), x: [la.x0, la.x1, lb.x0, lb.x1].map((v) => Math.round(v)), bold: [la.bold, lb.bold], mono: [la.mono, lb.mono], flowLines: fl.length, flowDeltas: ds.slice(0, 40).join(' ') }));
+                }
+                splitReasons[why] = (splitReasons[why] ?? 0) + 1;
+              }
+            }
             page.cleanup();
           } catch (pe) {
             failedPages += 1;
@@ -84,6 +106,31 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
         let autoChars = 0;
         let scanPages = 0;
         let emptyPages = 0;
+        // Reflow defects, counted without keeping any text: a paragraph that stops
+        // mid-sentence and is followed by one starting in lower case is almost always one
+        // paragraph cut in two.
+        let paras = 0;
+        let midSplits = 0;
+        let shortParas = 0;
+        let lowerStarts = 0;
+        const splitPages: Record<number, number> = {};
+        for (const r of results) {
+          const body = r.blocks.filter((b) => !b.roles.some((x) => x.startsWith('running_') || x === 'page_number' || x === 'footnote'));
+          for (let i = 0; i < body.length; i++) {
+            const b = body[i]!;
+            if (b.kind !== 'paragraph') continue;
+            const t = b.sourceText.trim();
+            if (!t) continue;
+            paras += 1;
+            if (t.length < 25) shortParas += 1;
+            if (/^\p{Ll}/u.test(t)) lowerStarts += 1;
+            const prev = body[i - 1];
+            if (prev && prev.kind === 'paragraph' && /^\p{Ll}/u.test(t) && !/[.!?:;…。]["'”’»)\]]*$/.test(prev.sourceText.trim())) {
+              midSplits += 1;
+              splitPages[r.diagnostics.pageIndex] = (splitPages[r.diagnostics.pageIndex] ?? 0) + 1;
+            }
+          }
+        }
         for (const r of results) {
           if (r.diagnostics.reasons?.includes('likely_scan')) scanPages += 1;
           if (r.blocks.length === 0) emptyPages += 1;
@@ -112,6 +159,13 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
           levels,
           policies,
           pageReasons: reasons,
+          paras,
+          midSplits,
+          midSplitRate: paras ? Number((midSplits / paras).toFixed(4)) : 0,
+          shortParas,
+          lowerStarts,
+          splitReasons,
+          worstSplitPages: Object.entries(splitPages).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([p, n]) => `${Number(p) + 1}:${n}`),
           autoCoverage: chars ? Number((autoChars / chars).toFixed(3)) : 0,
           msPerPage: Number((ms / Math.max(1, pages.length)).toFixed(1)),
         });
@@ -125,6 +179,6 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
     }
     const out = env.THOTH_CORPUS_REPORT ?? 'reports/corpus-pdf.json';
     fs.mkdirSync(out.replace(/\/[^/]*$/, ''), { recursive: true });
-    fs.writeFileSync(out, JSON.stringify({ generatedAt: new Date().toISOString(), maxPagesPerDoc: MAX_PAGES, documents: report }, null, 2));
+    fs.writeFileSync(out, JSON.stringify({ generatedAt: new Date().toISOString(), maxPagesPerDoc: MAX_PAGES, documents: report, ...(debug.length ? { debug } : {}) }, null, 2));
   }, 60 * 60 * 1000);
 });
