@@ -304,9 +304,15 @@ async fn save_provider(core: &AppCore, args: ProviderSaveArgs) -> AppResult<tran
     if args.new_secret.as_ref().map(|s| s.len() > 4096).unwrap_or(false) {
         return Err(AppError::limit("키가 너무 깁니다."));
     }
+    let mut args = args;
+    args.label = args.label.map(|l| l.trim().to_string());
     if let Some(l) = &args.label {
-        if l.chars().count() > 80 {
+        if l.chars().count() > 80 || l.chars().any(|c| c.is_control()) {
             return Err(AppError::invalid("이름이 너무 깁니다."));
+        }
+        // renaming to nothing would leave an unlabeled row
+        if l.is_empty() && args.provider_id.is_some() {
+            return Err(AppError::invalid("이름을 입력해 주세요."));
         }
     }
     match &args.provider_id {
@@ -358,7 +364,7 @@ async fn save_provider(core: &AppCore, args: ProviderSaveArgs) -> AppResult<tran
             let row = translations::ProviderRow {
                 id: id.clone(),
                 kind: kind.as_str().into(),
-                label: args.label.clone().unwrap_or_else(|| if kind == ProviderKind::Ollama { "Ollama".into() } else { "OpenAI 호환".into() }),
+                label: args.label.clone().filter(|l| !l.is_empty()).unwrap_or_else(|| if kind == ProviderKind::Ollama { "Ollama".into() } else { "OpenAI 호환".into() }),
                 endpoint: ep.identity_string.clone(),
                 account_namespace: ns,
                 key_configured: kref.is_some(),
@@ -503,6 +509,48 @@ pub async fn profile_create(core: Core<'_>, meta: CommandMeta, args: ProfileCrea
         prepare::create_profile_with_mode(&core2.db, &row, &args.model_id, &args.source_language, &args.target_language, args.temperature, args.seed, args.max_output_tokens, args.context_limit, args.model_digest.as_deref(), args.prompt_mode.as_deref().map(crate::translation::prompt::PromptMode::parse).unwrap_or_default()).await
     })
     .await)
+}
+
+/// What is translating right now: the active profile with its provider, for display.
+#[derive(Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ActiveProfile {
+    pub profile_id: String,
+    pub provider_id: String,
+    pub provider_label: String,
+    /// "ollama" | "openai_compatible" | "chatgpt" | "codex"
+    pub provider_kind: String,
+    pub provider_enabled: bool,
+    pub model_id: String,
+    /// "structured" | "simple" | "rosetta"
+    pub prompt_mode: String,
+    pub source_language: String,
+    pub target_language: String,
+}
+
+pub async fn active_profile(core: &AppCore) -> AppResult<Option<ActiveProfile>> {
+    let Some(pid) = misc::setting_get(&core.db.reader, "activeProfileId").await?.and_then(|v| v.0.as_str().map(str::to_string)) else { return Ok(None) };
+    let Some(profile) = translations::profile_get(&core.db.reader, &pid).await? else { return Ok(None) };
+    let Some(provider) = translations::provider_get(&core.db.reader, &profile.provider_id).await? else { return Ok(None) };
+    let kind = ProviderKind::of_row(&provider.kind, &provider.capabilities).unwrap_or(ProviderKind::OpenaiCompatible);
+    Ok(Some(ActiveProfile {
+        profile_id: profile.id,
+        provider_id: provider.id,
+        provider_label: provider.label,
+        provider_kind: kind.as_str().into(),
+        provider_enabled: provider.enabled,
+        model_id: profile.model_id,
+        prompt_mode: profile.snapshot["promptMode"].as_str().map(crate::translation::prompt::PromptMode::parse).unwrap_or_default().as_str().into(),
+        source_language: profile.source_language,
+        target_language: profile.target_language,
+    }))
+}
+
+/// The profile translations currently use (`null` when none is set).
+#[tauri::command]
+pub async fn profile_active(core: Core<'_>, meta: CommandMeta) -> Result<Wire, ()> {
+    Ok(respond(&meta, active_profile(&core).await))
 }
 
 #[derive(Debug, Deserialize, Serialize, TS)]

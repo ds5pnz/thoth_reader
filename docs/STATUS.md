@@ -196,3 +196,9 @@ THOTH_SELFTEST_PROVIDER=http://localhost:1235/v1 THOTH_SELFTEST_MODEL=<model> sc
 - **Codex**: 이 Mac의 `codex app-server`를 stdio JSON-RPC로 띄워 문단마다 일회용 스레드(읽기 전용 샌드박스, 승인 없음, 빈 작업 폴더, 번역 지시문으로 교체한 base instructions)에서 한 턴을 돌린다. 도구 사용이 감지되거나 서버가 승인을 요청하면 그 요청을 실패로 끝낸다. 앱은 Codex의 토큰을 읽지 않는다.
 - 저장: `providers.kind` 열의 CHECK 제약을 건드리지 않도록 두 종류 모두 `openai_compatible`로 저장하고 `capabilities.variant`(`chatgpt`·`codex`)로 구분한다.
 - 검증: 가짜 인증·API 서버를 상대로 한 시험(서명·클레임 검증, 등록/재인증, 다른 계정·nonce 불일치 거부, 토큰 갱신·회전, 사용 한도·로그인 필요 오류, 모델 목록) 통과. Codex는 실제 앱에서 공개 도서 EPUB 병렬 보기 첫 화면이 약 19초에 번역됨(gpt-6.1-sol, effort low). 실제 OpenAI 인증 서버에는 authorize 요청이 로그인 화면으로 넘어가는 것까지만 확인했고, **ChatGPT 계정으로 실제 로그인해 번역하는 것은 확인하지 못했다.**
+
+## 번역 모델 표시와 Provider 이름 변경 (2026-11-15)
+
+- `profile_active` 명령이 현재 활성 프로필의 Provider 이름·종류·활성 여부, 모델, 요청 방식, 언어를 돌려준다. 책 화면 상단 바의 모델 표시(누르면 번역 설정), 설정의 "현재 번역 모델" 칸, Provider 목록의 "사용 중 · 모델" 배지가 이 값을 쓴다.
+- Provider 상세에 이름 입력란이 생겼다(기존 `provider_save`의 label 갱신 사용, 빈 이름으로 바꾸기는 거부). 이름이 비어 있는 기존 Provider는 종류 이름으로 표시한다.
+- 프로필 편집기는 이 Provider가 사용 중이면 현재 모델과 요청 방식을 미리 채운다.

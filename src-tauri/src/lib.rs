@@ -93,6 +93,7 @@ macro_rules! app_handlers {
             commands::accounts::codex_connect,
             commands::translation::provider_new_cache_epoch,
             commands::translation::profile_create,
+            commands::translation::profile_active,
             commands::translation::cache_invalidate,
             commands::translation::storage_usage,
             $($extra),*

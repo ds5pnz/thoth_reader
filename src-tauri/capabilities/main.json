@@ -58,6 +58,7 @@
     "allow-provider-probe",
     "allow-provider-new-cache-epoch",
     "allow-profile-create",
+    "allow-profile-active",
     "allow-cache-invalidate",
     "allow-storage-usage",
     "allow-chatgpt-sign-in",

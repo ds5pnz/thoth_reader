@@ -7,6 +7,8 @@ import type { ProbeResult } from '../../ipc/generated/ProbeResult';
 import type { ProfileRow } from '../../ipc/generated/ProfileRow';
 import type { ChatgptSignInResult } from '../../ipc/generated/ChatgptSignInResult';
 import type { CodexStatus } from '../../ipc/generated/CodexStatus';
+import type { ActiveProfile } from '../../ipc/generated/ActiveProfile';
+import { describeActiveProfile, notifyActiveProfileChanged, promptModeLabel, providerName, useActiveProfile } from './activeProfile';
 import './settings.css';
 
 type Tab = 'translation' | 'reading' | 'glossary' | 'data';
@@ -57,6 +59,7 @@ function TranslationSettings() {
   const [err, setErr] = useState<string | null>(null);
   const [consentFor, setConsentFor] = useState<ProviderRow | null>(null);
   const [adding, setAdding] = useState<null | 'ollama' | 'openai_compatible'>(null);
+  const active = useActiveProfile(settings.activeProfileId);
   const [signingIn, setSigningIn] = useState(false);
   const [welcome, setWelcome] = useState(false);
 
@@ -124,7 +127,8 @@ function TranslationSettings() {
           {providers.map((p) => (
             <li key={p.id} className={p.id === selected ? 'sel' : ''}>
               <button className="prov-pick" onClick={() => setSelected(p.id)}>
-                <strong>{p.label}</strong>
+                <strong>{providerName(p.label, variantOf(p))}</strong>
+                {active?.providerId === p.id && <span className="badge ok in-use" title={describeActiveProfile(active)}>사용 중 · {active.modelId}</span>}
                 <span className="faint">{VARIANT_LABEL[variantOf(p)]} · {variantOf(p) === 'chatgpt' || variantOf(p) === 'codex' ? (accountOf(p).email ?? p.endpoint) : p.endpoint}</span>
               </button>
               <label className="switch">
@@ -174,7 +178,7 @@ function TranslationSettings() {
       {sel && (
         <section>
           <ProviderDetail key={sel.id} provider={sel} probe={probe[sel.id]} onProbe={() => void runProbe(sel)} onChanged={load} onSignIn={() => void signIn(sel.id)} signingIn={signingIn} />
-          <ProfileEditor provider={sel} probe={probe[sel.id]} activeProfileId={settings.activeProfileId ?? null} onActivate={(id) => void set('activeProfileId', id)} />
+          <ProfileEditor key={`profile-${sel.id}`} provider={sel} probe={probe[sel.id]} active={active} onActivate={(id) => { void Promise.resolve(set('activeProfileId', id)).then(notifyActiveProfileChanged); }} />
         </section>
       )}
     </div>
@@ -213,6 +217,15 @@ function ProviderDetail({ provider, probe, onProbe, onChanged, onSignIn, signing
   const [msg, setMsg] = useState<string | null>(null);
   const variant = variantOf(provider);
   const account = accountOf(provider);
+  const [name, setName] = useState(provider.label);
+  const rename = async () => {
+    try {
+      await mutate('provider_save', { providerId: provider.id, label: name.trim() });
+      setMsg('이름을 바꿨습니다.');
+      await onChanged();
+      notifyActiveProfileChanged();
+    } catch (e) { setMsg(errorMessage(e)); }
+  };
   const [codex, setCodex] = useState<CodexStatus | null>(null);
   useEffect(() => {
     if (variant !== 'codex') return;
@@ -244,8 +257,12 @@ function ProviderDetail({ provider, probe, onProbe, onChanged, onSignIn, signing
   };
   return (
     <div className="card">
-      <h3>{provider.label}</h3>
+      <h3>{providerName(provider.label, variant)}</h3>
       <p className="faint">{provider.endpoint} · namespace {provider.accountNamespace} · 캐시 epoch {provider.cacheEpoch}</p>
+      <div className="row">
+        <label className="grow">이름<input className="input" value={name} maxLength={80} placeholder={providerName('', variant)} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && name.trim() && name.trim() !== provider.label) void rename(); }} /></label>
+        <button className="btn small" disabled={!name.trim() || name.trim() === provider.label} onClick={() => void rename()}>이름 저장</button>
+      </div>
       {variant === 'chatgpt' && (
         <div className="account">
           <div className="row">
@@ -302,16 +319,20 @@ export function defaultPromptMode(id: string): PromptModeName {
   return isTranslationModel(id) ? 'simple' : 'structured';
 }
 
-function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provider: ProviderRow; probe: ProbeResult | 'running' | undefined; activeProfileId: string | null; onActivate: (id: string) => void }) {
+function ProfileEditor({ provider, probe, active, onActivate }: { provider: ProviderRow; probe: ProbeResult | 'running' | undefined; active: ActiveProfile | null; onActivate: (id: string) => void }) {
   const { settings, set } = useSettings();
   const models = probe && probe !== 'running' ? probe.models : [];
-  const [model, setModel] = useState('');
+  // Start from the model this provider is translating with, if it is the one in use.
+  const mine = active?.providerId === provider.id ? active : null;
+  const [model, setModel] = useState(mine?.modelId ?? '');
+  useEffect(() => { if (mine && !model) setModel(mine.modelId); }, [mine?.modelId]); // eslint-disable-line react-hooks/exhaustive-deps
   const [src, setSrc] = useState(settings.defaultSourceLanguage ?? 'en');
   const [tgt, setTgt] = useState(settings.defaultTargetLanguage ?? 'ko');
   const [temp, setTemp] = useState('0.2');
   const [ctx, setCtx] = useState('');
   // Translation-only models answer a short plain request; chat models get the structured one.
   const [mode, setMode] = useState<PromptModeName | null>(null);
+  useEffect(() => { if (mine && mine.modelId === model && mode === null) setMode(mine.promptMode as PromptModeName); }, [mine?.profileId]); // eslint-disable-line react-hooks/exhaustive-deps
   const promptMode = mode ?? defaultPromptMode(model);
   const [msg, setMsg] = useState<string | null>(null);
   const create = async () => {
@@ -336,10 +357,19 @@ function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provi
   return (
     <div className="card">
       <h3>번역 프로필</h3>
+      <div className={`current-model ${active ? '' : 'none'}`} role="status">
+        <span className="faint">현재 번역 모델</span>
+        {active
+          ? <strong>{active.modelId}</strong>
+          : <strong>설정되지 않음</strong>}
+        {active && <span className="muted">{providerName(active.providerLabel, active.providerKind)} · 요청 방식 {promptModeLabel(active.promptMode)} · {active.sourceLanguage} → {active.targetLanguage}{active.providerEnabled ? '' : ' · Provider 비활성'}</span>}
+        {active && !mine && <span className="faint">다른 Provider의 모델입니다. 이 Provider로 바꾸려면 아래에서 모델을 고르고 프로필 적용을 누르세요.</span>}
+      </div>
       <label>모델
         {models.length > 0 ? (
           <select className="input" value={model} onChange={(e) => setModel(e.target.value)}>
             <option value="">선택…</option>
+            {model && !models.some((m) => m.id === model) && <option value={model}>{model}</option>}
             {models.map((m) => <option key={m.id} value={m.id}>{m.id}{m.contextLength ? ` (ctx ${m.contextLength})` : ''}</option>)}
           </select>
         ) : (
@@ -368,7 +398,6 @@ function ProfileEditor({ provider, probe, activeProfileId, onActivate }: { provi
         <span className="faint">문단마다 따로 번역하므로 문체를 고정합니다. 바꾸면 보이는 문단부터 새 문체로 다시 번역되고 이전 번역은 이력에 남습니다.</span>
       </label>
       <button className="btn primary" disabled={!model.trim()} onClick={() => void create()}>프로필 적용</button>
-      {activeProfileId && <p className="faint">현재 프로필 ID {activeProfileId.slice(0, 8)}…</p>}
       {msg && <p className="muted">{msg}</p>}
     </div>
   );

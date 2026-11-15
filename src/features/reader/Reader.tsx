@@ -19,6 +19,7 @@ import { useSettings } from '../../app/settings';
 import { useToast } from '../../app/toast';
 import { useShortcut } from '../../app/shortcuts';
 import { flagOf } from '../../domain/flags';
+import { describeActiveProfile, providerName, useActiveProfile } from '../settings/activeProfile';
 import { IconExport, IconFullscreen, IconFullscreenExit, IconGear, IconLibrary, IconPause, IconPlay, IconSidebar } from './icons';
 import { lazy, Suspense } from 'react';
 import type { EpubOriginalHandle } from '../../document/epub/EpubOriginalView';
@@ -78,6 +79,7 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
   const showOriginalEpub = !isPdf && mode === 'original';
   const showPdfOriginal = isPdf && pdfView === 'original';
   const autoActive = (settings.autoTranslate ?? true) && !paused && mode !== 'original' && !!settings.activeProfileId;
+  const activeProfile = useActiveProfile(settings.activeProfileId);
 
   usePdfExtraction(isPdf ? session : null, refreshSections, (s) => setSession(s));
   const [pwPrompt, setPwPrompt] = useState<{ reason: string; resolve: (v: string | null) => void } | null>(null);
@@ -515,6 +517,16 @@ export function Reader({ documentId, onClose, onSettings }: { documentId: string
           <span className="arrow" aria-hidden="true">→</span>
           <span className="flag">{flagOf(targetLanguage) ?? targetLanguage}</span>
         </span>
+        {mode !== 'original' && (
+          <button
+            className={`btn ghost small model-chip ${activeProfile && activeProfile.providerEnabled ? '' : 'attention'}`}
+            onClick={onSettings}
+            title={activeProfile ? `번역 모델: ${describeActiveProfile(activeProfile)}${activeProfile.providerEnabled ? '' : ' (Provider 비활성)'}` : '번역 모델이 설정되지 않았습니다'}
+            aria-label={activeProfile ? `번역 모델 ${activeProfile.modelId}, ${providerName(activeProfile.providerLabel, activeProfile.providerKind)}` : '번역 모델 설정 필요'}
+          >
+            {activeProfile ? activeProfile.modelId : '모델 없음'}
+          </button>
+        )}
         <button className={`btn ghost tx-open ${model.batch?.state === 'running' ? 'running' : 'icon'}`} onClick={() => setExportOpen(true)} title="범위 번역 · 내보내기" aria-label="범위 번역 · 내보내기">
           <IconExport />
           {model.batch?.state === 'running' && <span>{`${model.batch.total > 0 ? Math.round(((model.batch.done + model.batch.failed + model.batch.skipped) / model.batch.total) * 100) : 0}% · ${formatEta(model.batch.etaSeconds)}`}</span>}

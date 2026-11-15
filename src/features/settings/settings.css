@@ -25,3 +25,9 @@
 .account { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .account code { font-size: 12px; }
 .consent.welcome { border-color: var(--accent); background: var(--accent-soft); }
+
+.prov-pick .in-use { margin-left: 8px; font-weight: 500; }
+.row .grow { flex: 1; min-width: 0; }
+.current-model { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; margin-bottom: 10px; border: 1px solid var(--accent); border-radius: 8px; background: var(--accent-soft); }
+.current-model.none { border-color: var(--warn); background: var(--warn-soft); }
+.current-model strong { font-size: 15px; overflow-wrap: anywhere; }

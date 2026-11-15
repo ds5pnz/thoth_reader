@@ -1161,6 +1161,26 @@ async function screensCheck(res: Record<string, unknown>, index: number, count: 
     out.sourcesLeftVisible = [...document.querySelectorAll<HTMLElement>('.tcell-source')].filter((e) => { const b = e.getBoundingClientRect(); return b.bottom > 60 && b.top < window.innerHeight; }).length;
     await sleep(1200);
     out.parallel = await snap('reader-parallel');
+    // settings: which model translates, and renaming the provider
+    out.modelChip = document.querySelector('.model-chip')?.textContent ?? null;
+    document.querySelector<HTMLButtonElement>('button[aria-label="번역 설정"]')?.click();
+    await waitFor(() => !!document.querySelector('.modal.settings .current-model'), 5000);
+    await sleep(600);
+    out.currentModel = document.querySelector('.current-model strong')?.textContent ?? null;
+    out.inUseBadge = document.querySelector('.prov-pick .in-use')?.textContent ?? null;
+    const nameInput = [...document.querySelectorAll<HTMLInputElement>('.modal.settings .card label')].find((l) => l.textContent?.startsWith('이름'))?.querySelector('input');
+    if (nameInput) {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(nameInput, 'LM Studio (로컬)');
+      nameInput.dispatchEvent(new Event('input', { bubbles: true }));
+      await sleep(200);
+      [...document.querySelectorAll<HTMLButtonElement>('.modal.settings button')].find((b) => b.textContent === '이름 저장')?.click();
+      await sleep(900);
+    }
+    out.renamed = { list: document.querySelector('.prov-pick strong')?.textContent ?? null, heading: document.querySelector('.modal.settings section:nth-of-type(2) .card h3')?.textContent ?? null };
+    out.settingsShot = await snap('settings');
+    [...document.querySelectorAll<HTMLButtonElement>('.modal.settings header button')].find((b) => b.textContent === '닫기')?.click();
+    await sleep(500);
+    out.chipTitleAfterRename = document.querySelector('.model-chip')?.getAttribute('title') ?? null;
     clickButton('원문');
     await waitFor(() => epubFrameText() > 0, 15000);
     await sleep(1500);
