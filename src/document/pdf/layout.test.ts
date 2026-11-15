@@ -137,6 +137,80 @@ describe('tables', () => {
   });
 });
 
+describe('paragraphs that read on', () => {
+  // Three full body lines (90 chars = 450pt at 10pt) so the flow has a right edge and a leading.
+  const body = (seed: number, y: number) => para([filler(seed, 90), filler(seed + 1, 90), filler(seed + 2, 90) + '.'], 72, y, { leading: 12 });
+  const counts = (items: ReturnType<typeof para>) => analyzeLayout(pageInput(items)).dominant!.paragraphs.map((p) => p.units.length);
+
+  it('keeps a full bold lead-in line with the sentence it starts', () => {
+    const items = [...body(1, 700), item(filler(7, 90), 72, 652, 10, 'B'), item(filler(8, 90), 72, 640), item(filler(9, 40) + '.', 72, 628)];
+    expect(counts(items)).toEqual([3, 3]);
+  });
+
+  it('still separates a short bold heading from the text under it', () => {
+    const items = [...body(1, 700), item('Short bold heading', 72, 652, 10, 'B'), item(filler(8, 90), 72, 640), item(filler(9, 40) + '.', 72, 628)];
+    expect(counts(items)).toEqual([3, 1, 2]);
+  });
+
+  it('keeps a line that is mostly inline code inside its paragraph', () => {
+    const items = [...body(1, 700), item(filler(7, 90), 72, 652), item(filler(8, 75), 72, 640, 10, 'M'), item(filler(9, 40) + '.', 72, 628)];
+    expect(counts(items)).toEqual([3, 3]);
+  });
+
+  it('separates a code line that follows a short line of prose', () => {
+    const items = [...body(1, 700), item('run the following command', 72, 652), item('npm install thing', 86, 640, 10, 'M')];
+    expect(counts(items)).toEqual([3, 1, 1]);
+  });
+
+  it('joins a hanging indent without a list marker', () => {
+    const items = [...body(1, 700), item(filler(7, 87), 72, 652), item(filler(8, 80), 87, 640), item(filler(9, 30) + '.', 87, 628)];
+    expect(counts(items)).toEqual([3, 3]);
+  });
+
+  it('judges prose by its own line spacing on a page with tightly set code', () => {
+    const code = Array.from({ length: 8 }, (_, i) => item(`let value${i} = compute(${i});`, 72, 700 - i * 9.5, 10, 'M'));
+    const prose = para([filler(1, 90), filler(2, 90), filler(3, 90), filler(4, 50) + '.'], 72, 560, { leading: 15 });
+    const lay = analyzeLayout(pageInput([...code, ...prose]));
+    expect(lay.dominant!.paragraphs.map((p) => p.units.length)).toEqual([8, 4]);
+  });
+});
+
+describe('rows cut by a wide gap', () => {
+  const lineTexts = (items: ReturnType<typeof para>) => texts(analyzeLayout(pageInput(items)));
+
+  it('reads a label and its title as one line', () => {
+    const out = lineTexts([item('Listing 3-1', 72, 700), item('The complete example program', 72 + 55 + 14, 700)]);
+    expect(out).toEqual(['Listing 3-1 | The complete example program']);
+  });
+
+  it('keeps rows apart when the rows around them are cut at the same place', () => {
+    const out = lineTexts([
+      item('Name of it', 72, 700), item('the first value here', 140, 700),
+      item('Other name', 72, 688), item('the second value here', 140, 688),
+    ]);
+    // Read as two columns or as four cells, but never as "name value" lines.
+    expect(out.some((t) => /name.*\| the|it \| the/i.test(t))).toBe(false);
+  });
+
+  it('keeps a short marker apart from the line beside it', () => {
+    const out = lineTexts([item('12', 72, 700), item(filler(1, 60), 72 + 10 + 12, 700)]);
+    expect(out).toHaveLength(2);
+  });
+});
+
+describe('margin notes', () => {
+  it('do not cut the paragraph they sit beside and follow it', () => {
+    const p1 = para([filler(1, 70), filler(2, 70), filler(3, 70), filler(4, 70), filler(5, 30) + '.'], 72, 700, { leading: 12 });
+    const p2 = para([filler(6, 70), filler(7, 70), filler(8, 30) + '.'], 72, 628, { leading: 12 });
+    const note = [item('A note in the margin', 440, 688, 8), item('on two lines.', 440, 678, 8)];
+    const lay = analyzeLayout(pageInput([...p1, ...note, ...p2]));
+    const flowParas = lay.dominant!.paragraphs;
+    // Whether the note is found as a column or as a margin note, the body stays whole.
+    expect(flowParas.map((p) => p.units.length).filter((n) => n >= 3)).toEqual([5, 3]);
+    expect(flowParas.some((p) => p.units.length === 2)).toBe(true);
+  });
+});
+
 describe('paragraphs', () => {
   it('splits on first-line indentation (justified text)', () => {
     const p1 = para([filler(1, 45), filler(2, 45), filler(3, 45)], 72, 700, { leading: 12, indent: 12 });

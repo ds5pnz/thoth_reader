@@ -65,6 +65,7 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
         const pages = samplePages(doc.numPages, MAX_PAGES);
         const results: PdfPageResult[] = [];
         const splitReasons: Record<string, number> = {};
+        let listPages = 0;
         let failedPages = 0;
         const pageErrors: string[] = [];
         for (const p of pages) {
@@ -73,20 +74,37 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
             const input = await buildPageInput(page);
             results.push(await extractPage(input, 'corpus', { sha256Hex }));
             // Which rule cut a paragraph that reads on (no sentence end before, lower case after).
-            for (const g of analyzeLayout(input).groups) {
+            // Index, contents and word-list pages are short lines by nature: not a reflow defect.
+            const pageLayout = analyzeLayout(input);
+            const lens = pageLayout.groups.flatMap((g) => g.lines.map((l) => l.text.trim().length)).sort((x, y) => x - y);
+            const listLike = lens.length > 0 && (lens[Math.floor(lens.length / 2)] ?? 0) < 40;
+            if (listLike) listPages += 1;
+            if (env.THOTH_CORPUS_DEBUG === 'long') {
+              for (const g of pageLayout.groups) for (const pp of g.paragraphs) {
+                const ls = pp.units.flatMap((u) => u.lines);
+                const chars = ls.reduce((n, l) => n + l.text.length, 0);
+                if (chars <= 1500 || pp.units[0]!.kind === 'table') continue;
+                const ds: string[] = [];
+                for (let k = 1; k < ls.length; k++) ds.push(((ls[k - 1]!.base - ls[k]!.base) / ls[k]!.size).toFixed(2));
+                debug.push(JSON.stringify({ page: p + 1, lines: ls.length, chars, mono: ls.filter((l) => l.mono).length, lead: Number(((pp.leading ?? 0) / ls[0]!.size).toFixed(2)), x0: ls.slice(0, 30).map((l) => Math.round(l.x0)).join(' '), ds: ds.slice(0, 30).join(' ') }));
+              }
+            }
+            for (const g of listLike ? [] : pageLayout.groups) {
               for (let i = 1; i < g.paragraphs.length; i++) {
                 const a = g.paragraphs[i - 1]!;
                 const b = g.paragraphs[i]!;
                 const la = a.units.at(-1)!.lines.at(-1)!;
                 const lb = b.units[0]!.lines[0]!;
                 if (a.units[0]!.kind === 'table' || b.units[0]!.kind === 'table') continue;
+                if (lb.text.trim().length < 5 || (la.text.trim().length < 25 && la.base - lb.base > 2 * la.size)) continue;
                 if (!/^\p{Ll}/u.test(lb.text.trim()) || /[.!?:;…。]["'”’»)\]]*$/.test(la.text.trim())) continue;
                 const why = a.flow === b.flow ? (b.startReason ?? '?') : 'new_flow';
                 if (env.THOTH_CORPUS_DEBUG === why) {
                   const fl = b.flow.units.filter((u) => u.kind === 'line').map((u) => u.lines[0]!);
                   const ds: number[] = [];
                   for (let k = 1; k < fl.length; k++) ds.push(Number(((fl[k - 1]!.base - fl[k]!.base) / fl[k - 1]!.size).toFixed(2)));
-                  debug.push(JSON.stringify({ page: p + 1, d: Number(((la.base - lb.base) / la.size).toFixed(2)), sizes: [la.size, lb.size].map((v) => Number(v.toFixed(1))), x: [la.x0, la.x1, lb.x0, lb.x1].map((v) => Math.round(v)), bold: [la.bold, lb.bold], mono: [la.mono, lb.mono], flowLines: fl.length, flowDeltas: ds.slice(0, 40).join(' ') }));
+                  const fx = (f: typeof a.flow) => ({ col: f.column, span: f.spanning, unres: f.unresolved, n: f.units.length, x: [Math.round(Math.min(...f.units.map((u) => u.x0))), Math.round(Math.max(...f.units.map((u) => u.x1)))], y: [Math.round(Math.max(...f.units.map((u) => u.top))), Math.round(Math.min(...f.units.map((u) => u.bottom)))] });
+                  debug.push(JSON.stringify({ page: p + 1, d: Number(((la.base - lb.base) / la.size).toFixed(2)), sizes: [la.size, lb.size].map((v) => Number(v.toFixed(1))), x: [la.x0, la.x1, lb.x0, lb.x1].map((v) => Math.round(v)), len: [la.text.length, lb.text.length], bold: [la.bold, lb.bold], mono: [la.mono, lb.mono], A: fx(a.flow), B: fx(b.flow), flows: g.flows.length, lead: Number(((b.leading ?? 0) / la.size).toFixed(2)), flowDeltas: ds.slice(0, 12).join(' ') }));
                 }
                 splitReasons[why] = (splitReasons[why] ?? 0) + 1;
               }
@@ -112,6 +130,9 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
         let paras = 0;
         let midSplits = 0;
         let shortParas = 0;
+        // The opposite defect: paragraphs glued together show up as very long ones.
+        let longParas = 0;
+        const paraLens: number[] = [];
         let lowerStarts = 0;
         const splitPages: Record<number, number> = {};
         for (const r of results) {
@@ -123,6 +144,8 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
             if (!t) continue;
             paras += 1;
             if (t.length < 25) shortParas += 1;
+            if (t.length > 1500) longParas += 1;
+            paraLens.push(t.length);
             if (/^\p{Ll}/u.test(t)) lowerStarts += 1;
             const prev = body[i - 1];
             if (prev && prev.kind === 'paragraph' && /^\p{Ll}/u.test(t) && !/[.!?:;…。]["'”’»)\]]*$/.test(prev.sourceText.trim())) {
@@ -163,8 +186,13 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
           midSplits,
           midSplitRate: paras ? Number((midSplits / paras).toFixed(4)) : 0,
           shortParas,
+          longParas,
+          paraLenP95: paraLens.sort((x, y) => x - y)[Math.floor(paraLens.length * 0.95)] ?? 0,
+          paraLenMax: paraLens.at(-1) ?? 0,
           lowerStarts,
           splitReasons,
+          bodySplits: Object.values(splitReasons).reduce((x, y) => x + y, 0),
+          listPages,
           worstSplitPages: Object.entries(splitPages).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([p, n]) => `${Number(p) + 1}:${n}`),
           autoCoverage: chars ? Number((autoChars / chars).toFixed(3)) : 0,
           msPerPage: Number((ms / Math.max(1, pages.length)).toFixed(1)),

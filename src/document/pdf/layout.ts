@@ -105,6 +105,8 @@ export interface Paragraph {
   units: Unit[];
   /** Rule that started this paragraph (diagnostics only). */
   startReason?: string;
+  /** Line spacing the flow was judged by (diagnostics only). */
+  leading?: number;
 }
 
 export interface Frame {
@@ -718,49 +720,105 @@ export function groupParagraphs(flow: Flow): Paragraph[] {
   const rightEdge = percentile(bodyLines.map((l) => l.x1), 0.9);
   const leftEdge = percentile(bodyLines.map((l) => l.x0), 0.1);
   const colWidth = Math.max(1, rightEdge - leftEdge);
-  const deltas: number[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const a = lines[i - 1] as Line;
-    const b = lines[i] as Line;
-    const d = a.base - b.base;
-    if (Math.abs(a.size - b.size) <= 0.12 * a.size && d > 0.8 * a.size && d < 2.5 * a.size) deltas.push(d);
-  }
-  // Lower quartile: paragraph gaps inflate the median on short flows.
-  const leading = deltas.length ? percentile(deltas, 0.25) : 1.2 * (sizeMed || 10);
-
-  const paras: Paragraph[] = [];
-  let cur: Unit[] = [];
-  let curLines: Line[] = [];
-  let curWhy = 'start';
-  const push = () => {
-    if (cur.length) paras.push({ flow, units: cur, startReason: curWhy });
-    cur = [];
-    curLines = [];
-  };
-  for (const u of flow.units) {
-    if (u.kind === 'table') {
-      push();
-      paras.push({ flow, units: [u], startReason: 'table' });
-      continue;
+  // Code is usually set tighter than prose: judging prose by the spacing of a listing on the
+  // same page cuts every paragraph into single lines, so each gets its own estimate.
+  const spacingOf = (mono: boolean): number | null => {
+    const deltas: number[] = [];
+    for (let i = 1; i < lines.length; i++) {
+      const a = lines[i - 1] as Line;
+      const b = lines[i] as Line;
+      if (a.mono !== mono || b.mono !== mono) continue;
+      const d = a.base - b.base;
+      if (Math.abs(a.size - b.size) <= 0.12 * a.size && d > 0.8 * a.size && d < 2.5 * a.size) deltas.push(d);
     }
-    const l = u.lines[0] as Line;
-    const prev = curLines.at(-1);
-    const why = prev ? breakReason(curLines, prev, l, { leading, rightEdge, colWidth, leftEdge }) : 'start';
-    if (why === null) {
-      cur.push(u);
-      curLines.push(l);
-      continue;
+    // Lower quartile: paragraph gaps inflate the median on short flows.
+    return deltas.length ? percentile(deltas, 0.25) : null;
+  };
+  const fallback = 1.2 * (sizeMed || 10);
+  const proseLeading = spacingOf(false);
+  const monoLeading = spacingOf(true);
+  const leading = proseLeading ?? monoLeading ?? fallback;
+  const leadingFor = (l: Line) => (l.mono ? monoLeading ?? proseLeading : proseLeading ?? monoLeading) ?? fallback;
+
+  // A row cut where its neighbours are cut too is a table-like row, not one line of prose.
+  const byRow = new Map<number, Line[]>();
+  for (const l of lines) {
+    const arr = byRow.get(l.rowIndex) ?? [];
+    arr.push(l);
+    byRow.set(l.rowIndex, arr);
+  }
+  const alignedCut = (l: Line): boolean => {
+    for (const r of [l.rowIndex - 1, l.rowIndex + 1]) {
+      const row = byRow.get(r);
+      if (!row || row.length < 2) continue;
+      const first = Math.min(...row.map((x) => x.x0));
+      if (row.some((x) => x.x0 > first + 0.01 && Math.abs(x.x0 - l.x0) <= 0.6 * l.size)) return true;
+    }
+    return false;
+  };
+  const ctxFor = (l: Line): FlowCtx => ({ leading: leadingFor(l), rightEdge, colWidth, leftEdge, alignedCut });
+
+  // Notes set in the margin share rows with the body. Read in row order they cut every
+  // paragraph they sit next to, so they are grouped on their own and placed after the
+  // paragraph they start beside.
+  const margin = 0.5 * (sizeMed || 10);
+  const inMargin = (u: Unit) =>
+    u.kind === 'line' && bodyLines.length >= 4 && (u.x0 > rightEdge + margin || u.x1 < leftEdge - margin);
+
+  const group = (units: Unit[]): Paragraph[] => {
+    const paras: Paragraph[] = [];
+    let cur: Unit[] = [];
+    let curLines: Line[] = [];
+    let curWhy = 'start';
+    const push = () => {
+      if (cur.length) paras.push({ flow, units: cur, startReason: curWhy, leading });
+      cur = [];
+      curLines = [];
+    };
+    for (const u of units) {
+      if (u.kind === 'table') {
+        push();
+        paras.push({ flow, units: [u], startReason: 'table' });
+        continue;
+      }
+      const l = u.lines[0] as Line;
+      const prev = curLines.at(-1);
+      const why = prev ? breakReason(curLines, prev, l, ctxFor(l)) : 'start';
+      if (why === null) {
+        cur.push(u);
+        curLines.push(l);
+        continue;
+      }
+      push();
+      cur = [u];
+      curLines = [l];
+      curWhy = why;
     }
     push();
-    cur = [u];
-    curLines = [l];
-    curWhy = why;
+    return paras;
+  };
+
+  const side = flow.units.filter(inMargin);
+  if (side.length === 0) return group(flow.units);
+  const body = group(flow.units.filter((u) => !inMargin(u)));
+  const notes = group(side);
+  const topOf = (p: Paragraph) => Math.max(...p.units.map((u) => u.top));
+  const after: Paragraph[][] = Array.from({ length: body.length + 1 }, () => []);
+  for (const n of notes) {
+    const t = topOf(n);
+    let k = 0;
+    while (k < body.length && topOf(body[k] as Paragraph) >= t - margin) k++;
+    n.startReason = 'margin';
+    (after[k] as Paragraph[]).push(n);
   }
-  push();
-  return paras;
+  const out: Paragraph[] = [...(after[0] as Paragraph[])];
+  body.forEach((p, i) => out.push(p, ...(after[i + 1] as Paragraph[])));
+  return out;
 }
 
 interface FlowCtx {
+  /** True when the rows around this line are cut at the same place (table-like). */
+  alignedCut?: (l: Line) => boolean;
   leading: number;
   rightEdge: number;
   leftEdge: number;
@@ -775,33 +833,50 @@ export function shouldBreak(para: Line[], prev: Line, cur: Line, ctx: FlowCtx): 
  *  rule is kept on the paragraph for diagnostics. */
 export function breakReason(para: Line[], prev: Line, cur: Line, ctx: FlowCtx): string | null {
   const size = Math.max(prev.size, cur.size);
-  if (Math.abs(cur.size - prev.size) > 0.12 * size) return 'size';
-  if (cur.bold !== prev.bold) return 'bold';
-  if (cur.mono !== prev.mono) return 'mono';
+  const sizeGap = Math.abs(cur.size - prev.size) / size;
+  const style = sizeGap > 0.12 ? 'size' : cur.bold !== prev.bold ? 'bold' : cur.mono !== prev.mono ? 'mono' : null;
   if (cur.angle !== prev.angle) return 'angle';
   const delta = prev.base - cur.base;
-  if (delta <= 0.3 * size) return 'same_row'; // same row, separate segment
+  if (delta <= 0.3 * size) {
+    // Same row: a wide word gap (justified text, a label and its title) is still one line,
+    // unless the rows around it are cut at the same place.
+    const gap = cur.x0 - prev.x1;
+    // A few characters set apart at the start of a row are a marker (a paragraph number, a
+    // margin mark), and the indent after them is what separates the paragraphs.
+    const marker = prev.text.trim().length < 4 || prev.x1 - prev.x0 < 3 * size;
+    if (style || marker || gap < 0 || gap > 2 * size || ctx.alignedCut?.(cur)) return style ?? 'same_row';
+    return null;
+  }
   const expected = Math.max(ctx.leading, 0.9 * size);
-  if (delta > expected * 1.35 + 0.5) return 'gap';
+  if (delta > expected * 1.35 + 0.5) return style ?? 'gap';
+  // The sentence visibly reads on: no sentence end on a full line, lower case after it.
+  const full = prev.x1 >= ctx.rightEdge - Math.max(2 * size, 0.08 * ctx.colWidth) || prev.x1 - prev.x0 >= 0.6 * ctx.colWidth;
+  const prevText = prev.text.trimEnd();
+  const readsOn = full && !SENTENCE_END.test(prevText) && /^\p{Ll}/u.test(cur.text.trimStart());
+  // A line set mostly in another face (inline code, a bold lead-in, small caps) is still
+  // part of its paragraph when the sentence reads on across it.
+  if (style && !(readsOn && sizeGap <= 0.3)) return style;
   // Mono (code) blocks keep their own indentation and punctuation.
   if (cur.mono && prev.mono) return null;
   if (LIST_MARKER_START.test(cur.text.trimStart())) return 'list_marker';
   const first = para[0] as Line;
   const isList = LIST_MARKER_START.test(first.text.trimStart());
-  if (SENTENCE_END.test(prev.text.trimEnd()) && prev.x1 < ctx.rightEdge - Math.max(2 * size, 0.08 * ctx.colWidth)) return 'short_last_line';
+  if (SENTENCE_END.test(prevText) && prev.x1 < ctx.rightEdge - Math.max(2 * size, 0.08 * ctx.colWidth)) return 'short_last_line';
   const tol = 0.8 * size;
-  if (para.length === 1) {
+  // The line that starts the paragraph's second row gives the body indent.
+  const second = para.find((l) => first.base - l.base > 0.3 * size);
+  if (!second) {
     const dx = cur.x0 - first.x0;
     if (Math.abs(dx) <= tol) return null;
     if (dx < 0 && -dx <= 4 * size) return null; // first-line indent
     if (dx > 0 && isList && dx <= 4 * size) return null; // hanging indent
     if (centred(prev, cur, tol)) return null;
-    return 'indent_first';
+    return readsOn ? null : 'indent_first';
   }
-  const bodyX = (para[1] as Line).x0;
-  if (Math.abs(cur.x0 - bodyX) <= tol) return null;
+  if (Math.abs(cur.x0 - second.x0) <= tol) return null;
   if (centred(prev, cur, tol)) return null;
-  return 'indent';
+  // Further right than the body is a first-line indent: a new paragraph whatever the words say.
+  return readsOn && cur.x0 < second.x0 ? null : 'indent';
 }
 
 function centred(a: Line, b: Line, tol: number): boolean {
