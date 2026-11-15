@@ -843,16 +843,21 @@ export function breakReason(para: Line[], prev: Line, cur: Line, ctx: FlowCtx): 
     const gap = cur.x0 - prev.x1;
     // A few characters set apart at the start of a row are a marker (a paragraph number, a
     // margin mark), and the indent after them is what separates the paragraphs.
-    const marker = prev.text.trim().length < 4 || prev.x1 - prev.x0 < 3 * size;
+    // An ordinary short word is not one: large justified type spaces its words that widely.
+    const marker = (prev.text.trim().length < 4 || prev.x1 - prev.x0 < 3 * size) && !/^\p{Ll}{2,}$/u.test(prev.text.trim());
     if (style || marker || gap < 0 || gap > 2 * size || ctx.alignedCut?.(cur)) return style ?? 'same_row';
     return null;
   }
   const expected = Math.max(ctx.leading, 0.9 * size);
-  if (delta > expected * 1.35 + 0.5) return style ?? 'gap';
   // The sentence visibly reads on: no sentence end on a full line, lower case after it.
   const full = prev.x1 >= ctx.rightEdge - Math.max(2 * size, 0.08 * ctx.colWidth) || prev.x1 - prev.x0 >= 0.6 * ctx.colWidth;
   const prevText = prev.text.trimEnd();
   const readsOn = full && !SENTENCE_END.test(prevText) && /^\p{Ll}/u.test(cur.text.trimStart());
+  if (delta > expected * 1.35 + 0.5) {
+    // Some designs open a column or follow an inline figure with one wider line gap; a
+    // sentence that reads on across it is still one paragraph.
+    if (style || !readsOn || delta > expected * 1.8) return style ?? 'gap';
+  }
   // A line set mostly in another face (inline code, a bold lead-in, small caps) is still
   // part of its paragraph when the sentence reads on across it.
   if (style && !(readsOn && sizeGap <= 0.3)) return style;

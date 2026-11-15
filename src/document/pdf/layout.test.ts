@@ -167,6 +167,13 @@ describe('paragraphs that read on', () => {
     expect(counts(items)).toEqual([3, 3]);
   });
 
+  it('reads on across one wider line gap, but not across a sentence end', () => {
+    const open = [item(filler(7, 90), 72, 652), item(filler(8, 90), 72, 632), item(filler(9, 40) + '.', 72, 620)];
+    expect(counts([...body(1, 700), ...open])).toEqual([3, 3]);
+    const closed = [item(filler(7, 89) + '.', 72, 652), item(filler(8, 90), 72, 632), item(filler(9, 40) + '.', 72, 620)];
+    expect(counts([...body(1, 700), ...closed])).toEqual([3, 1, 2]);
+  });
+
   it('judges prose by its own line spacing on a page with tightly set code', () => {
     const code = Array.from({ length: 8 }, (_, i) => item(`let value${i} = compute(${i});`, 72, 700 - i * 9.5, 10, 'M'));
     const prose = para([filler(1, 90), filler(2, 90), filler(3, 90), filler(4, 50) + '.'], 72, 560, { leading: 15 });
@@ -190,6 +197,11 @@ describe('rows cut by a wide gap', () => {
     ]);
     // Read as two columns or as four cells, but never as "name value" lines.
     expect(out.some((t) => /name.*\| the|it \| the/i.test(t))).toBe(false);
+  });
+
+  it('reads widely spaced words of large justified type as one line', () => {
+    const out = lineTexts([item('the', 72, 700, 15), item('river column', 72 + 22.5 + 14, 700, 15), item('of', 72 + 22.5 + 14 + 90 + 14, 700, 15)]);
+    expect(out).toEqual(['the | river column | of']);
   });
 
   it('keeps a short marker apart from the line beside it', () => {

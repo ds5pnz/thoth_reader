@@ -96,6 +96,7 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
                 const la = a.units.at(-1)!.lines.at(-1)!;
                 const lb = b.units[0]!.lines[0]!;
                 if (a.units[0]!.kind === 'table' || b.units[0]!.kind === 'table') continue;
+                if (la.mono && lb.mono) continue; // a listing cut at a blank line is still code
                 if (lb.text.trim().length < 5 || (la.text.trim().length < 25 && la.base - lb.base > 2 * la.size)) continue;
                 if (!/^\p{Ll}/u.test(lb.text.trim()) || /[.!?:;…。]["'”’»)\]]*$/.test(la.text.trim())) continue;
                 const why = a.flow === b.flow ? (b.startReason ?? '?') : 'new_flow';
@@ -104,7 +105,7 @@ describe.skipIf(!ROOT)('local PDF corpus', () => {
                   const ds: number[] = [];
                   for (let k = 1; k < fl.length; k++) ds.push(Number(((fl[k - 1]!.base - fl[k]!.base) / fl[k - 1]!.size).toFixed(2)));
                   const fx = (f: typeof a.flow) => ({ col: f.column, span: f.spanning, unres: f.unresolved, n: f.units.length, x: [Math.round(Math.min(...f.units.map((u) => u.x0))), Math.round(Math.max(...f.units.map((u) => u.x1)))], y: [Math.round(Math.max(...f.units.map((u) => u.top))), Math.round(Math.min(...f.units.map((u) => u.bottom)))] });
-                  debug.push(JSON.stringify({ page: p + 1, d: Number(((la.base - lb.base) / la.size).toFixed(2)), sizes: [la.size, lb.size].map((v) => Number(v.toFixed(1))), x: [la.x0, la.x1, lb.x0, lb.x1].map((v) => Math.round(v)), len: [la.text.length, lb.text.length], bold: [la.bold, lb.bold], mono: [la.mono, lb.mono], A: fx(a.flow), B: fx(b.flow), flows: g.flows.length, lead: Number(((b.leading ?? 0) / la.size).toFixed(2)), flowDeltas: ds.slice(0, 12).join(' ') }));
+                  debug.push(JSON.stringify({ page: p + 1, d: Number(((la.base - lb.base) / la.size).toFixed(2)), sizes: [la.size, lb.size].map((v) => Number(v.toFixed(1))), x: [la.x0, la.x1, lb.x0, lb.x1].map((v) => Math.round(v)), len: [la.text.length, lb.text.length], sig: la.text.trim().slice(0, 12).replace(/\p{Lu}/gu, 'A').replace(/\p{Ll}/gu, 'a').replace(/\d/g, '9'), bold: [la.bold, lb.bold], mono: [la.mono, lb.mono], A: fx(a.flow), B: fx(b.flow), flows: g.flows.length, lead: Number(((b.leading ?? 0) / la.size).toFixed(2)), flowDeltas: ds.slice(0, 12).join(' ') }));
                 }
                 splitReasons[why] = (splitReasons[why] ?? 0) + 1;
               }
