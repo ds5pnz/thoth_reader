@@ -174,7 +174,7 @@ export const TranslationCell = memo(function TranslationCell(props: {
             <div className="tcell-empty faint">
               {job?.state === 'FAILED' ? (
                 <>
-                  <span>{job.errorCode === 'AUTH_FAILED' ? '인증을 확인해 주세요.' : job.errorCode === 'INVALID_OUTPUT' ? '모델 응답 형식이 올바르지 않습니다.' : '번역에 실패했습니다.'}</span>
+                  <span>{job.errorCode === 'AUTH_FAILED' ? '인증 또는 로그인 상태를 확인해 주세요.' : job.errorCode === 'RATE_LIMITED' ? '사용 한도에 도달했습니다. 요금제 사용량을 확인해 주세요.' : job.errorCode === 'INVALID_OUTPUT' ? '모델 응답 형식이 올바르지 않습니다.' : '번역에 실패했습니다.'}</span>
                   <button className="btn small" onClick={() => actions.translateNow(block.id)} title={job.sentUnknown ? '원문이 이미 전송되었을 수 있어 새 요청이 발생할 수 있습니다' : undefined}>다시 시도</button>
                 </>
               ) : running ? (detailed ? '번역 중…' : null) : !autoActive && display?.status === 'none' ? (

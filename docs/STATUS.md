@@ -187,3 +187,12 @@ THOTH_SELFTEST_PROVIDER=http://localhost:1235/v1 THOTH_SELFTEST_MODEL=<model> sc
 - `promptMode`에 `rosetta`가 추가됐다. 시스템 메시지("Translate the user's text to …", Tone, Glossary, 태그·자리표시자 규칙)와 본문만 든 사용자 메시지로 보낸다. YanoljaNEXT Rosetta는 사용자 메시지에 든 것을 통째로 번역하므로 표준(JSON 반환)과 단순(규칙까지 번역) 모두 0/7이었다.
 - LM Studio 실측: YanoljaNEXT-Rosetta-12B-2510 Q4_K_M, Rust 책 한 쪽 7/7·30초. 태그·자리표시자 유지, `<pb/>`는 문장 끝으로 이동, 본문에 섞은 지시문은 그대로 번역(따르지 않음). 실제 앱 병렬 보기 첫 화면 약 23초.
 - 여덟 모델 비교는 `docs/MODEL_BENCHMARK_KO.md`.
+
+## ChatGPT 요금제 · Codex 연동 (2026-11-15)
+
+- **ChatGPT 요금제(Sign in with ChatGPT)**: OpenAI의 오픈소스·로컬 앱용 "ChatGPT plan usage" 흐름을 따른다. 첫 로그인은 `client_id=dynamic_agent_client`로 앱을 등록하고 콜백으로 발급된 client id를 저장하며, 이후에는 그 id로 재인증한다. 인증 코드 + PKCE(S256), 시도마다 새 `state`·`nonce`, 루프백 콜백 `http://127.0.0.1:<port>/auth/callback`(기본 1455, 사용 중이면 빈 포트). ID 토큰은 OpenAI JWKS로 RS256 서명·issuer·audience(발급 client id)·만료·nonce를 확인한 뒤에만 저장한다. 요금제 사용은 `chatgpt.tokens.use.direct` 스코프가 부여됐을 때만 켠다.
+- 자격 증명(액세스·리프레시·ID 토큰, client id, host id)은 Provider마다 키체인 항목 하나에 JSON으로 둔다. 리프레시 토큰이 회전하므로 갱신은 등록 단위로 직렬화하고, 쓸 수 없게 된 토큰은 지우되 등록 정보는 남겨 같은 client id로 다시 로그인한다. 로그아웃은 revocation endpoint로 세션을 끊고 토큰을 지운다.
+- 번역 요청은 `POST /v1/responses`에 `store:false`, `stream:true`로 보낸다. 시스템 메시지는 `instructions`로 옮기고, 요금제 사용에서 거절되는 필드(temperature, 토큰 한도 등)는 보내지 않는다. `response.completed`를 받아야 성공이다. 사용 한도(`subscription_sharing_usage_limit_exceeded`)는 재시도 없이 멈추고 ChatGPT 설정의 Usage를 안내한다. 다른 결제 경로로 바꾸지 않는다.
+- **Codex**: 이 Mac의 `codex app-server`를 stdio JSON-RPC로 띄워 문단마다 일회용 스레드(읽기 전용 샌드박스, 승인 없음, 빈 작업 폴더, 번역 지시문으로 교체한 base instructions)에서 한 턴을 돌린다. 도구 사용이 감지되거나 서버가 승인을 요청하면 그 요청을 실패로 끝낸다. 앱은 Codex의 토큰을 읽지 않는다.
+- 저장: `providers.kind` 열의 CHECK 제약을 건드리지 않도록 두 종류 모두 `openai_compatible`로 저장하고 `capabilities.variant`(`chatgpt`·`codex`)로 구분한다.
+- 검증: 가짜 인증·API 서버를 상대로 한 시험(서명·클레임 검증, 등록/재인증, 다른 계정·nonce 불일치 거부, 토큰 갱신·회전, 사용 한도·로그인 필요 오류, 모델 목록) 통과. Codex는 실제 앱에서 공개 도서 EPUB 병렬 보기 첫 화면이 약 19초에 번역됨(gpt-6.1-sol, effort low). 실제 OpenAI 인증 서버에는 authorize 요청이 로그인 화면으로 넘어가는 것까지만 확인했고, **ChatGPT 계정으로 실제 로그인해 번역하는 것은 확인하지 못했다.**

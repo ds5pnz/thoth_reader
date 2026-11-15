@@ -55,10 +55,12 @@ Books, translations, notes and settings stay on your Mac. Text leaves the machin
 | --- | --- |
 | Ollama | Local. No key needed. |
 | OpenAI-compatible API | Any server that speaks the Chat Completions API, including LM Studio and hosted services. API keys are stored in the macOS Keychain only. |
+| ChatGPT plan | **Continue with ChatGPT** signs you in and translates on the usage included in your ChatGPT plan or credits. No API key. Usage and per-app limits are managed in ChatGPT settings; when a limit is reached translation stops rather than switching to another billing path. |
+| Codex | Uses the Codex installed and signed in on this Mac. The app never reads Codex's credentials and calls it with tools, file access and commands turned off. |
 
 Add a provider in Settings, pick a model, and choose the target language. Translation-only models such as TranslateGemma or Hunyuan-MT use the *simple* request style and YanoljaNEXT Rosetta uses its own (*Rosetta*); both are selected automatically from the model name. General chat models use the *standard* style, which also sends the previous paragraph as context.
 
-For a comparison of local models on English-to-Korean translation (speed, quality, and which request style each needs), see the [model benchmark (Korean)](docs/MODEL_BENCHMARK_KO.md). The app never falls back from a local provider to a remote one on its own.
+For a comparison of local models on English-to-Korean translation (speed, quality, and which request style each needs), see the [model benchmark (Korean)](docs/MODEL_BENCHMARK_KO.md). The app never falls back from a local provider to a remote one on its own. ChatGPT plan and Codex send the paragraphs being translated to OpenAI; sign-in tokens are kept in the macOS Keychain.
 
 ## Install
 

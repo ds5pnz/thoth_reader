@@ -21,7 +21,7 @@ use std::collections::HashMap;
 pub const SEGMENT_ID: &str = "s0";
 
 pub fn provider_config(row: &translations::ProviderRow) -> AppResult<ProviderConfig> {
-    let kind = ProviderKind::parse(&row.kind).ok_or_else(|| AppError::invalid("Provider 종류가 올바르지 않습니다."))?;
+    let kind = ProviderKind::of_row(&row.kind, &row.capabilities).ok_or_else(|| AppError::invalid("Provider 종류가 올바르지 않습니다."))?;
     let caps: Option<ProviderCapabilities> = row.capabilities.get("probed").and_then(|v| serde_json::from_value(v.clone()).ok());
     let cfg = ProviderConfig {
         id: row.id.clone(),
@@ -147,7 +147,7 @@ pub async fn profile_context(db: &Db, base: &translations::ProfileRow, src: &str
     };
     let snap = &profile.snapshot;
     let caps: ProviderCapabilities = serde_json::from_value(snap["capabilities"].clone()).unwrap_or_else(|_| provider_config(&provider).map(|c| c.effective_capabilities()).unwrap_or_else(|_| ProviderCapabilities::default_for(ProviderKind::Ollama)));
-    let kind = ProviderKind::parse(&provider.kind).unwrap_or(ProviderKind::Ollama);
+    let kind = ProviderKind::of_row(&provider.kind, &provider.capabilities).unwrap_or(ProviderKind::Ollama);
     let prompt_mode = snap["promptMode"].as_str().map(prompt::PromptMode::parse).unwrap_or_default();
     let response_format = if snap["responseFormat"].as_str() == Some("json_segments") && !prompt_mode.is_plain() { ResponseFormat::JsonSegments } else { ResponseFormat::Text };
     let options = GenerationOptions {

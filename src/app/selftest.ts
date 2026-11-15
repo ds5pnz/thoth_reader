@@ -183,7 +183,10 @@ let WAIT = 30000;
 
 async function setupProvider(endpoint: string, model: string | null) {
   try {
-    const p = await call<{ id: string }>('provider_save', { providerId: null, kind: 'openai_compatible', label: 'selftest mock', endpoint, accountNamespace: 'selftest', allowPrivateHttp: false, enabled: true });
+    // "codex": the locally installed Codex (its own sign-in); otherwise an OpenAI-compatible endpoint
+    const p = endpoint === 'codex'
+      ? await (async () => { const c = await call<{ id: string }>('codex_connect'); await call('provider_save', { providerId: c.id, enabled: true }); return c; })()
+      : await call<{ id: string }>('provider_save', { providerId: null, kind: 'openai_compatible', label: 'selftest mock', endpoint, accountNamespace: 'selftest', allowPrivateHttp: false, enabled: true });
     const probe = await call<{ ok: boolean; models: { id: string }[]; capabilities: Record<string, unknown> | null; warnings: string[] }>('provider_probe', { providerId: p.id, modelId: model });
     await log('result', { stage: 'provider', probeOk: probe.ok, models: probe.models.map((m) => m.id), caps: probe.capabilities, warnings: probe.warnings });
     const prof = await call<{ id: string }>('profile_create', { providerId: p.id, modelId: model ?? probe.models[0]?.id ?? 'mock-ko', sourceLanguage: 'en', targetLanguage: 'ko', temperature: 0.2, seed: null, maxOutputTokens: null, contextLimit: 8192, modelDigest: null, promptMode: /rosetta/i.test(model ?? '') ? 'rosetta' : /translategemma|hy-?mt/i.test(model ?? '') ? 'simple' : 'structured' });

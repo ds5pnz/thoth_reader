@@ -185,7 +185,7 @@ impl TranslationService {
             return Err(AppError::new(ErrorCode::ProviderUnavailable, "Provider가 활성화되지 않았습니다. 설정에서 활성화해 주세요."));
         }
         if self.auth_blocked.lock().unwrap().contains(provider_id) {
-            return Err(AppError::new(ErrorCode::AuthFailed, "인증에 실패해 Provider를 중지했습니다. 설정에서 키를 확인해 주세요."));
+            return Err(AppError::new(ErrorCode::AuthFailed, "인증에 실패해 Provider를 중지했습니다. 설정에서 키 또는 로그인 상태를 확인해 주세요."));
         }
         let ver = row.created_at ^ row.cache_epoch ^ (row.capabilities.to_string().len() as i64) ^ (row.key_configured as i64);
         if let Some((v, p)) = self.providers.lock().unwrap().get(provider_id) {

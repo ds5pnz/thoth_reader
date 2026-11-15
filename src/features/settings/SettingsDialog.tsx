@@ -5,9 +5,24 @@ import { useSettings } from '../../app/settings';
 import type { ProviderRow } from '../../ipc/generated/ProviderRow';
 import type { ProbeResult } from '../../ipc/generated/ProbeResult';
 import type { ProfileRow } from '../../ipc/generated/ProfileRow';
+import type { ChatgptSignInResult } from '../../ipc/generated/ChatgptSignInResult';
+import type { CodexStatus } from '../../ipc/generated/CodexStatus';
 import './settings.css';
 
 type Tab = 'translation' | 'reading' | 'glossary' | 'data';
+
+export type ProviderVariant = 'ollama' | 'openai_compatible' | 'chatgpt' | 'codex';
+/** The provider's real kind: account-backed kinds are stored as a variant of `openai_compatible`. */
+export function variantOf(p: Pick<ProviderRow, 'kind' | 'capabilities'>): ProviderVariant {
+  const v = (p.capabilities as { variant?: unknown } | null)?.variant;
+  if (v === 'chatgpt' || v === 'codex') return v;
+  return p.kind === 'ollama' ? 'ollama' : 'openai_compatible';
+}
+const VARIANT_LABEL: Record<ProviderVariant, string> = { ollama: 'Ollama', openai_compatible: 'OpenAI 호환', chatgpt: 'ChatGPT 요금제', codex: 'Codex' };
+const CHATGPT_USAGE_URL = 'https://chatgpt.com/settings/usage';
+interface AccountInfo { email?: string | null; signedIn?: boolean; planEnabled?: boolean; plan?: string | null; type?: string | null }
+const accountOf = (p: ProviderRow): AccountInfo => ((p.capabilities as { account?: AccountInfo } | null)?.account ?? {});
+const openUrl = (url: string) => void call('open_external', { url }).catch(() => {});
 
 export function SettingsDialog({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<Tab>('translation');
@@ -42,6 +57,31 @@ function TranslationSettings() {
   const [err, setErr] = useState<string | null>(null);
   const [consentFor, setConsentFor] = useState<ProviderRow | null>(null);
   const [adding, setAdding] = useState<null | 'ollama' | 'openai_compatible'>(null);
+  const [signingIn, setSigningIn] = useState(false);
+  const [welcome, setWelcome] = useState(false);
+
+  // "Continue with ChatGPT": the browser opens and this waits until the user is done there.
+  const signIn = async (providerId: string | null) => {
+    setErr(null);
+    setSigningIn(true);
+    try {
+      const r = await call<ChatgptSignInResult>('chatgpt_sign_in', { providerId });
+      await load();
+      setSelected(r.provider.id);
+      if (!r.planEnabled) setErr('로그인은 되었지만 ChatGPT 요금제 사용이 허용되지 않았습니다. 번역에 쓰려면 다시 로그인해 요금제 사용에 동의해 주세요.');
+      else if (r.newRegistration) setWelcome(true);
+    } catch (e) {
+      if ((e as { code?: string })?.code !== 'CANCELLED') setErr(errorMessage(e));
+    } finally { setSigningIn(false); }
+  };
+  const connectCodex = async () => {
+    setErr(null);
+    try {
+      const p = await call<ProviderRow>('codex_connect');
+      await load();
+      setSelected(p.id);
+    } catch (e) { setErr(errorMessage(e)); }
+  };
 
   const load = async () => {
     try {
@@ -85,7 +125,7 @@ function TranslationSettings() {
             <li key={p.id} className={p.id === selected ? 'sel' : ''}>
               <button className="prov-pick" onClick={() => setSelected(p.id)}>
                 <strong>{p.label}</strong>
-                <span className="faint">{p.kind === 'ollama' ? 'Ollama' : 'OpenAI 호환'} · {p.endpoint}</span>
+                <span className="faint">{VARIANT_LABEL[variantOf(p)]} · {variantOf(p) === 'chatgpt' || variantOf(p) === 'codex' ? (accountOf(p).email ?? p.endpoint) : p.endpoint}</span>
               </button>
               <label className="switch">
                 <input type="checkbox" checked={p.enabled} onChange={(e) => void enable(p, e.target.checked)} /> 활성
@@ -97,13 +137,33 @@ function TranslationSettings() {
           <button className="btn small" onClick={() => setAdding('ollama')}>Ollama 추가</button>
           <button className="btn small" onClick={() => setAdding('openai_compatible')}>OpenAI 호환 API 추가</button>
         </div>
+        <div className="card account-add">
+          <h4>ChatGPT 요금제로 번역</h4>
+          <p className="faint">ChatGPT 요금제나 크레딧에 포함된 사용량으로 번역합니다. API 키가 필요 없고, 앱 구독이나 별도 요금은 없습니다. 번역할 문단은 OpenAI로 전송됩니다.</p>
+          <div className="row">
+            {signingIn
+              ? <><span className="muted">브라우저에서 로그인을 마쳐 주세요…</span><button className="btn small" onClick={() => void call('chatgpt_sign_in_cancel').catch(() => {})}>취소</button></>
+              : <button className="btn small primary" onClick={() => void signIn(null)}>Continue with ChatGPT</button>}
+            <button className="btn small" onClick={() => void connectCodex()} title="이 Mac에 설치되어 로그인된 Codex를 통해 번역합니다">Codex 연결</button>
+          </div>
+        </div>
+        {welcome && (
+          <div className="consent welcome" role="alertdialog" aria-labelledby="welcome-title">
+            <h4 id="welcome-title">ChatGPT 요금제를 사용합니다</h4>
+            <p>이 앱의 번역 요청은 ChatGPT 요금제 사용량을 씁니다. 사용량과 이 앱의 한도는 ChatGPT 설정에서 관리할 수 있습니다.</p>
+            <div className="row">
+              <button className="btn" onClick={() => openUrl(CHATGPT_USAGE_URL)}>사용량 관리</button>
+              <button className="btn primary" onClick={() => setWelcome(false)}>확인</button>
+            </div>
+          </div>
+        )}
         {adding && <AddProvider kind={adding} onDone={async (id) => { setAdding(null); await load(); if (id) setSelected(id); }} />}
         {consentFor && (
           <div className="consent" role="alertdialog" aria-labelledby="consent-title">
             <h4 id="consent-title">외부 API로 본문이 전송됩니다</h4>
             <p>활성화하면 화면에 보이는 문단과 앞 문단·제목 문맥이 다음 주소로 전송됩니다.</p>
             <code>{consentFor.endpoint}</code>
-            <p className="muted">로컬 Ollama가 실패해도 외부 API로 자동 전환하지 않습니다. API 키는 macOS 키체인에만 저장됩니다.</p>
+            <p className="muted">{variantOf(consentFor) === 'codex' ? '이 Mac의 Codex를 통해 OpenAI로 전송되며, 사용량은 Codex 쪽 한도에서 차감됩니다.' : variantOf(consentFor) === 'chatgpt' ? 'OpenAI로 전송되며, 사용량은 ChatGPT 요금제에서 차감됩니다. 로그인 정보는 macOS 키체인에만 저장됩니다.' : '로컬 Ollama가 실패해도 외부 API로 자동 전환하지 않습니다. API 키는 macOS 키체인에만 저장됩니다.'}</p>
             <div className="row">
               <button className="btn" onClick={() => setConsentFor(null)}>취소</button>
               <button className="btn primary" onClick={() => void enable(consentFor, true)}>이해했으며 활성화</button>
@@ -113,7 +173,7 @@ function TranslationSettings() {
       </section>
       {sel && (
         <section>
-          <ProviderDetail key={sel.id} provider={sel} probe={probe[sel.id]} onProbe={() => void runProbe(sel)} onChanged={load} />
+          <ProviderDetail key={sel.id} provider={sel} probe={probe[sel.id]} onProbe={() => void runProbe(sel)} onChanged={load} onSignIn={() => void signIn(sel.id)} signingIn={signingIn} />
           <ProfileEditor provider={sel} probe={probe[sel.id]} activeProfileId={settings.activeProfileId ?? null} onActivate={(id) => void set('activeProfileId', id)} />
         </section>
       )}
@@ -148,9 +208,25 @@ function AddProvider({ kind, onDone }: { kind: 'ollama' | 'openai_compatible'; o
   );
 }
 
-function ProviderDetail({ provider, probe, onProbe, onChanged }: { provider: ProviderRow; probe: ProbeResult | 'running' | undefined; onProbe: () => void; onChanged: () => Promise<void> }) {
+function ProviderDetail({ provider, probe, onProbe, onChanged, onSignIn, signingIn }: { provider: ProviderRow; probe: ProbeResult | 'running' | undefined; onProbe: () => void; onChanged: () => Promise<void>; onSignIn: () => void; signingIn: boolean }) {
   const [secret, setSecret] = useState('');
   const [msg, setMsg] = useState<string | null>(null);
+  const variant = variantOf(provider);
+  const account = accountOf(provider);
+  const [codex, setCodex] = useState<CodexStatus | null>(null);
+  useEffect(() => {
+    if (variant !== 'codex') return;
+    let live = true;
+    void call<CodexStatus>('codex_status').then((s) => { if (live) setCodex(s); }).catch(() => {});
+    return () => { live = false; };
+  }, [variant, provider.id]);
+  const signOut = async () => {
+    try {
+      const r = await call<{ revoked: boolean }>('chatgpt_sign_out', { providerId: provider.id });
+      setMsg(r.revoked ? '로그아웃했습니다.' : '이 Mac에서는 로그아웃했지만 OpenAI 쪽 세션 종료는 확인하지 못했습니다. ChatGPT 설정에서 이 앱의 연결을 끊을 수 있습니다.');
+      await onChanged();
+    } catch (e) { setMsg(errorMessage(e)); }
+  };
   const saveKey = async () => {
     try {
       await mutate('provider_save', { providerId: provider.id, newSecret: secret });
@@ -170,7 +246,30 @@ function ProviderDetail({ provider, probe, onProbe, onChanged }: { provider: Pro
     <div className="card">
       <h3>{provider.label}</h3>
       <p className="faint">{provider.endpoint} · namespace {provider.accountNamespace} · 캐시 epoch {provider.cacheEpoch}</p>
-      {provider.kind === 'openai_compatible' && (
+      {variant === 'chatgpt' && (
+        <div className="account">
+          <div className="row">
+            <span className={`badge ${account.signedIn && account.planEnabled ? 'ok' : 'warn'}`}>{account.signedIn ? (account.planEnabled ? 'ChatGPT 요금제 사용 중' : '요금제 사용 미허용') : '로그아웃됨'}</span>
+            {account.email && <span className="muted">{account.email}</span>}
+          </div>
+          <div className="row">
+            <button className="btn small" onClick={() => openUrl(CHATGPT_USAGE_URL)}>사용량 관리</button>
+            <button className="btn small" disabled={signingIn} onClick={onSignIn}>{account.signedIn ? '다시 로그인' : 'Continue with ChatGPT'}</button>
+            {account.signedIn && <button className="btn small ghost" onClick={() => void signOut()}>로그아웃</button>}
+          </div>
+          <p className="faint small-note">사용량은 ChatGPT 요금제에서 차감되며, 한도에 닿으면 번역이 멈춥니다. 다른 결제 수단으로 자동 전환하지 않습니다. 이 앱은 ChatGPT 대화 내용에 접근하지 않습니다.</p>
+        </div>
+      )}
+      {variant === 'codex' && (
+        <div className="account">
+          <div className="row">
+            <span className={`badge ${codex ? (codex.installed && codex.signedIn ? 'ok' : 'warn') : ''}`}>{!codex ? 'Codex 확인 중…' : !codex.installed ? 'Codex를 찾을 수 없음' : codex.signedIn ? 'Codex 로그인됨' : 'Codex 로그인 필요'}</span>
+            {codex?.email && <span className="muted">{codex.email}{codex.plan ? ` · ${codex.plan}` : ''}</span>}
+          </div>
+          <p className="faint small-note">이 Mac에 설치된 Codex의 로그인을 그대로 씁니다. 이 앱은 Codex의 토큰을 읽지 않으며, Codex는 명령 실행이나 파일 접근 없이 번역만 하도록 제한해서 부릅니다. 사용량은 Codex 쪽 한도에서 차감됩니다. 로그인은 터미널에서 <code>codex login</code>으로 합니다.</p>
+        </div>
+      )}
+      {variant === 'openai_compatible' && (
         <div className="row">
           <span className={`badge ${provider.keyConfigured ? 'ok' : 'warn'}`}>{provider.keyConfigured ? '키 설정됨' : '키 없음'}</span>
           <input className="input" type="password" placeholder="새 API 키" autoComplete="off" value={secret} onChange={(e) => setSecret(e.target.value)} />
@@ -181,7 +280,7 @@ function ProviderDetail({ provider, probe, onProbe, onChanged }: { provider: Pro
         <button className="btn small" onClick={onProbe} disabled={probe === 'running'}>{probe === 'running' ? '검사 중…' : '연결 검사'}</button>
         <button className="btn small ghost" onClick={() => void newEpoch()}>캐시 새로 시작</button>
       </div>
-      <p className="faint small-note">연결 검사는 문서 본문을 보내지 않으며, 응답 형식 확인을 위해 짧은 고정 문구를 보낼 수 있습니다.</p>
+      <p className="faint small-note">{variant === 'chatgpt' || variant === 'codex' ? '연결 검사는 모델 목록만 확인하며 문서 본문이나 시험 문구를 보내지 않습니다.' : '연결 검사는 문서 본문을 보내지 않으며, 응답 형식 확인을 위해 짧은 고정 문구를 보낼 수 있습니다.'}</p>
       {probe && probe !== 'running' && (
         probe.ok ? <p className="badge ok">연결됨 · 모델 {probe.models.length}개{probe.sentTestPrompt ? ' · 고정 문구 검사 수행' : ''}</p>
           : <p className="badge danger">{probe.error?.message ?? '연결 실패'}</p>

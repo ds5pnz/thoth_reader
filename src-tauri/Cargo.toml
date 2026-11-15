@@ -48,6 +48,8 @@ rand = "0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 mime_guess = "2"
+# RS256 verification of the ChatGPT sign-in ID token (already in the tree through rustls)
+ring = "0.17"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # debug-only window snapshots for documentation (commands::debug::debug_snapshot)

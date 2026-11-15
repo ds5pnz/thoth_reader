@@ -60,6 +60,11 @@
     "allow-profile-create",
     "allow-cache-invalidate",
     "allow-storage-usage",
+    "allow-chatgpt-sign-in",
+    "allow-chatgpt-sign-in-cancel",
+    "allow-chatgpt-sign-out",
+    "allow-codex-status",
+    "allow-codex-connect",
     "allow-debug-selftest-files",
     "allow-debug-log",
     "allow-debug-snapshot"

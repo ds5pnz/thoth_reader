@@ -19,3 +19,9 @@
 .gloss { width: 100%; border-collapse: collapse; }
 .gloss td, .gloss th { padding: 3px; text-align: left; font-weight: 500; font-size: 12px; }
 .gloss input { width: 100%; }
+
+.account-add h4 { margin: 0 0 4px; font-size: 13px; }
+.account-add p { margin: 0 0 8px; }
+.account { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.account code { font-size: 12px; }
+.consent.welcome { border-color: var(--accent); background: var(--accent-soft); }

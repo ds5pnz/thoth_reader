@@ -10,6 +10,10 @@
 
 #[cfg(test)]
 mod adapter_tests;
+#[cfg(test)]
+mod chatgpt_tests;
+pub mod chatgpt;
+pub mod codex;
 pub mod http;
 pub mod mock;
 pub mod ndjson;
@@ -52,6 +56,10 @@ pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 pub enum ProviderKind {
     Ollama,
     OpenaiCompatible,
+    /// OpenAI Responses API paid for by the user's ChatGPT plan (Sign in with ChatGPT).
+    Chatgpt,
+    /// The locally installed Codex app-server, using Codex's own sign-in.
+    Codex,
 }
 
 impl ProviderKind {
@@ -59,13 +67,33 @@ impl ProviderKind {
         match self {
             ProviderKind::Ollama => "ollama",
             ProviderKind::OpenaiCompatible => "openai_compatible",
+            ProviderKind::Chatgpt => "chatgpt",
+            ProviderKind::Codex => "codex",
         }
     }
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "ollama" => Some(Self::Ollama),
             "openai_compatible" => Some(Self::OpenaiCompatible),
+            "chatgpt" => Some(Self::Chatgpt),
+            "codex" => Some(Self::Codex),
             _ => None,
+        }
+    }
+    /// The kind of a stored provider. The database column only knows the two original
+    /// kinds; the newer ones are stored as `openai_compatible` with `capabilities.variant`.
+    pub fn of_row(kind: &str, capabilities: &serde_json::Value) -> Option<Self> {
+        match capabilities.get("variant").and_then(|v| v.as_str()) {
+            Some("chatgpt") => Some(Self::Chatgpt),
+            Some("codex") => Some(Self::Codex),
+            _ => Self::parse(kind),
+        }
+    }
+    /// Value of the database `kind` column for this kind.
+    pub fn column(&self) -> &'static str {
+        match self {
+            ProviderKind::Ollama => "ollama",
+            _ => "openai_compatible",
         }
     }
     /// Default endpoint suggested in the UI.
@@ -73,19 +101,21 @@ impl ProviderKind {
         match self {
             ProviderKind::Ollama => Some(ollama::DEFAULT_ENDPOINT),
             ProviderKind::OpenaiCompatible => None,
+            ProviderKind::Chatgpt => Some(chatgpt::ENDPOINT),
+            ProviderKind::Codex => Some(codex::ENDPOINT_LABEL),
         }
     }
     /// Default per-provider concurrency (spec §7.1).
     pub fn default_concurrency(&self) -> u8 {
         match self {
             ProviderKind::Ollama => 1,
-            ProviderKind::OpenaiCompatible => 2,
+            ProviderKind::OpenaiCompatible | ProviderKind::Chatgpt | ProviderKind::Codex => 2,
         }
     }
     pub fn default_timeouts(&self) -> Timeouts {
         match self {
             ProviderKind::Ollama => Timeouts::OLLAMA,
-            ProviderKind::OpenaiCompatible => Timeouts::REMOTE,
+            ProviderKind::OpenaiCompatible | ProviderKind::Chatgpt | ProviderKind::Codex => Timeouts::REMOTE,
         }
     }
 }
@@ -126,6 +156,18 @@ impl ProviderCapabilities {
                 context_limit: None,
                 token_limit_field: Some("max_tokens".into()),
                 temperature: true,
+                seed: false,
+                structured_output: false,
+                thinking_toggle: false,
+            },
+            // Plan-usage requests reject temperature, token limits and friends; answers are
+            // always asked for as plain text.
+            ProviderKind::Chatgpt | ProviderKind::Codex => Self {
+                streaming: true,
+                model_listing: true,
+                context_limit: None,
+                token_limit_field: None,
+                temperature: false,
                 seed: false,
                 structured_output: false,
                 thinking_toggle: false,
@@ -332,6 +374,18 @@ pub enum ProviderError {
     RecordTooLarge,
     #[error("output too large")]
     OutputTooLarge,
+    /// The ChatGPT plan (or this app's share of it) has no usage left.
+    #[error("plan usage limit reached")]
+    UsageLimit,
+    /// ChatGPT plan usage is not available for this account / workspace.
+    #[error("plan usage not available for this account")]
+    NotEligible,
+    /// The ChatGPT / Codex session is missing or can no longer be renewed.
+    #[error("sign-in required")]
+    SignInRequired,
+    /// Codex is not installed or its app-server could not be started.
+    #[error("codex unavailable")]
+    CodexUnavailable,
 }
 
 /// How the scheduler should treat a failure (spec §7.2).
@@ -375,6 +429,10 @@ impl ProviderError {
             Self::Cancelled => "cancelled",
             Self::RecordTooLarge => "record_too_large",
             Self::OutputTooLarge => "output_too_large",
+            Self::UsageLimit => "plan_usage_limit",
+            Self::NotEligible => "plan_not_eligible",
+            Self::SignInRequired => "sign_in_required",
+            Self::CodexUnavailable => "codex_unavailable",
         }
     }
 
@@ -386,7 +444,9 @@ impl ProviderError {
             | Self::Tls
             | Self::KeyMissing
             | Self::KeyAccessDenied
-            | Self::KeychainUnavailable => false,
+            | Self::KeychainUnavailable
+            | Self::SignInRequired
+            | Self::CodexUnavailable => false,
             Self::Timeout { maybe_sent, .. } | Self::Disconnected { maybe_sent } => *maybe_sent,
             Self::Cancelled => true,
             _ => true,
@@ -406,6 +466,8 @@ impl ProviderError {
             | Self::KeyMissing
             | Self::KeyAccessDenied
             | Self::KeychainUnavailable
+            | Self::SignInRequired
+            | Self::NotEligible
             | Self::EndpointRejected(_) => RetryClass::StopProvider,
             Self::Tls
             | Self::ModelNotFound
@@ -415,6 +477,8 @@ impl ProviderError {
             | Self::Incomplete { .. }
             | Self::Cancelled
             | Self::RecordTooLarge
+            | Self::UsageLimit
+            | Self::CodexUnavailable
             | Self::OutputTooLarge => RetryClass::DoNotRetry,
         }
     }
@@ -441,6 +505,10 @@ impl ProviderError {
             }
             Self::Incomplete { .. } => (InvalidOutput, "번역 결과가 정상적으로 끝나지 않았습니다."),
             Self::Cancelled => (Cancelled, "번역이 취소되었습니다."),
+            Self::UsageLimit => (RateLimited, "ChatGPT 요금제 사용 한도에 도달했습니다. ChatGPT 설정의 Usage에서 요금제와 이 앱의 한도를 확인해 주세요."),
+            Self::NotEligible => (AuthFailed, "이 계정이나 워크스페이스에서는 ChatGPT 요금제 사용이 허용되지 않습니다."),
+            Self::SignInRequired => (AuthFailed, "로그인이 필요합니다. 설정에서 다시 로그인해 주세요."),
+            Self::CodexUnavailable => (ProviderUnavailable, "Codex를 실행할 수 없습니다. Codex가 설치되어 있고 로그인되어 있는지 확인해 주세요."),
         };
         let mut e = AppError::new(code, msg)
             .with("reason", self.reason())
@@ -631,6 +699,8 @@ pub fn build_provider_with_timeouts(
             secrets,
             timeouts,
         )?),
+        ProviderKind::Chatgpt => Arc::new(chatgpt::ChatGptProvider::with_timeouts(cfg.clone(), secrets, timeouts)?),
+        ProviderKind::Codex => Arc::new(codex::CodexProvider::new(cfg.clone())),
     })
 }
 
@@ -645,6 +715,8 @@ pub fn request_payload(
     match kind {
         ProviderKind::Ollama => ollama::build_payload(caps, req),
         ProviderKind::OpenaiCompatible => openai_compatible::build_payload(caps, req),
+        ProviderKind::Chatgpt => chatgpt::build_payload(req, true),
+        ProviderKind::Codex => codex::build_payload(req),
     }
 }
 

@@ -4907,6 +4907,7 @@ dependencies = [
  "quick-xml",
  "rand 0.9.5",
  "reqwest",
+ "ring",
  "security-framework",
  "serde",
  "serde_json",
